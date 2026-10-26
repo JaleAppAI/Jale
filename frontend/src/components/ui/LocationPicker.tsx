@@ -35,6 +35,8 @@ export function LocationPicker({
   disabled = false,
   invalid = false,
   describedBy,
+  picked,
+  'data-guide': guide,
 }: {
   value: string;
   onChange: (value: LocationPickerValue) => void;
@@ -45,6 +47,15 @@ export function LocationPicker({
   /** Marks the input invalid; pair with `describedBy` pointing at the message. */
   invalid?: boolean;
   describedBy?: string;
+  /**
+   * Whether the value came from a suggestion rather than typing (the caller
+   * knows: it holds the picked city's key). Shown as `data-picked` on the
+   * control, the one sign in the page that tells a picked city from typed
+   * text; a step-by-step guide waits on it.
+   */
+  picked?: boolean;
+  /** A step-by-step guide's hook (`data-guide`, see `components/tutorials/spotlight`). */
+  'data-guide'?: string;
 }) {
   const tCommon = useTranslations('common');
   const [results, setResults] = useState<LocationSuggestion[]>([]);
@@ -148,7 +159,7 @@ export function LocationPicker({
   }
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative" data-guide={guide} data-picked={picked ? '' : undefined}>
       <Input
         value={value}
         placeholder={placeholder}

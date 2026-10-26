@@ -70,6 +70,7 @@ export function StepHeader({
                 {onBack ? (
                     <button
                         type="button"
+                        data-guide={`onb.${screen}.back`}
                         onClick={onBack}
                         disabled={backDisabled}
                         className="flex cursor-pointer items-center gap-1 rounded border-0 bg-transparent p-0 text-sm font-medium text-[var(--jale-ink-2)] transition-colors hover:text-[var(--jale-ink)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] disabled:cursor-not-allowed disabled:opacity-60"

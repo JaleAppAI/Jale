@@ -1,5 +1,5 @@
 'use client';
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,6 +8,7 @@ import {
     answersForScreen,
     canContinue,
     locationConfirmAnswer,
+    locationStepValue,
     type OnboardingAnswerBatch,
     type OnboardingDraft,
 } from '@/lib/onboarding-flow';
@@ -59,6 +60,18 @@ export function AboutYouStep({
     const locationError = rejection?.stepKey === 'profile.location' ? rejectionMessage(rejection.reason, rejection.stepKey) : null;
     const nameErrorId = `${fieldId}-name-error`;
     const locationErrorId = `${fieldId}-location-error`;
+    const pickId = `${fieldId}-location-pick`;
+
+    // A city typed but never picked from the list is not a location: Continue
+    // stays off. Once the worker leaves the field with text in it that is not
+    // a place yet (no suggestion picked, not a 5-digit ZIP), say so where the
+    // hint was and ring the box, as the employer's job form does after Next.
+    // Picking a city (or completing a ZIP) clears it.
+    const [leftField, setLeftField] = useState(false);
+    const unpicked = leftField
+        && draft.location.text.trim() !== ''
+        && locationStepValue(draft.location) === null
+        && locationError === null;
 
     return (
         <StepLayout>
@@ -70,7 +83,7 @@ export function AboutYouStep({
                 screen reader hears the field rather than "Tell us about you". */}
             <StepHeader screen="about" title={t('title')} subtitle={t('subtitle')} onBack={onBack} backDisabled={saving} fieldTakesFocus />
             <StepBody>
-                <div className="grid grid-cols-1 gap-2.5 min-[400px]:grid-cols-2">
+                <div data-guide="onb.about.name" className="grid grid-cols-1 gap-2.5 min-[400px]:grid-cols-2">
                     <StepField label={t('first_name')} htmlFor={`${fieldId}-first`} error={nameError} errorId={nameErrorId}>
                         <Input
                             id={`${fieldId}-first`}
@@ -99,20 +112,32 @@ export function AboutYouStep({
                 <div className="flex flex-col gap-1.5">
                     <p className="text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">{t('location')}</p>
                     <LocationField
+                        data-guide="onb.about.location"
                         value={draft.location}
                         disabled={saving}
-                        invalid={locationError !== null}
-                        describedBy={locationError ? locationErrorId : undefined}
+                        invalid={locationError !== null || unpicked}
+                        warn={unpicked}
+                        describedBy={locationError ? locationErrorId : unpicked ? pickId : undefined}
                         placeholder={t('location_placeholder')}
-                        onChange={(location) => onDraftChange({ location })}
+                        onLeave={() => setLeftField(true)}
+                        onChange={(location) => {
+                            onDraftChange({ location });
+                            if (locationStepValue(location) !== null) setLeftField(false);
+                        }}
                     />
                     {locationError
                         ? <p id={locationErrorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{locationError}</p>
-                        : <StepHint>{t('location_help')}</StepHint>}
+                        : unpicked
+                            ? (
+                                <p id={pickId} role="alert" className="rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">
+                                    {t('location_pick')}
+                                </p>
+                            )
+                            : <StepHint>{t('location_help')}</StepHint>}
                 </div>
 
                 {pendingConfirm ? (
-                    <div className="rounded-xl bg-[var(--jale-blue-50)] px-3.5 py-3">
+                    <div data-guide="onb.about.confirm" className="rounded-xl bg-[var(--jale-blue-50)] px-3.5 py-3">
                         <p className="mb-2.5 text-sm text-[var(--jale-ink)]">
                             {t('confirm_title', { city: pendingConfirm.city, state: pendingConfirm.state })}
                         </p>
@@ -131,6 +156,7 @@ export function AboutYouStep({
                 {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
                 {pendingConfirm ? null : (
                     <Button
+                        data-guide="onb.about.continue"
                         className="w-full"
                         size="lg"
                         loading={saving}

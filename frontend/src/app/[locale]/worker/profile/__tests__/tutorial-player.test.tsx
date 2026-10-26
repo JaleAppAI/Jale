@@ -2,6 +2,7 @@
 import type { ReactNode } from 'react';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, within } from '@testing-library/react';
+import { ToastProvider } from '@/components/ui/toast';
 
 import type { WorkerProfileData, WorkerVaultDoc } from '@/lib/api/worker';
 import { resetHarness, route, serveTutorials, signIn, watchDialogs } from '@/lib/tutorials/__tests__/harness';
@@ -10,15 +11,15 @@ import {
   preparePlayer,
   recordsPosted,
   settle,
-  walkToLast,
   workerProviders,
 } from '@/components/tutorials/content/__tests__/worker-player';
 
 /*
  * W4 with the real tutorial: the providers as the app layout mounts them and
- * the real player and content. "Your profile" opens on the profile page for a
- * worker with no saved document (K1.5), alone, and ends on the common "Got
- * it". The harness is the sibling `tutorial.test.tsx` one.
+ * the real guide host. For a worker with no saved document (K1.5) the profile
+ * page opens its step-by-step guide, alone, starting from the page's own Edit
+ * button; the slides stay in Help. The harness is the sibling
+ * `tutorial.test.tsx` one.
  */
 
 vi.mock('@/contexts/AuthContext', async () => ({
@@ -102,7 +103,27 @@ function ready(docs: WorkerVaultDoc[]) {
 let restorePlayer: () => void;
 beforeAll(async () => {
   restorePlayer = await preparePlayer();
+  // The guides' own chunk, fetched up front as the provider's preload does.
+  await import('@/components/tutorials/GuideHost');
 });
+
+/** The app layout's providers, with the toasts the guide host speaks through. */
+function providers(locale: 'en' | 'es' = 'en') {
+  const Base = workerProviders(locale);
+  return function Providers({ children }: { children: ReactNode }) {
+    return (
+      <Base>
+        <ToastProvider>{children}</ToastProvider>
+      </Base>
+    );
+  };
+}
+
+/** The guide's card: the last dialog inside the spotlight layer. */
+const guideCard = () => {
+  const cards = document.querySelectorAll<HTMLElement>('[data-spotlight="worker_profile"] [role="dialog"]');
+  return cards.length > 0 ? cards[cards.length - 1] : null;
+};
 afterAll(() => restorePlayer());
 
 beforeEach(() => {
@@ -116,34 +137,52 @@ beforeEach(() => {
 });
 
 describe('profile page with the real W4 tutorial', () => {
-  it('opens "Your profile" for a worker with no saved document, alone, and ends on "Got it"', async () => {
+  it('opens the step-by-step guide, not the slides, for a worker with no saved document, alone', async () => {
     pageState = ready([]);
     const watch = watchDialogs();
-    render(<WorkerProfilePage />, { wrapper: workerProviders() });
+    render(<WorkerProfilePage />, { wrapper: providers() });
 
-    const dialog = await screen.findByRole('dialog', { name: 'Your profile' });
-    expect(within(dialog).getByRole('heading', { name: 'This is what employers see' })).toBeInTheDocument();
-    const gotIt = walkToLast(dialog, 'Next', 'Got it');
-    act(() => gotIt.click());
+    await vi.waitFor(() => expect(guideCard()).not.toBeNull());
+    const card = guideCard() as HTMLElement;
+    expect(within(card).getByText('Want a hand with your profile?')).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Guide me' })).toBeInTheDocument();
+    // No slide deck alongside it.
+    expect(screen.queryByRole('heading', { name: 'What employers see' })).toBeNull();
+
+    act(() => within(card).getByRole('button', { name: 'Guide me' }).click());
     await settle();
+    // The first step points at the page's own Edit button.
+    expect(guideCard()?.getAttribute('data-step')).toBe('edit');
     watch.stop();
-
-    expect(dialogCount()).toBe(0);
     expect(watch.most()).toBe(1);
-    expect(recordsPosted()).toEqual([{ tutorial_id: 'worker_profile', outcome: 'completed' }]);
+  });
+
+  it('records the guide as skipped when the worker does it alone', async () => {
+    pageState = ready([]);
+    render(<WorkerProfilePage />, { wrapper: providers() });
+
+    await vi.waitFor(() => expect(guideCard()).not.toBeNull());
+    act(() => within(guideCard() as HTMLElement).getByRole('button', { name: 'I’ll do it myself' }).click());
+    await settle();
+
+    expect(guideCard()).toBeNull();
+    expect(dialogCount()).toBe(0);
+    expect(recordsPosted()).toEqual([{ tutorial_id: 'worker_profile', outcome: 'skipped' }]);
   });
 
   it('says it in Spanish', async () => {
     pageState = ready([]);
-    render(<WorkerProfilePage />, { wrapper: workerProviders('es') });
+    render(<WorkerProfilePage />, { wrapper: providers('es') });
 
-    const dialog = await screen.findByRole('dialog', { name: 'Tu perfil' });
-    expect(walkToLast(dialog, 'Siguiente', 'Entendido')).toBeInTheDocument();
+    await vi.waitFor(() => expect(guideCard()).not.toBeNull());
+    const card = guideCard() as HTMLElement;
+    expect(within(card).getByText('¿Te ayudamos con tu perfil?')).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Guíame' })).toBeInTheDocument();
   });
 
   it('does not open for a worker who has saved a document', async () => {
     pageState = ready([SAVED_DOC]);
-    render(<WorkerProfilePage />, { wrapper: workerProviders() });
+    render(<WorkerProfilePage />, { wrapper: providers() });
     await settle();
 
     expect(dialogCount()).toBe(0);
@@ -151,7 +190,7 @@ describe('profile page with the real W4 tutorial', () => {
 
   it('does not open while the profile is still loading', async () => {
     pageState = { phase: 'loading', data: undefined };
-    render(<WorkerProfilePage />, { wrapper: workerProviders() });
+    render(<WorkerProfilePage />, { wrapper: providers() });
     await settle();
 
     expect(dialogCount()).toBe(0);

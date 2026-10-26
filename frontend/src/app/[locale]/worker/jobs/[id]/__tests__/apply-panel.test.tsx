@@ -292,3 +292,56 @@ describe('worker job page — what applying costs', () => {
         expect(screen.getByText(message('worker_job_detail.apply_hint', 'es'))).toBeInTheDocument();
     });
 });
+
+describe('worker job page — a greyed Apply says why', () => {
+    function applyButton() {
+        return screen.getByRole('button', { name: t('apply') });
+    }
+
+    it.each(['closed', 'filled'] as const)('names the reason beside Apply for a %s job', (status) => {
+        seed = fullJob({ status });
+        renderIntl(<WorkerJobDetailPage />);
+        const button = applyButton();
+        expect(button).toBeDisabled();
+        const reasonId = button.getAttribute('aria-describedby');
+        expect(reasonId).toBeTruthy();
+        const reason = document.getElementById(reasonId!);
+        expect(reason).toHaveTextContent(t('errors.job_closed'));
+        // Beside the button, in the Apply panel, not only at the top of the page.
+        expect(button.parentElement!.contains(reason)).toBe(true);
+    });
+
+    it('says a paused job is paused, not closed (it has no notice at the top)', () => {
+        seed = fullJob({ status: 'paused' });
+        renderIntl(<WorkerJobDetailPage />);
+        const button = applyButton();
+        expect(button).toBeDisabled();
+        const reason = document.getElementById(button.getAttribute('aria-describedby')!);
+        expect(reason).toHaveTextContent('The employer paused this job. Check back later.');
+        expect(screen.queryByText(t('errors.job_closed'))).toBeNull();
+    });
+
+    it('says a paused job is paused in Spanish, with tú', () => {
+        seed = fullJob({ status: 'paused' });
+        renderIntl(<WorkerJobDetailPage />, 'es');
+        const button = screen.getByRole('button', { name: message('worker_job_detail.apply', 'es') });
+        expect(document.getElementById(button.getAttribute('aria-describedby')!))
+            .toHaveTextContent('El empleador pausó este trabajo. Vuelve a revisarlo más tarde.');
+    });
+
+    it('says it in Spanish', () => {
+        seed = fullJob({ status: 'closed' });
+        renderIntl(<WorkerJobDetailPage />, 'es');
+        const button = screen.getByRole('button', { name: message('worker_job_detail.apply', 'es') });
+        expect(document.getElementById(button.getAttribute('aria-describedby')!))
+            .toHaveTextContent(message('worker_job_detail.errors.job_closed', 'es'));
+    });
+
+    it('gives an open job no reason, only the hint', () => {
+        seed = fullJob();
+        renderIntl(<WorkerJobDetailPage />);
+        expect(applyButton()).toBeEnabled();
+        expect(applyButton()).not.toHaveAttribute('aria-describedby');
+        expect(screen.queryByText(t('errors.job_closed'))).toBeNull();
+    });
+});

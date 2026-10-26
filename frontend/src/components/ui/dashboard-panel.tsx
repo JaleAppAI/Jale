@@ -14,13 +14,16 @@ export function DashboardPanel({
     children,
     className = '',
     as: Tag = 'section',
+    'data-guide': guide,
 }: {
     children: React.ReactNode;
     className?: string;
     as?: 'section' | 'article' | 'div';
+    /** A step-by-step guide's hook (`data-guide`, see `components/tutorials/spotlight`). */
+    'data-guide'?: string;
 }) {
     return (
-        <Tag className={`rounded-[var(--radius-card)] border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-card)] ${className}`}>
+        <Tag data-guide={guide} className={`rounded-[var(--radius-card)] border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-card)] ${className}`}>
             {children}
         </Tag>
     );

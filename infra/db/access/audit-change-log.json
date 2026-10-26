@@ -411,6 +411,7 @@
     "public.signup_attribution": "A capture table that already records where each account's signup started.",
     "public.worker_job_views": "A capture table that already records the job pages signed-in workers open.",
     "public.referral_funnel_daily": "A capture table that already records daily referral counts; it names no account.",
-    "public.user_tutorial_progress": "UI progress flags; no personal data beyond the account link."
+    "public.user_tutorial_progress": "UI progress flags; no personal data beyond the account link.",
+    "public.user_tutorial_settings": "UI guide settings; no personal data beyond the account link."
   }
 }

@@ -32,9 +32,11 @@ import { DashboardHero } from '@/components/employer/DashboardHero';
 import { LatestMessagePanel } from '@/components/employer/LatestMessagePanel';
 import { PostJobButton } from '@/components/employer/PostJobButton';
 import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates, updateJobStatus } from '@/lib/api/employer';
-import { flushPendingEmployerProfile } from '@/lib/employer-profile-flush';
-import { hasJobsDone } from '@/lib/employer-tutorial-done';
+import { flushPendingEmployerProfile, loadEmployerProfileWithPendingFlush } from '@/lib/employer-profile-flush';
+import { createdSinceAppTour, hasJobsDone } from '@/lib/employer-tutorial-done';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
+import { useAppTour } from '@/lib/tutorials/use-app-tour';
+import { useTutorialProgress } from '@/lib/tutorials/progress';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
 import { isHealthyPaidPlan, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
@@ -301,16 +303,67 @@ export default function EmployerDashboardPage() {
     const welcomeTutorial = useTutorial('employer_welcome', {
         done: phase === 'ready' ? hasJobsDone(data?.jobs) : undefined,
     });
-    const welcomeAskedRef = useRef(false);
+    /*
+     * The app tour comes first, for a NEW employer only: no job on the board
+     * AND an account created at or after the tour's release
+     * (`EMPLOYER_APP_TOUR_RELEASED_AT`). An empty board alone is not enough:
+     * an older account may never have posted or may have deleted every job,
+     * and tutorial records only began with the tour. The creation date comes
+     * from one profile read, made only for an empty board; the tour and E1
+     * wait for it, and a failed read means no tour.
+     *
+     * After the tour comes the dashboard itself: the tour is their welcome.
+     * E1's slides no longer follow it, and do not auto-play at all once the
+     * account has an outcome for the tour (or a failed save of one, which
+     * means it was shown); E1 stays in Help. An account the tour never
+     * reached (no outcome) is asked about E1 exactly as before the tour
+     * existed.
+     */
+    // Declared before `useAppTour`, so the ref is current when the tour's own
+    // effect (a held request judged once the read answers) calls back.
+    const tutorialProgress = useTutorialProgress();
+    const progressRef = useRef(tutorialProgress);
     useEffect(() => {
-        if (welcomeAskedRef.current || phase !== 'ready' || !data) return;
+        progressRef.current = tutorialProgress;
+    });
+    const appTour = useAppTour('employer_app_tour');
+    const welcomeAskedRef = useRef(false);
+    // The tour's profile read, dropped with the page.
+    const tourReadRef = useRef<AbortController | null>(null);
+    useEffect(() => () => tourReadRef.current?.abort(), []);
+    useEffect(() => {
+        if (welcomeAskedRef.current || phase !== 'ready' || !data || !idToken) return;
         welcomeAskedRef.current = true;
-        if (data.billing) {
-            welcomeTutorial.maybeAutoOpen({ activeJobLimit: data.billing.activeJobLimit });
-        } else {
-            welcomeTutorial.maybeAutoOpen();
+        const billing = data.billing;
+        const askWelcome = () => {
+            const progress = progressRef.current;
+            if (progress && (progress.hasRecord('employer_app_tour') || progress.isFlagged('employer_app_tour'))) return;
+            if (billing) {
+                welcomeTutorial.maybeAutoOpen({ activeJobLimit: billing.activeJobLimit });
+            } else {
+                welcomeTutorial.maybeAutoOpen();
+            }
+        };
+        if (hasJobsDone(data.jobs) !== false) {
+            askWelcome();
+            return;
         }
-    }, [data, phase, welcomeTutorial]);
+        // An empty board: new only if created since the tour's release. The
+        // read joins a sign-up's pending profile save when there is one.
+        const controller = new AbortController();
+        tourReadRef.current = controller;
+        loadEmployerProfileWithPendingFlush(idToken, controller.signal).then(
+            (profile) => {
+                if (controller.signal.aborted) return;
+                if (createdSinceAppTour(profile.created_at)) appTour.playFirst(askWelcome);
+                else askWelcome();
+            },
+            () => {
+                // No creation date, no tour: E1 is asked as before.
+                if (!controller.signal.aborted) askWelcome();
+            },
+        );
+    }, [data, phase, idToken, welcomeTutorial, appTour]);
 
     const recentJob = jobs[0];
     const timeToFillJob = jobs.find((job) =>
@@ -486,7 +539,9 @@ export default function EmployerDashboardPage() {
     // so the page owes the reader a skeleton rather than a screen of dashes.
     const showSkeleton = phase === 'auth' || phase === 'loading';
 
-    const postJobButton = <PostJobButton className="h-10" />;
+    // The page's one primary "Post a job", always in the sticky header, and the
+    // control the app tour points at for its "Post a job" step.
+    const postJobButton = <PostJobButton className="h-10" tourTarget="post-job" />;
 
     return (
         <>

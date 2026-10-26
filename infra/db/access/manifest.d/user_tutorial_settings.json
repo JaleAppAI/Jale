@@ -1,0 +1,55 @@
+{
+  "tables": {
+    "public.user_tutorial_settings": {
+      "classification": "access",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Each account's guide settings, one row per account (migration 137): whether guides open every time, and the tutorials turned off. UI guide settings; no personal data beyond the account link.",
+      "access": {
+        "jale_api": {
+          "select": "*",
+          "insert": "*",
+          "update": "*",
+          "reason": "lambda/api/tutorial-progress.ts reads the caller's settings and saves them with one upsert; no DELETE, so a row leaves only with its users row."
+        }
+      }
+    }
+  },
+  "policies": {
+    "public.user_tutorial_settings.user_tutorial_settings_self_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_api"
+      ],
+      "origin": "existing",
+      "using": "(user_id = ( SELECT users.id\n   FROM users\n  WHERE (users.cognito_sub = current_setting('app.current_user_id'::text, true))))",
+      "with_check": null,
+      "reason": "A login reads its own guide settings, keyed like user_tutorial_progress_self_read."
+    },
+    "public.user_tutorial_settings.user_tutorial_settings_self_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_api"
+      ],
+      "origin": "existing",
+      "using": null,
+      "with_check": "(user_id = ( SELECT users.id\n   FROM users\n  WHERE (users.cognito_sub = current_setting('app.current_user_id'::text, true))))",
+      "reason": "A login creates its own guide settings row, keyed like user_tutorial_progress_self_insert."
+    },
+    "public.user_tutorial_settings.user_tutorial_settings_self_update": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_api"
+      ],
+      "origin": "existing",
+      "using": "(user_id = ( SELECT users.id\n   FROM users\n  WHERE (users.cognito_sub = current_setting('app.current_user_id'::text, true))))",
+      "with_check": "(user_id = ( SELECT users.id\n   FROM users\n  WHERE (users.cognito_sub = current_setting('app.current_user_id'::text, true))))",
+      "reason": "A login changes its own guide settings row and cannot move it to another account."
+    }
+  }
+}

@@ -170,24 +170,19 @@ async function settle() {
 }
 
 const tourTitle = () => message('tutorial.employer_messages.title');
-const tourDialog = () => screen.queryByRole('dialog', { name: tourTitle() });
+/** The slides player (E4 no longer plays them at the drawer) or the guide's callout. */
+const tourDialog = () => screen.queryByRole('dialog', { name: tourTitle() }) ?? guideCard();
+/** The step-by-step guide's callout, when one is drawn. */
+const guideCard = () => document.querySelector<HTMLElement>('[data-spotlight] [role="dialog"]');
 const launcher = () => screen.getByRole('button', { expanded: false }) as HTMLButtonElement;
 const drawerOpen = () => document.querySelector('button[aria-expanded="true"]') !== null;
 const posts = () => tutorialCalls().filter(([method]) => method === 'POST');
 
-/** Finishes the tour from its first slide. */
-function finishTour() {
-    const tour = tourDialog();
-    expect(tour).not.toBeNull();
-    for (let turn = 0; turn < 2; turn += 1) {
-        act(() => {
-            fireEvent.click(within(tour as HTMLElement).getByRole('button', { name: message('tutorial.common.next') }));
-        });
-    }
-    act(() => {
-        fireEvent.click(within(tour as HTMLElement).getByRole('button', { name: message('tutorial.common.got_it') }));
-    });
-}
+beforeAll(async () => {
+    // The guides' lazy chunk, fetched once up front: a cold first import
+    // would otherwise spend the first test's wait on module transforms.
+    await import('@/components/tutorials/GuideHost');
+});
 
 let rectsSpy: ReturnType<typeof vi.spyOn>;
 beforeAll(() => {
@@ -207,50 +202,60 @@ beforeEach(() => {
 });
 
 describe('the drawer with the real messages tour', () => {
-    it('from the launcher: the tour plays first, then the drawer opens with focus on the launcher', async () => {
+    it('from the launcher: the drawer opens at once, then the messages guide starts over it', async () => {
         renderShell();
         await settle();
         const dialogs = watchDialogs();
 
-        const button = launcher();
-        button.focus();
         act(() => {
-            fireEvent.click(button);
+            fireEvent.click(launcher());
         });
-        const tour = await screen.findByRole('dialog', { name: tourTitle() });
-        expect(drawerOpen()).toBe(false);
-        expect(within(tour).getByRole('heading', { level: 2 }).textContent).toBe(
-            message('tutorial.employer_messages.slides.whatsapp.title'),
+        // The host first: E4 is a step-by-step guide inside the open drawer.
+        expect(drawerOpen()).toBe(true);
+        const intro = await waitFor(() => {
+            const card = guideCard();
+            expect(card?.getAttribute('data-step')).toBe('intro');
+            return card as HTMLElement;
+        }, { timeout: 4000 });
+        expect(within(intro).getByRole('heading', { level: 2 }).textContent).toBe(
+            message('tutorial.employer_messages.guide.intro_title'),
         );
 
-        finishTour();
-        await waitFor(() => expect(drawerOpen()).toBe(true));
-        expect(tourDialog()).toBeNull();
-        expect(document.activeElement).toBe(button);
-        expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'employer_messages', outcome: 'completed' }]);
+        act(() => {
+            fireEvent.click(within(intro).getByRole('button', { name: message('tutorial.common.guide.self') }));
+        });
+        await settle();
+        expect(guideCard()).toBeNull();
+        expect(drawerOpen()).toBe(true);
+        expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'employer_messages', outcome: 'skipped' }]);
         expect(dialogs.most()).toBe(1);
         dialogs.stop();
     });
 
-    it('from "Message" on an applicant: the tour plays first, then the drawer opens on that applicant', async () => {
+    it('from "Message" on an applicant: the drawer opens on that applicant, then the guide shows the first message', async () => {
         renderShell();
         await settle();
 
-        const opener = screen.getByRole('button', { name: 'Message applicant' });
-        opener.focus();
         act(() => {
-            fireEvent.click(opener);
+            fireEvent.click(screen.getByRole('button', { name: 'Message applicant' }));
         });
-        const tour = await screen.findByRole('dialog', { name: tourTitle() });
-        expect(drawerOpen()).toBe(false);
+        expect(drawerOpen()).toBe(true);
+        expect(screen.getAllByText('Test Worker').length).toBeGreaterThan(0);
+        const intro = await waitFor(() => {
+            const card = guideCard();
+            expect(card?.getAttribute('data-step')).toBe('intro');
+            return card as HTMLElement;
+        }, { timeout: 4000 });
+        act(() => {
+            fireEvent.click(within(intro).getByRole('button', { name: message('tutorial.common.guide.employer.start') }));
+        });
+        await waitFor(() => expect(guideCard()?.getAttribute('data-step')).toBe('first'));
 
         act(() => {
-            fireEvent.click(within(tour).getByRole('button', { name: message('tutorial.common.skip') }));
+            fireEvent.click(within(guideCard() as HTMLElement).getByRole('button', { name: message('tutorial.common.guide.end') }));
         });
-        await waitFor(() => expect(drawerOpen()).toBe(true));
-        expect(tourDialog()).toBeNull();
-        expect(document.activeElement).toBe(opener);
-        expect(screen.getAllByText('Test Worker').length).toBeGreaterThan(0);
+        await settle();
+        expect(guideCard()).toBeNull();
         expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'employer_messages', outcome: 'skipped' }]);
     });
 

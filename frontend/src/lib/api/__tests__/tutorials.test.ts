@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
+  DEFAULT_TUTORIAL_SETTINGS,
   EMPLOYER_TUTORIAL_IDS,
   WORKER_TUTORIAL_IDS,
   getTutorialProgress,
@@ -77,7 +78,7 @@ describe('tutorial progress client', () => {
   });
 
   describe('getTutorialProgress', () => {
-    it.each(['employer', 'worker'] as const)('reads GET /%s/tutorials and returns the tutorials array', async (role: TutorialRole) => {
+    it.each(['employer', 'worker'] as const)('reads GET /%s/tutorials and returns the tutorials array with the settings', async (role: TutorialRole) => {
       fetchMock.mockResolvedValue(jsonResponse({ tutorials: [RECORD] }));
 
       const result = await getTutorialProgress(TOKEN, role);
@@ -88,12 +89,13 @@ describe('tutorial progress client', () => {
       expect(init.method ?? 'GET').toBe('GET');
       expect(init.body).toBeUndefined();
       expect(init.headers.Authorization).toBe(TOKEN);
-      expect(result).toEqual([RECORD]);
+      expect(result.tutorials).toEqual([RECORD]);
+      expect(result.settings).toEqual(DEFAULT_TUTORIAL_SETTINGS);
     });
 
     it('returns an empty list as an empty list', async () => {
       fetchMock.mockResolvedValue(jsonResponse({ tutorials: [] }));
-      await expect(getTutorialProgress(TOKEN, 'worker')).resolves.toEqual([]);
+      await expect(getTutorialProgress(TOKEN, 'worker')).resolves.toMatchObject({ tutorials: [] });
     });
 
     it('forwards a caller signal, so aborting rejects the read', async () => {

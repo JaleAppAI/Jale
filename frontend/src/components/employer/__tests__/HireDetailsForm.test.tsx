@@ -156,3 +156,46 @@ describe('HireDetailsForm (K4.2, T-b)', () => {
     expect(field('notes')).toHaveValue('Bring boots');
   });
 });
+
+/*
+ * Hotfix 2026-10-24: with nothing saved before, Save with every box empty
+ * said "Start details saved." and closed, while the server stored nothing and
+ * the row kept asking for details. Clearing details that WERE saved is still
+ * a real change (see "reports a save that left every field empty as null").
+ */
+describe('HireDetailsForm: an empty first save', () => {
+  it('refuses a save with every box empty when nothing was saved before, and says why', async () => {
+    const user = userEvent.setup();
+    const props = renderForm();
+    await user.click(save());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(key('error_empty'));
+    expect(updateHireDetails).not.toHaveBeenCalled();
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(field('start_date')).toHaveFocus();
+  });
+
+  it('counts boxes holding only spaces as empty', async () => {
+    const user = userEvent.setup();
+    renderForm();
+    await user.type(field('report_location'), '   ');
+    await user.type(field('notes'), '  ');
+    await user.click(save());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(key('error_empty'));
+    expect(updateHireDetails).not.toHaveBeenCalled();
+  });
+
+  it('drops the message once a box is filled, and saves', async () => {
+    updateHireDetails.mockResolvedValue({ start_date: null, report_location: 'Gate 3', contact_name: null, contact_phone: null, notes: null, updated_at: '2026-10-14T15:00:00Z' });
+    const user = userEvent.setup();
+    renderForm();
+    await user.click(save());
+    await user.type(field('report_location'), 'Gate 3');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await user.click(save());
+
+    await waitFor(() => expect(updateHireDetails).toHaveBeenCalledTimes(1));
+  });
+});

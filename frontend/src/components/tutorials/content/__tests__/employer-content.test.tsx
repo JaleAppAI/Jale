@@ -229,8 +229,14 @@ describe.each(EMPLOYER)('%s content', (id, definition) => {
 });
 
 describe('the employer tutorial copy in Spanish', () => {
-    /** The same word in both languages, on purpose. */
-    const SAME_IN_BOTH = new Set(['tutorial.employer_welcome.scenes.web']);
+    /** The same word in both languages, on purpose: "Web", and each guide's length in Help ("1 min"). */
+    const SAME_IN_BOTH = new Set([
+        'tutorial.employer_welcome.scenes.web',
+        'tutorial.employer_welcome.duration',
+        'tutorial.employer_post_job.duration',
+        'tutorial.employer_applicants.duration',
+        'tutorial.employer_messages.duration',
+    ]);
 
     function leaves(node: MessageNode, path: string): Array<[string, string]> {
         if (typeof node === 'string') return [[path, node]];

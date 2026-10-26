@@ -266,119 +266,132 @@ export function TrustQuestionStep({
                 {index === 1 ? (
                     <div
                         role="note"
+                        data-guide="onb.q1.lock"
                         className="flex items-start gap-2 rounded-[var(--radius-input)] bg-[var(--jale-warning-bg)] px-3.5 py-3 text-[var(--jale-warning-text)]"
                     >
                         <Lock aria-hidden="true" className="mt-0.5 size-4 flex-none" strokeWidth={2} />
                         <span className="text-[13px] leading-snug">{t('lock_note')}</span>
                     </div>
                 ) : null}
-                <div className="flex items-stretch gap-2.5">
-                    <Textarea
-                        id={`${fieldId}-answer`}
-                        aria-label={question}
-                        className="min-h-[150px] font-normal"
-                        placeholder={t('placeholder')}
-                        // The box IS the screen: one question, one answer, and
-                        // nothing above it to read past. Focused on arrival so
-                        // a worker on a phone gets the keyboard without a tap.
-                        // `OnboardingFlow` keys this step by screen, so each of
-                        // the three questions is a fresh mount and gets it.
-                        autoFocus
-                        value={answer}
-                        // NOT disabled while a transcription runs: typing is
-                        // the primary path and must never be taken away by the
-                        // accelerator. The transcript replaces what is in the
-                        // box when it lands — which is what pressing the mic
-                        // asked for.
-                        disabled={saving}
-                        // Invalid only once the engine has actually refused it:
-                        // an answer still being typed is short, not wrong.
-                        aria-invalid={rejected || tooLong ? true : undefined}
-                        aria-describedby={rejected ? errorId : hintId}
-                        onChange={(e) => onAnswerChange(e.target.value)}
-                    />
-                    <button
-                        type="button"
-                        disabled={!canRecord || saving || busy}
-                        aria-label={micLabel}
-                        aria-pressed={canRecord ? phase === 'recording' : undefined}
-                        aria-describedby={statusText ? statusId : undefined}
-                        title={micTitle}
-                        onClick={() => {
-                            if (phase === 'recording') { stopRecording(); return; }
-                            void startRecording();
-                        }}
-                        className={[
-                            'grid w-14 flex-none place-items-center rounded-2xl border-[1.5px]',
-                            'border-[var(--jale-divider)] bg-[var(--jale-card)] text-[var(--jale-blue-500)]',
-                            canRecord && !saving && !busy
-                                ? 'cursor-pointer hover:bg-[var(--jale-input)]'
-                                : 'cursor-not-allowed opacity-50',
-                            phase === 'recording'
-                                ? 'animate-pulse border-[var(--jale-danger)] text-[var(--jale-danger)]'
-                                : '',
-                        ].join(' ')}
-                    >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                            <rect x="9" y="3" width="6" height="11" rx="3" />
-                            <path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" />
-                        </svg>
-                    </button>
-                </div>
+                {/* The answer, the mic and the lines about them, as one block a
+                    step-by-step guide can point at (`data-guide`). It says
+                    whether the mic can record here and what it is doing, so
+                    the guide neither offers a mic this browser cannot use nor
+                    moves on while a recording is still being written down. */}
+                <div
+                    data-guide={`onb.q${index}.answer`}
+                    data-mic={canRecord ? 'on' : 'off'}
+                    data-voice-phase={phase}
+                    className="flex flex-col gap-[18px]"
+                >
+                    <div className="flex items-stretch gap-2.5">
+                        <Textarea
+                            id={`${fieldId}-answer`}
+                            aria-label={question}
+                            className="min-h-[150px] font-normal"
+                            placeholder={t('placeholder')}
+                            // The box IS the screen: one question, one answer, and
+                            // nothing above it to read past. Focused on arrival so
+                            // a worker on a phone gets the keyboard without a tap.
+                            // `OnboardingFlow` keys this step by screen, so each of
+                            // the three questions is a fresh mount and gets it.
+                            autoFocus
+                            value={answer}
+                            // NOT disabled while a transcription runs: typing is
+                            // the primary path and must never be taken away by the
+                            // accelerator. The transcript replaces what is in the
+                            // box when it lands — which is what pressing the mic
+                            // asked for.
+                            disabled={saving}
+                            // Invalid only once the engine has actually refused it:
+                            // an answer still being typed is short, not wrong.
+                            aria-invalid={rejected || tooLong ? true : undefined}
+                            aria-describedby={rejected ? errorId : hintId}
+                            onChange={(e) => onAnswerChange(e.target.value)}
+                        />
+                        <button
+                            type="button"
+                            disabled={!canRecord || saving || busy}
+                            aria-label={micLabel}
+                            aria-pressed={canRecord ? phase === 'recording' : undefined}
+                            aria-describedby={statusText ? statusId : undefined}
+                            title={micTitle}
+                            onClick={() => {
+                                if (phase === 'recording') { stopRecording(); return; }
+                                void startRecording();
+                            }}
+                            className={[
+                                'grid w-14 flex-none place-items-center rounded-2xl border-[1.5px]',
+                                'border-[var(--jale-divider)] bg-[var(--jale-card)] text-[var(--jale-blue-500)]',
+                                canRecord && !saving && !busy
+                                    ? 'cursor-pointer hover:bg-[var(--jale-input)]'
+                                    : 'cursor-not-allowed opacity-50',
+                                phase === 'recording'
+                                    ? 'animate-pulse border-[var(--jale-danger)] text-[var(--jale-danger)]'
+                                    : '',
+                            ].join(' ')}
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="9" y="3" width="6" height="11" rx="3" />
+                                <path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" />
+                            </svg>
+                        </button>
+                    </div>
 
-                {/* One live region for the whole recording lifecycle: a worker
-                    using a screen reader hears "recording", "sending",
-                    "writing down what you said" without leaving the field. */}
-                <p id={statusId} role="status" aria-live="polite" className="min-h-0 text-[13px] text-[var(--jale-ink-2)]">
-                    {statusText ?? ''}
-                </p>
+                    {/* One live region for the whole recording lifecycle: a worker
+                        using a screen reader hears "recording", "sending",
+                        "writing down what you said" without leaving the field. */}
+                    <p id={statusId} role="status" aria-live="polite" className="min-h-0 text-[13px] text-[var(--jale-ink-2)]">
+                        {statusText ?? ''}
+                    </p>
 
-                {voiceError ? (
-                    <p role="alert" className="text-[13px] font-semibold text-[var(--jale-danger)]">{voiceError}</p>
-                ) : null}
+                    {voiceError ? (
+                        <p role="alert" className="text-[13px] font-semibold text-[var(--jale-danger)]">{voiceError}</p>
+                    ) : null}
 
-                <div className="flex items-center justify-between gap-2">
-                    {isVoice && !tooLong ? (
-                        <span className="flex flex-1 items-center gap-2">
-                            <span className="inline-block rounded-full bg-[var(--jale-input)] px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--jale-ink-2)]">
-                                {tShared('voice_badge')}
+                    <div className="flex items-center justify-between gap-2">
+                        {isVoice && !tooLong ? (
+                            <span className="flex flex-1 items-center gap-2">
+                                <span className="inline-block rounded-full bg-[var(--jale-input)] px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--jale-ink-2)]">
+                                    {tShared('voice_badge')}
+                                </span>
+                                <span className="text-[13px] text-[var(--jale-ink-2)]">{t('voice_note')}</span>
                             </span>
-                            <span className="text-[13px] text-[var(--jale-ink-2)]">{t('voice_note')}</span>
+                        ) : (
+                            <span id={hintId} className="flex-1 text-[13px] text-[var(--jale-ink-2)]">
+                                {tooLong
+                                    ? t('too_long', { count: MAX_ANSWER_CHARS })
+                                    : trimmed.length > 0 && !answerLongEnough(answer)
+                                        ? t('too_short', { count: MIN_ANSWER_CHARS })
+                                        : ''}
+                            </span>
+                        )}
+                        {/* The minimum is on screen from the first frame -- "0 / 15
+                            minimum" -- so it never appears for the first time as
+                            the thing blocking the button. Once it is met, the count
+                            is said in words and the check mark only decorates it.
+                            Polite: a screen-reader user hears it settle without
+                            leaving the box, and it never talks over the question. */}
+                        <span
+                            aria-live="polite"
+                            className={[
+                                'flex-none text-xs tabular-nums',
+                                ready
+                                    ? 'font-bold text-[var(--jale-success)]'
+                                    : 'font-semibold text-[var(--jale-ink-2)]',
+                            ].join(' ')}
+                        >
+                            {answerLongEnough(answer) ? (
+                                <>
+                                    <span>{t('chars', { count: trimmed.length })}</span>
+                                    {ready ? <span aria-hidden="true">{' ✓'}</span> : null}
+                                </>
+                            ) : t('counter_min', { count: trimmed.length, min: MIN_ANSWER_CHARS })}
                         </span>
-                    ) : (
-                        <span id={hintId} className="flex-1 text-[13px] text-[var(--jale-ink-2)]">
-                            {tooLong
-                                ? t('too_long', { count: MAX_ANSWER_CHARS })
-                                : trimmed.length > 0 && !answerLongEnough(answer)
-                                    ? t('too_short', { count: MIN_ANSWER_CHARS })
-                                    : ''}
-                        </span>
-                    )}
-                    {/* The minimum is on screen from the first frame -- "0 / 15
-                        minimum" -- so it never appears for the first time as
-                        the thing blocking the button. Once it is met, the count
-                        is said in words and the check mark only decorates it.
-                        Polite: a screen-reader user hears it settle without
-                        leaving the box, and it never talks over the question. */}
-                    <span
-                        aria-live="polite"
-                        className={[
-                            'flex-none text-xs tabular-nums',
-                            ready
-                                ? 'font-bold text-[var(--jale-success)]'
-                                : 'font-semibold text-[var(--jale-ink-2)]',
-                        ].join(' ')}
-                    >
-                        {answerLongEnough(answer) ? (
-                            <>
-                                <span>{t('chars', { count: trimmed.length })}</span>
-                                {ready ? <span aria-hidden="true">{' ✓'}</span> : null}
-                            </>
-                        ) : t('counter_min', { count: trimmed.length, min: MIN_ANSWER_CHARS })}
-                    </span>
-                </div>
+                    </div>
 
-                {rejected ? <p id={errorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{rejected}</p> : null}
+                    {rejected ? <p id={errorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{rejected}</p> : null}
+                </div>
 
                 {index === 1 ? (
                     <p className="flex items-start gap-2 text-[13px] text-[var(--jale-ink-2)]">
@@ -403,6 +416,7 @@ export function TrustQuestionStep({
                 {index === 3 ? (
                     <div
                         role="note"
+                        data-guide="onb.q3.lock"
                         className="flex items-start gap-2 rounded-[var(--radius-input)] border-[1.5px] border-[var(--jale-warning)] bg-[var(--jale-warning-bg)] px-3.5 py-3 text-[var(--jale-warning-text)]"
                     >
                         <span className="mt-px flex-none">
@@ -412,6 +426,7 @@ export function TrustQuestionStep({
                     </div>
                 ) : null}
                 <Button
+                    data-guide={`onb.q${index}.next`}
                     className="w-full"
                     size="lg"
                     loading={saving}

@@ -13,14 +13,16 @@ import type { InboxItem, WorkerProfile } from '@/lib/api/employer';
 
 const tutorial = vi.hoisted(() => {
     const latestDone: Record<string, boolean | undefined> = {};
+    const walkthrough: Record<string, boolean | undefined> = {};
     const ids = new Set<string>();
-    const handle = { maybeAutoOpen: vi.fn(), runBeforeHost: vi.fn((openHost: () => void) => openHost()), replay: vi.fn() };
-    return { latestDone, ids, handle };
+    const handle = { maybeAutoOpen: vi.fn(), runBeforeHost: vi.fn((openHost: () => void) => openHost()), runWithHost: vi.fn(), replay: vi.fn() };
+    return { latestDone, walkthrough, ids, handle };
 });
 vi.mock('@/lib/tutorials/use-tutorial', () => ({
-    useTutorial: (id: string, options: { done: boolean | undefined }) => {
+    useTutorial: (id: string, options: { done: boolean | undefined; walkthrough?: boolean }) => {
         tutorial.ids.add(id);
         tutorial.latestDone[id] = options.done;
+        tutorial.walkthrough[id] = options.walkthrough;
         return tutorial.handle;
     },
 }));
@@ -199,5 +201,33 @@ describe('applicant profile: the applicants tutorial', () => {
         });
 
         expect(tutorial.latestDone.employer_applicants).toBe(true);
+    });
+});
+
+describe('applicant profile: the applicants guide’s places', () => {
+    const mark = (name: string) => document.querySelector<HTMLElement>(`[data-guide="${name}"]`);
+
+    it('asks for the step-by-step guide, and marks the status with its saved value, Request details and the documents', () => {
+        renderIntl(<EmployerWorkerPage />);
+        act(() => {
+            ready('pending');
+            inbox.set({ loading: false, errorKind: null, items: [] });
+        });
+
+        expect(tutorial.walkthrough.employer_applicants).toBe(true);
+        expect(mark('apps.profile_status')?.getAttribute('data-status')).toBe('pending');
+        expect(mark('apps.profile_request')).not.toBeNull();
+        expect(mark('apps.profile_docs')).not.toBeNull();
+    });
+
+    it('says hired on the status mark once hired, with no Request details', () => {
+        renderIntl(<EmployerWorkerPage />);
+        act(() => {
+            ready('hired');
+            inbox.set({ loading: false, errorKind: null, items: [] });
+        });
+
+        expect(mark('apps.profile_status')?.getAttribute('data-status')).toBe('hired');
+        expect(mark('apps.profile_request')).toBeNull();
     });
 });

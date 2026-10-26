@@ -215,7 +215,7 @@ export function ConversationThread({
 
           <div className="flex shrink-0 items-center gap-2">
             {onDismiss ? (
-              <Button type="button" variant="ghost" size="sm" onClick={onDismiss}>
+              <Button type="button" variant="ghost" size="sm" onClick={onDismiss} data-guide="msg.not_interested">
                 {t('not_interested')}
               </Button>
             ) : null}
@@ -224,6 +224,7 @@ export function ConversationThread({
                 type="button"
                 variant="ghost"
                 size="sm"
+                data-guide="msg.close"
                 onClick={() => {
                   setCloseError(null);
                   setConfirmingClose(true);
@@ -239,6 +240,7 @@ export function ConversationThread({
       <div
         ref={transcript.ref}
         onScroll={transcript.onScroll}
+        data-guide="msg.transcript"
         className="flex-1 space-y-3 overflow-y-auto bg-[var(--jale-paper-2)] p-4"
       >
         {messages.length === 0 ? (
@@ -267,10 +269,11 @@ export function ConversationThread({
         ) : null}
 
         {conversation.status === 'closed' ? (
-          <p className="text-sm text-[var(--jale-ink-2)]">{t('closed_hint')}</p>
+          <p className="text-sm text-[var(--jale-ink-2)]" data-guide="msg.closed">{t('closed_hint')}</p>
         ) : (
           <div className="flex items-end gap-2">
             <textarea
+              data-guide="msg.input"
               ref={textareaRef}
               value={body}
               onChange={(event) => setBody(event.target.value)}
@@ -293,7 +296,7 @@ export function ConversationThread({
                 a secondary affordance. The row is `items-end` so the taller
                 control sits on the composer's baseline rather than floating at
                 the top of a two-row textarea. */}
-            <Button type="submit" variant="primary" size="lg" loading={sending} loadingLabel={tCommon('loading')}>
+            <Button type="submit" variant="primary" size="lg" loading={sending} loadingLabel={tCommon('loading')} data-guide="msg.send">
               {t('send')}
             </Button>
           </div>

@@ -189,6 +189,9 @@ export function PlanLimitDialog({
       title={tBilling('limit_dialog.title')}
       size="sm"
       initialFocusRef={notNowRef}
+      // The step-by-step guide's hooks (`components/tutorials/guides/employer-post-job.ts`).
+      data-guide="limit.dialog"
+      footerGuide="limit.actions"
       footer={
         <>
           <Button ref={notNowRef} variant="ghost" size="sm" onClick={onClose}>
@@ -210,7 +213,9 @@ export function PlanLimitDialog({
         </>
       }
     >
-      <PlanLimitBody model={model} loadingJobs={loadingJobs} onNavigate={onClose} />
+      <div data-guide="limit.body">
+        <PlanLimitBody model={model} loadingJobs={loadingJobs} onNavigate={onClose} />
+      </div>
     </Modal>
   );
 }

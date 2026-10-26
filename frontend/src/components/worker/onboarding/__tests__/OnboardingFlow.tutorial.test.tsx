@@ -19,6 +19,7 @@ const { api, router, tutorial } = vi.hoisted(() => {
     const handle = {
         maybeAutoOpen: vi.fn(),
         runBeforeHost: vi.fn((openHost: () => void) => openHost()),
+        runWithHost: vi.fn((openHost: () => void) => openHost()),
         replay: vi.fn(),
     };
     return {
@@ -82,6 +83,11 @@ describe('OnboardingFlow — the W1 tutorial', () => {
         expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
     });
 
+    it('asks for the step-by-step guide, not the slides', () => {
+        renderIntl(<OnboardingFlow token="id-token" initialState={at('legal.review')} />);
+        expect(tutorial.useTutorial.mock.calls.every(([, options]) => options.walkthrough === true)).toBe(true);
+    });
+
     it('asks only once however often the flow renders', () => {
         const { rerender } = renderIntl(<OnboardingFlow token="id-token" initialState={at('legal.review')} />);
         rerender(<OnboardingFlow token="id-token" initialState={at('legal.review')} />);
@@ -91,11 +97,11 @@ describe('OnboardingFlow — the W1 tutorial', () => {
         expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
     });
 
-    it('does not ask a worker who resumes past the first screen', () => {
+    it('asks a worker who resumes mid-way, once, on the screen the run stands on', () => {
         renderIntl(<OnboardingFlow token="id-token" initialState={at('trust.question.2')} />);
 
         expect(new Set(doneValues())).toEqual(new Set([false]));
-        expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
+        expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
     });
 
     it('passes done for a finished run, and does not ask from the summary', () => {

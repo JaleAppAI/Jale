@@ -658,3 +658,105 @@ describe('PostJobModal: the job posted screen', () => {
       .toHaveAttribute('href', '/employer/templates');
   });
 });
+
+/*
+ * Two silent failures around "Save as template" (hotfix 2026-10-24):
+ *  - ticked with a blank name, the wizard posted the job and saved no
+ *    template without a word;
+ *  - a name the SERVER found taken (a list gone stale under a second tab)
+ *    dropped the template while the job posted, and the posted screen said
+ *    nothing. Any other template failure was swallowed the same way.
+ * The blank name now blocks Post where the name goes: the employer ticked the
+ * box, so a template is what they asked for, and a block keeps it fixable
+ * (type a name, or untick) where "skipped" would only report a loss.
+ */
+describe('PostJobModal: save as template needs a name, and a refused template is reported', () => {
+  const next = () => screen.getByRole('button', { name: message('employer_dashboard.modal.next') });
+  const submit = () => screen.getByRole('button', { name: message('employer_dashboard.post_job_docs.submit') });
+  const saveToggle = () => screen.getByRole('checkbox', { name: message('employer_dashboard.modal.template_save_toggle') });
+  const nameField = () => screen.getByPlaceholderText(message('employer_dashboard.modal.template_name_placeholder'));
+  const postedHeading = () => screen.getByRole('heading', { name: message('employer_dashboard.job_posted.title') });
+
+  async function toStepThree(user: ReturnType<typeof userEvent.setup>) {
+    listJobTemplates.mockResolvedValue([withCity]);
+    getBilling.mockResolvedValue({
+      planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 5, activeJobUsage: 0, subscription: null,
+      display_price_minor: 2000, currency: 'usd', billing_interval: 'month',
+    });
+    renderIntl(<PostJobModal open onClose={vi.fn()} onJobCreated={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(withCity.name)).toBeInTheDocument());
+    applyTemplate(withCity.id);
+    await user.click(next());
+    await user.click(next());
+    await waitFor(() => expect(submit()).toBeInTheDocument());
+  }
+
+  beforeEach(() => {
+    createJob.mockResolvedValue({ id: 'job-new-0002', title: 'Roofer', location: 'El Paso, TX', status: 'active', shift_periods: [], public_listing_enabled: false });
+  });
+
+  it('refuses Post with Save as template ticked and no name, and says a name is needed', async () => {
+    const user = userEvent.setup();
+    await toStepThree(user);
+    await user.click(saveToggle());
+    await user.click(submit());
+
+    expect(nameField()).toHaveAccessibleDescription(message('employer_dashboard.templates.name_required'));
+    expect(nameField()).toHaveAttribute('aria-invalid', 'true');
+    await waitFor(() => expect(nameField()).toHaveFocus());
+    expect(saveJobTemplate).not.toHaveBeenCalled();
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it('counts a name of only spaces as no name', async () => {
+    const user = userEvent.setup();
+    await toStepThree(user);
+    await user.click(saveToggle());
+    await user.type(nameField(), '   ');
+    await user.click(submit());
+
+    expect(nameField()).toHaveAccessibleDescription(message('employer_dashboard.templates.name_required'));
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it('posts once a name is typed, and the message goes as soon as typing starts', async () => {
+    const user = userEvent.setup();
+    saveJobTemplate.mockResolvedValue({ id: 'tpl-saved', name: 'Roofer copy', payload: {}, updated_at: '2026-10-14T00:00:00Z' });
+    await toStepThree(user);
+    await user.click(saveToggle());
+    await user.click(submit());
+    await user.type(nameField(), 'Roofer copy');
+    expect(screen.queryByText(message('employer_dashboard.templates.name_required'))).not.toBeInTheDocument();
+    await user.click(submit());
+
+    await waitFor(() => expect(createJob).toHaveBeenCalledTimes(1));
+    expect(saveJobTemplate.mock.calls[0][1]).toMatchObject({ name: 'Roofer copy' });
+  });
+
+  it('posts the job and says the template was not saved when the server finds the name taken', async () => {
+    const user = userEvent.setup();
+    saveJobTemplate.mockRejectedValue(new ApiError(409, 'template_name_taken', {}));
+    await toStepThree(user);
+    await user.click(saveToggle());
+    await user.type(nameField(), 'Roofer copy');
+    await user.click(submit());
+
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+    expect(createJob).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(message('employer_dashboard.jobs.template_not_saved_name_taken'))).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: message('employer_dashboard.templates.manage_link') }))
+      .toHaveAttribute('href', '/employer/templates');
+  });
+
+  it('posts the job and says the template could not be saved when the template save fails any other way', async () => {
+    const user = userEvent.setup();
+    saveJobTemplate.mockRejectedValue(new ApiError(500, 'internal', {}));
+    await toStepThree(user);
+    await user.click(saveToggle());
+    await user.type(nameField(), 'Roofer copy');
+    await user.click(submit());
+
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+    expect(screen.getByText(message('employer_dashboard.jobs.template_not_saved_failed'))).toBeInTheDocument();
+  });
+});
