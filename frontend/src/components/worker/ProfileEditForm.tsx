@@ -16,8 +16,8 @@ import { validateWorkerProfileFields, type WorkerProfileField } from '@/lib/work
 import { AVAILABILITY_KEYS, TRADE_KEYS, isAvailabilityKey, isTradeKey, tradeLabelKey, type TradeKey } from '@/lib/worker-vocab';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 
-/** What the Save gate can name: the four required fields, plus the Other trade's box. */
-type FormField = WorkerProfileField | 'trade_other' | 'years';
+/** What the Save gate can name: the four required fields, the Other trade's box, the years and an unpicked city. */
+type FormField = WorkerProfileField | 'trade_other' | 'years' | 'cities';
 
 const FIELD_LABEL_KEY: Record<FormField, string> = {
   full_name: 'full_name',
@@ -26,10 +26,11 @@ const FIELD_LABEL_KEY: Record<FormField, string> = {
   skills: 'skills_label',
   availability: 'availability_label',
   location: 'location',
+  cities: 'preferred_cities_label',
 };
 
 /** The order the form shows them in, so "Please add: …" reads top to bottom. */
-const FIELD_ORDER: readonly FormField[] = ['full_name', 'trade_other', 'skills', 'availability', 'years', 'location'];
+const FIELD_ORDER: readonly FormField[] = ['full_name', 'trade_other', 'skills', 'availability', 'years', 'location', 'cities'];
 
 /**
  * What the form has to say about the last save attempt.
@@ -73,6 +74,10 @@ function tradePatch(trade: TradeKey | '', other: string): Pick<WorkerProfilePatc
  * not sent, so an emptied box would look saved and not be. Save asks for a
  * number instead (0 if none).
  *
+ * A city typed in the cities box and never picked from the list is not a
+ * city: Save refuses it (pick it or clear the box) rather than save the list
+ * without it and let the worker think it was added.
+ *
  * `data-guide="profile.*"` marks the controls the profile's step-by-step guide
  * points at (`components/tutorials/guides/worker-profile.ts`).
  */
@@ -115,6 +120,7 @@ export function ProfileEditForm(props: {
   const [certs, setCerts] = useState((props.initial.certifications ?? []).join(', '));
   const [coords, setCoords] = useState<{ latitude: number; longitude: number; location_source: LocationSource } | null>(null);
   const [preferredCities, setPreferredCities] = useState<PreferredCity[]>(props.initial.preferred_cities ?? []);
+  const [citiesPending, setCitiesPending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<FormFeedback | null>(null);
   const [missingFields, setMissingFields] = useState<FormField[]>([]);
@@ -132,6 +138,7 @@ export function ProfileEditForm(props: {
     );
     if (tradeChanged && trade === 'other' && !customTradeAcceptable(tradeOther)) blocked.add('trade_other');
     if (yearsStored && yearsExp.trim() === '') blocked.add('years');
+    if (citiesPending) blocked.add('cities');
     const missing = FIELD_ORDER.filter((field) => blocked.has(field));
     setMissingFields(missing);
     if (missing.length > 0) {
@@ -300,7 +307,12 @@ export function ProfileEditForm(props: {
 
       <StackedField label={t('preferred_cities_label')}>
         <div data-guide="profile.cities">
-          <CityMultiSelect value={preferredCities} onChange={setPreferredCities} />
+          <CityMultiSelect
+            value={preferredCities}
+            onChange={setPreferredCities}
+            onPendingChange={setCitiesPending}
+            unpickedError={missingFields.includes('cities')}
+          />
         </div>
       </StackedField>
 

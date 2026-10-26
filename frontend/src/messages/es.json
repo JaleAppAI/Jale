@@ -7,6 +7,7 @@
     "city_multi_placeholder": "Agrega una ciudad o código postal…",
     "city_multi_max": "Puedes agregar hasta {max} ciudades",
     "city_multi_remove": "Quitar {city}, {state}",
+    "city_multi_unpicked": "Elige la ciudad de la lista para agregarla, o borra el texto.",
     "errors": {
       "offline": "No pudimos conectar con Jale. Revise su conexión e intente de nuevo.",
       "timeout": "Esto está tardando más de lo esperado. Intente de nuevo.",

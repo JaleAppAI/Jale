@@ -7,6 +7,7 @@
     "city_multi_placeholder": "Add a city or ZIP…",
     "city_multi_max": "You can add up to {max} cities",
     "city_multi_remove": "Remove {city}, {state}",
+    "city_multi_unpicked": "Pick the city from the list to add it, or clear the box.",
     "errors": {
       "offline": "We couldn't reach Jale. Check your connection and try again.",
       "timeout": "This is taking longer than expected. Please try again.",

@@ -446,6 +446,34 @@ describe('ApplicationRequirementsFlow — Finish is the completion act', () => {
     ).toBeInTheDocument());
   });
 
+  // The door completes only on the same `remaining` it answers with, so a
+  // Finish that comes back unsent always names what it still needs: the
+  // review re-renders from the fresh state, never a silent no-op.
+  it('names what is still missing when Finish comes back unsent', async () => {
+    const user = userEvent.setup();
+    postApplicationComplete.mockResolvedValue({
+      kind: 'saved',
+      state: serverState({
+        job: { required_docs: ['resume'] },
+        remaining: remaining({
+          docs: ['resume'],
+          counts: { prompts: 0, fields: 0, certifications: 0, docs: 1 },
+          complete: false,
+        }),
+      }),
+    });
+    renderFlow(serverState());
+
+    const finish = screen.getByRole('button', { name: message('worker_application_details.review.finish') });
+    await user.click(finish);
+
+    await waitFor(() => expect(
+      screen.getByText(message('worker_application_details.review.still_missing').replace('{items}', 'Resume')),
+    ).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: message('worker_application_details.review.finish') })).toBeDisabled();
+    expect(screen.queryByText(message('worker_application_details.complete.title'))).not.toBeInTheDocument();
+  });
+
   it('blocks Finish and names what is missing while the server still owes something', () => {
     renderFlow(serverState({
       job: { required_fields: ['date_available'] },
