@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { LocationPicker, type LocationPickerValue } from '@/components/ui/LocationPicker';
 import type { PreferredCity } from '@/lib/api/worker';
@@ -13,6 +13,12 @@ type PendingFocus = { type: 'chip'; key: string } | { type: 'picker' } | null;
  * Chips + typeahead multi-select for preferred cities. Only ever emits picked
  * suggestions — free-typed text is never added to the list.
  *
+ * Text typed and never picked is SAID, not dropped: once the worker leaves the
+ * box with it (or the consumer's Save refuses it, `unpickedError`), the box
+ * is marked invalid and a line asks them to pick the city or clear the box.
+ * `onPendingChange` tells the consumer whether such text is there, so its Save
+ * can refuse it rather than save a list without it.
+ *
  * Note: in-progress typed text is intentionally local state that survives
  * `value` prop changes, so a parent re-render mid-typing doesn't clobber what
  * the user is typing. Consumers that need to hard-reset the field (e.g. a
@@ -23,16 +29,31 @@ type PendingFocus = { type: 'chip'; key: string } | { type: 'picker' } | null;
 export function CityMultiSelect({
   value,
   onChange,
+  onPendingChange,
+  unpickedError = false,
 }: {
   value: PreferredCity[];
   onChange: (next: PreferredCity[]) => void;
+  /** Whether typed text that was never picked sits in the box. Pass a stable function. */
+  onPendingChange?: (pending: boolean) => void;
+  /** Set by the consumer when its Save was refused for that text: says so now, focused or not. */
+  unpickedError?: boolean;
 }) {
   const tCommon = useTranslations('common');
+  const errorId = useId();
   const [text, setText] = useState('');
+  // The worker left the box (focus went outside this control) since they last typed in it.
+  const [left, setLeft] = useState(false);
+  const pending = text.trim() !== '';
+  const showUnpicked = pending && (left || unpickedError);
   const [pendingFocus, setPendingFocus] = useState<PendingFocus>(null);
   const buttonRefs = useRef(new Map<string, HTMLButtonElement>());
   const containerRef = useRef<HTMLDivElement>(null);
   const atMax = value.length >= MAX_CITIES;
+
+  useEffect(() => {
+    onPendingChange?.(pending);
+  }, [pending, onPendingChange]);
 
   // Runs after `value` (and thus the chip list / picker visibility) has
   // re-rendered, so the target node we want to focus actually exists.
@@ -57,6 +78,7 @@ export function CityMultiSelect({
     if (v.cityKey === null || v.city === null || v.state === null) {
       // Free typing — just track the text.
       setText(v.label);
+      setLeft(false);
       return;
     }
     if (!atMax && !value.some((c) => c.city_key === v.cityKey)) {
@@ -89,7 +111,13 @@ export function CityMultiSelect({
   }
 
   return (
-    <div ref={containerRef} className="space-y-2">
+    <div
+      ref={containerRef}
+      className="space-y-2"
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setLeft(true);
+      }}
+    >
       {value.length > 0 && (
         <ul role="list" className="flex flex-wrap gap-2">
           {value.map((c) => (
@@ -115,7 +143,14 @@ export function CityMultiSelect({
           value={text}
           placeholder={tCommon('city_multi_placeholder')}
           onChange={handlePick}
+          invalid={showUnpicked}
+          describedBy={showUnpicked ? errorId : undefined}
         />
+      )}
+      {!atMax && showUnpicked && (
+        <p id={errorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">
+          {tCommon('city_multi_unpicked')}
+        </p>
       )}
       {atMax && (
         <p className="text-xs text-[var(--jale-ink-2)]">{tCommon('city_multi_max', { max: MAX_CITIES })}</p>

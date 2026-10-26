@@ -16,14 +16,16 @@ import { renderIntl } from '@/components/worker/onboarding/__tests__/render-intl
 
 const tutorial = vi.hoisted(() => {
     const latestDone: Record<string, boolean | undefined> = {};
+    const walkthrough: Record<string, boolean | undefined> = {};
     const ids = new Set<string>();
-    const handle = { maybeAutoOpen: vi.fn(), runBeforeHost: vi.fn((openHost: () => void) => openHost()), replay: vi.fn() };
-    return { latestDone, ids, handle };
+    const handle = { maybeAutoOpen: vi.fn(), runBeforeHost: vi.fn((openHost: () => void) => openHost()), runWithHost: vi.fn(), replay: vi.fn() };
+    return { latestDone, walkthrough, ids, handle };
 });
 vi.mock('@/lib/tutorials/use-tutorial', () => ({
-    useTutorial: (id: string, options: { done: boolean | undefined }) => {
+    useTutorial: (id: string, options: { done: boolean | undefined; walkthrough?: boolean }) => {
         tutorial.ids.add(id);
         tutorial.latestDone[id] = options.done;
+        tutorial.walkthrough[id] = options.walkthrough;
         return tutorial.handle;
     },
 }));
@@ -268,5 +270,30 @@ describe('job page: the applicants tutorial', () => {
 
         expect(tutorial.latestDone.employer_applicants).toBe(false);
         expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('job page: the applicants guide’s places', () => {
+    const marks = (name: string) => document.querySelectorAll(`[data-guide="${name}"]`);
+
+    it('asks for the step-by-step guide, and marks the panel, the filters, each applicant and their actions', () => {
+        renderIntl(<EmployerJobDetailPage />);
+        act(() => {
+            ready([applicant('pending', 1), applicant('hired', 2)]);
+            inbox.set({ loading: false, errorKind: null, items: [] });
+        });
+
+        expect(tutorial.walkthrough.employer_applicants).toBe(true);
+        expect(marks('apps.job_panel')).toHaveLength(1);
+        expect(marks('apps.filters')).toHaveLength(1);
+        expect(marks('apps.job_row')).toHaveLength(2);
+        expect(marks('apps.job_profile')).toHaveLength(2);
+        expect(marks('apps.job_message')).toHaveLength(2);
+        // Request details only where the row offers it: not on a hire.
+        const rows = marks('apps.job_row');
+        expect(rows[0].querySelector('[data-guide="apps.request"]')).not.toBeNull();
+        expect(rows[1].querySelector('[data-guide="apps.request"]')).toBeNull();
+        // Nothing to clear: the filtered-empty place is not on the page.
+        expect(marks('apps.filtered_empty')).toHaveLength(0);
     });
 });

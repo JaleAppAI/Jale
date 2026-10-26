@@ -267,24 +267,34 @@ describe('AppShell', () => {
         );
     }
 
-    it('puts Help right after the report button, with its own name', async () => {
-        signIn('employer');
-        serveTutorials([]);
-        render(shell('employer'), { wrapper: providers() });
-        await settle();
+    // The shell's Help is a link to the role's Help center (K1-v2); the
+    // dialog above stays for the onboarding band, which has no shell.
+    it.each(['employer', 'worker'] as const)(
+        'puts Help right after the report button, as a link to the %s Help center',
+        async (role) => {
+            route.path = `/${role}/home`;
+            signIn(role);
+            serveTutorials([]);
+            render(shell(role), { wrapper: providers() });
+            await settle();
 
-        const report = screen.getByRole('button', { name: 'Report a problem' });
-        const help = screen.getByRole('button', { name: 'Help' });
-        expect(report.nextElementSibling).toBe(help);
-    });
+            const report = screen.getByRole('button', { name: 'Report a problem' });
+            const help = screen.getByRole('link', { name: 'Help' });
+            expect(report.nextElementSibling).toBe(help);
+            expect(help).toHaveAttribute('href', `/${role}/help`);
+            expect(help).toHaveAttribute('data-tour', 'help');
+            expect(screen.queryByRole('button', { name: 'Help' })).toBeNull();
+        },
+    );
 
-    it('renders no Help button without the tutorial provider, as before', () => {
+    it('renders no Help link without the tutorial provider, as before', () => {
         render(
             <NextIntlClientProvider locale="en" messages={en} onError={() => {}}>
                 {shell('worker')}
             </NextIntlClientProvider>,
         );
 
+        expect(screen.queryByRole('link', { name: 'Help' })).toBeNull();
         expect(screen.queryByRole('button', { name: 'Help' })).toBeNull();
         expect(screen.getByRole('button', { name: 'Report a problem' })).toBeInTheDocument();
     });

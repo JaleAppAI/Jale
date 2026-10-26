@@ -144,14 +144,14 @@ export function EmptyThreadComposer({
           </div>
 
           {onDismiss ? (
-            <Button type="button" variant="ghost" size="sm" onClick={onDismiss}>
+            <Button type="button" variant="ghost" size="sm" onClick={onDismiss} data-guide="msg.not_interested">
               {t('not_interested')}
             </Button>
           ) : null}
         </div>
       </header>
 
-      <div className="flex flex-1 items-center justify-center bg-[var(--jale-paper-2)] p-4">
+      <div className="flex flex-1 items-center justify-center bg-[var(--jale-paper-2)] p-4" data-guide="msg.first">
         <EmptyState icon="message" title={t('no_messages')} body={t('first_message_hint')} />
       </div>
 
@@ -167,6 +167,7 @@ export function EmptyThreadComposer({
             different in the two panes. */}
         <div className="flex items-end gap-2">
           <textarea
+            data-guide="msg.input"
             ref={textareaRef}
             value={body}
             onChange={(event) => setBody(event.target.value)}
@@ -180,7 +181,7 @@ export function EmptyThreadComposer({
                `ConversationThread.tsx`. Border-only was 2.20:1 in dark. */
             className="min-h-[42px] flex-1 resize-none rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none placeholder:text-[var(--jale-ink-2)] focus:border-[var(--primary)] focus:bg-[var(--jale-card)] focus:shadow-[var(--shadow-focus)]"
           />
-          <Button type="submit" variant="primary" size="lg" loading={sending} loadingLabel={tCommon('loading')}>
+          <Button type="submit" variant="primary" size="lg" loading={sending} loadingLabel={tCommon('loading')} data-guide="msg.send">
             {t('send')}
           </Button>
         </div>

@@ -24,11 +24,19 @@ import type { ReactNode } from 'react';
  * its own effect already sees a dialog that opened in that very commit. It is
  * a plain mutable set, not state: nothing re-renders when an overlay comes or
  * goes, and the tutorial store reads it at the moment it decides.
+ *
+ * A component that must act when an overlay closes (the worker tour gate)
+ * `subscribe`s instead. A listener runs whenever an overlay opens or closes,
+ * from the layout phase of the commit that changed it, possibly before the
+ * rest of that commit's overlays have registered: it must not decide there,
+ * only schedule a check of its own (a state update, read in an effect).
  */
 
 export type OverlayRegistry = {
     /** True while any registered overlay is open. */
     isPresent(): boolean;
+    /** Calls `listener` whenever an overlay opens or closes; returns the unsubscribe. */
+    subscribe(listener: () => void): () => void;
 };
 
 type MutableRegistry = OverlayRegistry & {
@@ -40,14 +48,28 @@ const OverlayPresenceContext = createContext<MutableRegistry | null>(null);
 
 function createRegistry(): MutableRegistry {
     const present = new Set<string>();
+    const listeners = new Set<() => void>();
+    const notify = () => {
+        // A copy: a listener may unsubscribe while being told.
+        for (const listener of Array.from(listeners)) listener();
+    };
     return {
         add: (token) => {
+            if (present.has(token)) return;
             present.add(token);
+            notify();
         },
         remove: (token) => {
-            present.delete(token);
+            if (!present.delete(token)) return;
+            notify();
         },
         isPresent: () => present.size > 0,
+        subscribe: (listener) => {
+            listeners.add(listener);
+            return () => {
+                listeners.delete(listener);
+            };
+        },
     };
 }
 

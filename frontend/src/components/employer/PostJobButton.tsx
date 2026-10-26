@@ -12,6 +12,11 @@ type PostJobButtonProps = {
     className?: string;
     /** Overrides the label — the dashboard hero says "Post a job". */
     children?: ReactNode;
+    /**
+     * Marks this button as the app tour's "Post a job" step (`data-tour`).
+     * Exactly one button carries it: the dashboard's header action.
+     */
+    tourTarget?: string;
 };
 
 /**
@@ -22,7 +27,7 @@ type PostJobButtonProps = {
  * plan has no slot left. That is what lets this sit in `AppShell`'s `actions`
  * slot on every employer page instead of only on the dashboard.
  */
-export function PostJobButton({ size, className = '', children }: PostJobButtonProps) {
+export function PostJobButton({ size, className = '', children, tourTarget }: PostJobButtonProps) {
     const t = useTranslations('employer_dashboard');
     const tCommon = useTranslations('common');
     const { openPostJob, canOpen, opening } = usePostJob();
@@ -50,6 +55,7 @@ export function PostJobButton({ size, className = '', children }: PostJobButtonP
             aria-disabled={inert || undefined}
             loading={opening}
             loadingLabel={tCommon('loading')}
+            data-tour={tourTarget}
         >
             <Icon name="plus" />
             {children ?? t('jobs.post_job')}

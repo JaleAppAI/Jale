@@ -1,10 +1,13 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { usePageData } from '@/hooks/usePageData';
 import { useJobCreated } from '@/contexts/PostJobContext';
+import { useUnreadMessages } from '@/contexts/UnreadMessagesContext';
+import { applicantsTutorialDone } from '@/lib/employer-tutorial-done';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import { AppShell } from '@/components/layout/AppShell';
 import { HireDetailsNeededBanner } from '@/components/employer/HireDetailsNeededBanner';
 import { PostJobButton } from '@/components/employer/PostJobButton';
@@ -57,6 +60,26 @@ export default function EmployerApplicantsPage() {
     ? applicants.filter((a) => a.job_id === jobFilter)
     : applicants;
 
+  /*
+   * The applicants guide (E3's walkthrough) also starts here, on the page
+   * view: asked once, when the list has applicants, for an employer who has
+   * not yet moved anyone past applied (K1.5), as on the job page and the
+   * applicant profile. This board is where Hired and start details happen.
+   */
+  const inbox = useUnreadMessages();
+  const applicantsDone = applicantsTutorialDone(
+    page.phase === 'ready' && page.data ? page.data.applicants.map((row) => row.application_status) : null,
+    inbox,
+  );
+  const applicantsTutorial = useTutorial('employer_applicants', { done: applicantsDone, walkthrough: true });
+  const applicantsAskedRef = useRef(false);
+  const hasApplicants = applicants.length > 0;
+  useEffect(() => {
+    if (applicantsAskedRef.current || applicantsDone === undefined || !hasApplicants) return;
+    applicantsAskedRef.current = true;
+    applicantsTutorial.maybeAutoOpen();
+  }, [applicantsDone, applicantsTutorial, hasApplicants]);
+
   return (
     <AppShell role="employer" title={t('title')} actions={<PostJobButton />}>
       <main className="mx-auto max-w-4xl px-4 py-6 md:px-6">
@@ -80,9 +103,13 @@ export default function EmployerApplicantsPage() {
           <EmptyState icon="user" title={t('empty_title')} body={t('empty_body')} />
         ) : (
           <>
-            <HireDetailsNeededBanner count={hiresNeedingDetails} />
+            {hiresNeedingDetails > 0 ? (
+              <div data-guide="apps.hire_banner">
+                <HireDetailsNeededBanner count={hiresNeedingDetails} />
+              </div>
+            ) : null}
             {jobs.length > 1 ? (
-              <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
+              <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1" data-guide="apps.board_jobs">
                 <JobChip active={jobFilter === null} onClick={() => setJobFilter(null)}>
                   {t('all_jobs')}
                 </JobChip>
@@ -98,7 +125,7 @@ export default function EmployerApplicantsPage() {
               </div>
             ) : null}
 
-            <div className="divide-y divide-[var(--jale-divider)] rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-card)]">
+            <div data-guide="apps.board" className="divide-y divide-[var(--jale-divider)] rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-card)]">
               {visible.map((item) => (
                 <ApplicantOverviewRow key={item.application_id} item={item} onHireDetailsSaved={markHireDetailsSaved} />
               ))}

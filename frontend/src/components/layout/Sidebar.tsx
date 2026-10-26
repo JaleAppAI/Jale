@@ -204,6 +204,7 @@ function NavLink({
         <Link
             href={item.href}
             aria-current={active ? 'page' : undefined}
+            data-nav-key={item.key}
             className={[
                 'flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold transition-colors',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60',

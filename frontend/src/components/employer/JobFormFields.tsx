@@ -62,13 +62,22 @@ interface JobFormFieldsProps {
    * clears it once a choice changes.
    */
   shiftPeriodsError?: string | null;
+  /**
+   * A step-by-step guide's prefix for this form's hooks (`data-guide`):
+   * `<guide>.title`, `<guide>.city`, `<guide>.trade`, `<guide>.trade_other`,
+   * `<guide>.workers` and `<guide>.questions` (the questions, with
+   * `data-locked` while the lock holds). `edit` in the edit dialog, `tpl` in
+   * the template editor.
+   */
+  guide?: string;
 }
 
 export function JobFormFields({
   form, onUpdate, onLocationChange,
   showStartDate = true, locked = false, minWorkers = 1, titleRef,
-  locationInvalid = false, shiftPeriodsError = null,
+  locationInvalid = false, shiftPeriodsError = null, guide,
 }: JobFormFieldsProps) {
+  const mark = (name: string) => (guide ? `${guide}.${name}` : undefined);
   const t = useTranslations('employer_dashboard');
   const locationHelperId = useId();
 
@@ -122,7 +131,7 @@ export function JobFormFields({
 
   return (
     <>
-      <Field label={t('modal.job_title')} required>
+      <Field label={t('modal.job_title')} required guide={mark('title')}>
         <Input
           ref={titleRef}
           value={form.title}
@@ -130,13 +139,14 @@ export function JobFormFields({
         />
       </Field>
       <div className="grid gap-3 md:grid-cols-2">
-        <Field label={t('modal.location')} required>
+        <Field label={t('modal.location')} required guide={mark('city')}>
           {/* Same warning ring PostJobModal's step 1 draws, for the same
               reason and from the same copy key: the field can hold a perfectly
               plausible location string with no city behind it. */}
           <div className={locationInvalid ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
             <LocationPicker
               value={form.location}
+              picked={form.city_key !== null}
               onChange={onLocationChange}
               invalid={locationInvalid}
               describedBy={locationInvalid ? locationHelperId : undefined}
@@ -157,6 +167,8 @@ export function JobFormFields({
         </Field>
       </div>
       <TradeCategoryField
+        tradeGuide={mark('trade')}
+        otherGuide={mark('trade_other')}
         tradeCategory={form.trade_category}
         tradeCategoryOther={form.trade_category_other}
         onTradeCategoryChange={(value) => onUpdate('trade_category', value)}
@@ -196,7 +208,7 @@ export function JobFormFields({
         {showStartDate && (
           <Field label={t('modal.start_date')}><Input type="date" className="tabular-nums" value={form.start_date} onChange={(e) => onUpdate('start_date', e.target.value)} /></Field>
         )}
-        <Field label={t('modal.number_of_workers_needed')} required>
+        <Field label={t('modal.number_of_workers_needed')} required guide={mark('workers')}>
           <Input type="number" min={minWorkers} className="tabular-nums" value={form.number_of_workers_needed} onChange={(e) => onUpdate('number_of_workers_needed', e.target.value)} />
         </Field>
       </div>
@@ -268,11 +280,13 @@ export function JobFormFields({
           picker configures below waits for "Request details". `locked` is the
           same post-applicants freeze -- the backend refuses a changed prompt
           list with 409 `field_locked`, so the control has to refuse first. */}
-      <PreApplicationPromptsEditor
-        prompts={form.pre_application_prompts}
-        onChange={(next) => onUpdate('pre_application_prompts', next)}
-        locked={locked}
-      />
+      <div data-guide={mark('questions')} data-locked={locked ? '' : undefined}>
+        <PreApplicationPromptsEditor
+          prompts={form.pre_application_prompts}
+          onChange={(next) => onUpdate('pre_application_prompts', next)}
+          locked={locked}
+        />
+      </div>
 
       {/* Work authorization is no longer a standalone checkbox here -- the
           requirements picker's `work_authorization` row is its one input
@@ -292,9 +306,9 @@ export function JobFormFields({
   );
 }
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function Field({ label, required, guide, children }: { label: string; required?: boolean; guide?: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5" data-guide={guide}>
       <label className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">{label}{required ? ' *' : ''}</label>
       {children}
     </div>

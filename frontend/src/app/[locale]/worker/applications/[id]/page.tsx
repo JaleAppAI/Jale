@@ -61,10 +61,13 @@ export default function WorkerApplicationDetailsPage() {
   const showSkeleton = phase === 'auth' || phase === 'loading';
 
   /*
-   * W3, the details tutorial. It explains the stepper, so it is asked for
-   * only when the stepper is what this page shows: not over the hired card,
-   * and not over a terminal panel (the same `terminalScreen` check the flow
-   * makes on this same first state). Its K1.5 signal -- any application with
+   * W3, the details tutorial, played as its step-by-step guide
+   * (`components/tutorials/guides/worker-details.ts`); Help's Play still
+   * shows its slides. It walks the stepper (and the employer's questions left
+   * from applying, ahead of it), so it is asked for only when that is what
+   * this page shows: not over the hired card, and not over a terminal panel
+   * (the same `terminalScreen` check the flow makes on this same first
+   * state). Its K1.5 signal -- any application with
    * its details completed -- is read from the worker's applications (the 100
    * the list serves at most; past that the answer covers the newest 100) and
    * only in that case. `done` stays `undefined` until the read answers, and on
@@ -89,7 +92,7 @@ export default function WorkerApplicationDetailsPage() {
       .catch(() => { /* no signal, no auto-open: `done` stays undefined */ });
     return () => controller.abort();
   }, [showsStepper]);
-  const detailsTutorial = useTutorial('worker_details', { done: detailsDoneBefore });
+  const detailsTutorial = useTutorial('worker_details', { done: detailsDoneBefore, walkthrough: true });
 
   // Asked ONCE per page view, once the signal is known; whether it opens is
   // the tutorial's decision (a record, the signal, another overlay).

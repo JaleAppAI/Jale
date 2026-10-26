@@ -7,6 +7,7 @@
     "city_multi_placeholder": "Add a city or ZIP…",
     "city_multi_max": "You can add up to {max} cities",
     "city_multi_remove": "Remove {city}, {state}",
+    "city_multi_unpicked": "Pick the city from the list to add it, or clear the box.",
     "errors": {
       "offline": "We couldn't reach Jale. Check your connection and try again.",
       "timeout": "This is taking longer than expected. Please try again.",
@@ -554,8 +555,17 @@
       "error_not_hired": "Only hired applicants can get start details. Refresh the list and try again.",
       "error_not_found": "This applicant is no longer available. Refresh the list.",
       "banner": "{count, plural, one {Add start details for # new hire} other {Add start details for # new hires}}",
-      "banner_cta": "Go to Applicants"
-    }
+      "banner_cta": "Go to Applicants",
+      "error_empty": "Fill in at least one box to save, or press Cancel."
+    },
+    "hire_confirm": {
+      "title": "Mark {name} as hired?",
+      "body": "This tells {name} they’re hired. Next, add their start details so they know when and where to show up.",
+      "confirm": "Mark as hired",
+      "cancel": "Cancel"
+    },
+    "hired_saved": "{name} is marked hired.",
+    "hired_saved_details": "{name} is marked hired. Next, add their start details below."
   },
   "employer_messages": {
     "title": "Messages",
@@ -762,7 +772,9 @@
         "pause_success": "Job paused",
         "resume_success": "Job resumed",
         "error_generic": "Couldn’t update this job. Please try again."
-      }
+      },
+      "template_not_saved_name_taken": "Job posted. Your template wasn’t saved: you already have a template with that name.",
+      "template_not_saved_failed": "Job posted. Your template couldn’t be saved. Try again from Manage templates."
     },
     "filter": {
       "title": "Filter Applicants",
@@ -1245,7 +1257,8 @@
       "saved_note": "Saved to your profile so next time is faster.",
       "finish": "Finish",
       "still_missing": "Still missing: {items}",
-      "go_fix": "Go to Documents & certifications"
+      "go_fix": "Go to Documents & certifications",
+      "go_fix_details": "Go to Details"
     },
     "complete": {
       "chip": "All set",
@@ -1381,7 +1394,8 @@
       "account_not_ready": "Your account is still being prepared. Please sign out, sign back in, and try again.",
       "already_applied": "You already applied to this job.",
       "server_error": "We could not submit this application right now. Please try again in a few minutes.",
-      "apply_failed": "We could not submit this application. Please check your profile and documents, then try again."
+      "apply_failed": "We could not submit this application. Please check your profile and documents, then try again.",
+      "job_paused": "The employer paused this job. Check back later."
     },
     "not_found": {
       "title": "Job not found",
@@ -1878,7 +1892,14 @@
       "bio": "About you",
       "certifications_placeholder": "OSHA 10, forklift, CDL",
       "save": "Save",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "trade_label": "Trade",
+      "trade_choose": "Choose your trade",
+      "trade_other_label": "Your trade",
+      "trade_other_placeholder": "Type your trade, e.g. welder, drywall, roofer",
+      "trade_other_length": "Tell us your trade in {min}–{max} characters.",
+      "availability_choose": "Choose your availability",
+      "years_required": "Enter your years of experience (0 if none)."
     },
     "complete_modal": {
       "title": "Complete your profile",
@@ -1906,7 +1927,9 @@
     "errors": {
       "required": "Required.",
       "missing_summary": "Please add: {fields}"
-    }
+    },
+    "field_trade": "Trade",
+    "empty_trade": "Trade not added"
   },
   "billing": {
     "title": "Billing",
@@ -2121,7 +2144,8 @@
       "confirm_title": "Did you mean {city}, {state}?",
       "confirm_yes": "Yes, that's right",
       "confirm_no": "No, let me change it",
-      "cta": "Continue"
+      "cta": "Continue",
+      "location_pick": "Pick your city from the list to continue, or type a 5-digit ZIP."
     },
     "trade": {
       "title": "What's your trade?",
@@ -2431,10 +2455,56 @@
       "counter": "{current} of {total}",
       "close": "Close",
       "help": "Help",
-      "help_title": "How Jale works"
+      "help_title": "How Jale works",
+      "guide": {
+        "employer": {
+          "start": "Guide me"
+        },
+        "worker": {
+          "start": "Guide me"
+        },
+        "self": "I’ll do it myself",
+        "end": "End guide"
+      }
+    },
+    "help_center": {
+      "title": "Help",
+      "subtitle": "Short guides for each part of Jale.",
+      "helper_off": "Off: each guide shows only the first time.",
+      "tour_again": "Take the app tour again",
+      "tour_again_sub": "A one-minute look at every tab.",
+      "guides": "Guides",
+      "off_tag": "Off",
+      "play": "Play",
+      "play_label": "Play: {title}",
+      "show_again": "Show again",
+      "show_again_label": "Show again: {title}",
+      "mute": "Don’t show this again",
+      "employer": {
+        "switch": "Show guides every time I start a task",
+        "helper_on": "On: each guide opens every time you start its task. You can turn one off from inside it.",
+        "muted_title": "Guides you turned off",
+        "muted_empty": "None yet. A guide you turn off shows up here.",
+        "muted_toast": "Turned off. You can turn it back on in Help.",
+        "save_failed": "Couldn’t save that. Try again.",
+        "guide_me": "Guide me through it",
+        "guide_me_label": "Guide me through it: {title}"
+      },
+      "worker": {
+        "switch": "Show guides every time I start a task",
+        "helper_on": "On: each guide opens every time you start its task. You can turn one off from inside it.",
+        "muted_title": "Guides you turned off",
+        "muted_empty": "None yet. A guide you turn off shows up here.",
+        "muted_toast": "Turned off. You can turn it back on in Help.",
+        "save_failed": "Couldn’t save that. Try again.",
+        "guide_me": "Guide me through it",
+        "guide_me_label": "Guide me through it: {title}"
+      }
     },
     "worker_onboarding": {
       "title": "Before you start",
+      "description": "The 7 short steps and the three questions.",
+      "duration": "1 min",
       "cta_last": "Let’s start",
       "slides": {
         "minutes": {
@@ -2476,10 +2546,116 @@
         "job2": "Concrete laborer",
         "job2_meta": "Socorro, TX · $20/h",
         "apply": "Apply"
+      },
+      "guide": {
+        "intro_title": "Want help setting up your profile?",
+        "intro_body": "{input, select, touch {We’ll show you what to tap and what to write on each screen, one step at a time. About 2 minutes.} other {We’ll show you what to click and what to write on each screen, one step at a time. About 2 minutes.}}",
+        "counter": "Your profile · {current} of {total}",
+        "steps": {
+          "terms": {
+            "title": "Read and accept",
+            "body": "This short page says how Jale uses your information and that job messages come by SMS and WhatsApp. {input, select, touch {Tap} other {Click}} I accept and continue when you’re ready.",
+            "wait": "{input, select, touch {Tap} other {Click}} I accept and continue to go on."
+          },
+          "name": {
+            "title": "Your name",
+            "body": "Type your first name and your last name. Both are needed. Employers see this name on your applications.",
+            "wait": "Type both names to continue."
+          },
+          "location": {
+            "title": "Where you live",
+            "body": "{input, select, touch {Start typing your city, then tap it in the list.} other {Start typing your city, then click it in the list.}} Or type your 5-digit ZIP. A city you type but don’t pick doesn’t count.",
+            "wait": "Pick your city from the list, or type a 5-digit ZIP."
+          },
+          "about_continue": {
+            "title": "Go on",
+            "body": "{input, select, touch {Tap} other {Click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "location_confirm": {
+            "title": "Is this your city?",
+            "body": "We found a city that looks close. {input, select, touch {Tap} other {Click}} Yes, that's right if it’s yours. If not, {input, select, touch {tap} other {click}} No, let me change it, pick your city from the list again and {input, select, touch {tap} other {click}} Continue.",
+            "wait": "Answer Yes or No to go on."
+          },
+          "trade": {
+            "title": "Your trade",
+            "body": "{input, select, touch {Tap} other {Click}} the trade you do the most. If yours isn’t on the list, {input, select, touch {tap} other {click}} Other.",
+            "wait": "Pick a trade to continue."
+          },
+          "trade_other": {
+            "title": "Type your trade",
+            "body": "You picked Other, so a box opened under the list. {input, select, touch {Tap} other {Click}} it and type your trade, like welder or roofer: 2 to 60 characters.",
+            "wait": "Type your trade in 2 to 60 characters to continue."
+          },
+          "trade_back": {
+            "title": "{input, select, touch {Tap} other {Click}} Back first",
+            "body": "Your typed trade is waiting to be saved, so to pick one from the list, {input, select, touch {tap} other {click}} Back at the top first. Then pick your trade and {input, select, touch {tap} other {click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Back, then pick your trade."
+          },
+          "trade_continue": {
+            "title": "Go on",
+            "body": "{input, select, touch {Tap} other {Click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "years": {
+            "title": "Time in this trade",
+            "body": "{input, select, touch {Tap} other {Click}} how long you’ve worked in your trade.",
+            "wait": "Pick one to continue."
+          },
+          "transport": {
+            "title": "Your own transportation",
+            "body": "{input, select, touch {Tap} other {Click}} Yes if you have your own way to get to work, or No. No is a fine answer.",
+            "wait": "Pick Yes or No to continue."
+          },
+          "availability": {
+            "title": "When you can work",
+            "body": "{input, select, touch {Tap} other {Click}} when you can work: Full-time, Part-time, Weekends or Flexible.",
+            "wait": "Pick one to continue."
+          },
+          "work_continue": {
+            "title": "Go on",
+            "body": "That’s the three answers this screen needs. {input, select, touch {Tap} other {Click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "q1_lock": {
+            "title": "Three questions employers read",
+            "body": "Next come three questions, answered in your own words. Until you finish question 3 you can go back and change them; after that they lock."
+          },
+          "answer": {
+            "title": "Answer in your own words",
+            "body": "Type your answer in the box: at least 15 characters. More detail helps employers choose you.",
+            "wait": "Write at least 15 characters to continue."
+          },
+          "answer_voice": {
+            "title": "Answer in your own words",
+            "body": "Type your answer in the box, or {input, select, touch {tap} other {click}} the microphone, say it, and {input, select, touch {tap} other {click}} it again to stop. Then check the text. At least 15 characters.",
+            "wait": "Write or say at least 15 characters to continue."
+          },
+          "question_next": {
+            "title": "Next question",
+            "body": "{input, select, touch {Tap} other {Click}} Next.",
+            "wait": "{input, select, touch {Tap} other {Click}} Next to go on."
+          },
+          "q3_lock": {
+            "title": "This is the last one",
+            "body": "After you {input, select, touch {tap} other {click}} Complete your questions, your three answers lock and you can’t change them."
+          },
+          "q3_complete": {
+            "title": "Finish your questions",
+            "body": "{input, select, touch {Tap} other {Click}} Complete your questions to finish.",
+            "wait": "{input, select, touch {Tap} other {Click}} Complete your questions to finish."
+          },
+          "done": {
+            "title": "You’re all set",
+            "body": "This is what employers see. We’re reading your answers to find your skills; you don’t have to wait. Use the button below to go on."
+          }
+        }
       }
     },
     "worker_apply": {
       "title": "How applying works",
+      "description": "Applying, documents and what happens next.",
+      "duration": "1 min",
       "slides": {
         "apply": {
           "title": "Applying takes a minute",
@@ -2517,11 +2693,90 @@
         "h_details": "They want to hire you",
         "whatsapp": "WhatsApp · Jale",
         "emp_msg": "Hi, can you start Monday at 7 AM?",
-        "my_reply": "Yes, I’ll be there"
+        "my_reply": "Yes, I’ll be there",
+        "answer": "Yes, I bring my own drill and level."
+      },
+      "guide": {
+        "intro_title": "Want help applying?",
+        "intro_body": "{input, select, touch {We’ll show you what to tap and what to write, one step at a time. About 2 minutes.} other {We’ll show you what to click and what to write, one step at a time. About 2 minutes.}}",
+        "counter": "Applying · {current} of {total}",
+        "steps": {
+          "from_gate": {
+            "title": "Your profile is saved",
+            "body": "You haven’t applied yet. Finish on this screen, then {input, select, touch {tap} other {click}} Send application to apply."
+          },
+          "answer_first": {
+            "title": "Answer in your own words",
+            "body": "{input, select, touch {Tap} other {Click}} the box and write your answer, the way you’d say it out loud. One line is enough; up to 1000 characters.",
+            "wait": "Write something (up to 1000 characters) to continue."
+          },
+          "answer_more": {
+            "title": "One more question",
+            "body": "Answer this one the same way. You can change your answers until you send.",
+            "wait": "Write something (up to 1000 characters) to continue."
+          },
+          "no_questions": {
+            "title": "No questions for this job",
+            "body": "This employer asks nothing, so you only need to send your application."
+          },
+          "later": {
+            "title": "No documents now",
+            "body": "You don’t upload anything to apply. The employer asks for documents only if they want to hire you."
+          },
+          "send": {
+            "title": "Send your application",
+            "body": "{input, select, touch {Tap} other {Click}} Send application. That is what applies; nothing is sent before it.",
+            "wait": "{input, select, touch {Tap} other {Click}} Send application to finish."
+          },
+          "sent": {
+            "title": "You applied!",
+            "body": "Your application shows Applied while the employer reviews it. When the employer writes to you, the message arrives on WhatsApp."
+          },
+          "closed": {
+            "title": "This job closed",
+            "body": "The employer stopped taking applications for this job, so your application wasn’t sent. Other jobs are still open."
+          },
+          "gate_name": {
+            "title": "Your name",
+            "body": "Employers need a few details before you can apply. Type your full name in Full name.",
+            "wait": "Type your name to continue."
+          },
+          "gate_skills": {
+            "title": "Your skills",
+            "body": "Type what you can do in Skills (comma separated), with a comma between each one, like “framing, drywall”.",
+            "wait": "Add at least one skill to continue."
+          },
+          "gate_availability": {
+            "title": "When can you work?",
+            "body": "Pick Full-time, Part-time, Weekends or Flexible in Availability.",
+            "wait": "Pick one to continue."
+          },
+          "gate_location": {
+            "title": "Where you live",
+            "body": "Type your city in Location, like “El Paso, TX”.",
+            "wait": "Type your city to continue."
+          },
+          "gate_years": {
+            "title": "Years of experience",
+            "body": "Optional. Type how many years you’ve worked in Years of experience, or leave it as it is. A number already saved can be changed but not cleared (use 0 if none).",
+            "wait": "Type a number (0 if none) to continue."
+          },
+          "gate_save": {
+            "title": "Save your profile",
+            "body": "{input, select, touch {Tap} other {Click}} Save and apply. It saves your profile and opens your application; you send it on the next screen.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save and apply to go on."
+          },
+          "back": {
+            "title": "Need to stop?",
+            "body": "Back to the job keeps what you typed while you stay on this page. To come back, {input, select, touch {tap} other {click}} Continue application."
+          }
+        }
       }
     },
     "worker_details": {
       "title": "Details requested",
+      "description": "What to do when an employer wants to hire you.",
+      "duration": "1 min",
       "cta_last": "Start",
       "slides": {
         "request": {
@@ -2530,42 +2785,216 @@
         },
         "saved": {
           "title": "Saved documents are added for you",
-          "body": "Files you saved before are attached automatically. You can replace any of them."
+          "body": "Files you saved before count automatically: they show as Uploaded. You can replace any of them."
         },
         "send": {
-          "title": "Review and send",
-          "body": "Check your answers, then send. The employer sees them right away."
+          "title": "Check and finish",
+          "body": "Check your answers, then tap Finish. The employer gets them right away."
         }
       },
       "scene": {
         "company": "Sample Concrete Co.",
         "five_min": "About 5 min",
-        "step1": "Questions",
-        "step2": "Documents",
-        "step3": "Review",
-        "slot_name": "Driver license",
-        "from_vault": "Added from your saved documents",
+        "step1": "Details",
+        "step2": "Documents & certifications",
+        "step3": "Check & finish",
+        "slot_name": "Driver's License",
+        "from_vault": "Uploaded",
         "replace": "Replace",
         "r1": "Date available",
         "r2": "Emergency contact",
-        "r3": "Driver license",
-        "send": "Send to employer"
+        "r3": "Driver's License",
+        "send": "Finish"
+      },
+      "guide": {
+        "intro_title": "Want a hand with your details?",
+        "intro_body": "{input, select, touch {We’ll show you each part, one at a time: what to answer, which files to add and where to tap Finish. About 5 minutes.} other {We’ll show you each part, one at a time: what to answer, which files to add and where to click Finish. About 5 minutes.}}",
+        "counter": "Your details · {current} of {total}",
+        "steps": {
+          "prompts": {
+            "title": "The employer’s questions",
+            "body": "Answer this question in its box, in your own words. Up to 1000 characters.",
+            "wait": "Write an answer (up to 1000 characters) to continue."
+          },
+          "prompts_save": {
+            "title": "Save your answers",
+            "body": "{input, select, touch {Tap} other {Click}} Save and continue. Then come the details the employer asked for.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save and continue to go on."
+          },
+          "overview": {
+            "title": "Three steps",
+            "body": "Details, Documents & certifications, then Check & finish. The bar shows what’s left. Some answers from your last application may already be filled in: check them as we go.",
+            "wait": "One moment: checking your saved files."
+          },
+          "field_work_authorization": {
+            "title": "Can you work in the US?",
+            "body": "Under “Authorized to work in the US?”, {input, select, touch {tap} other {click}} Yes or No.",
+            "body_optional": "This one is optional. Under “Authorized to work in the US?”, {input, select, touch {tap} other {click}} Yes or No, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "{input, select, touch {Tap} other {Click}} Yes or No to continue."
+          },
+          "field_date_available": {
+            "title": "When can you start?",
+            "body": "In Date available, pick the first day you can start.",
+            "body_optional": "This one is optional. In Date available, pick the first day you can start, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Pick a date to continue."
+          },
+          "field_desired_pay": {
+            "title": "The pay you want",
+            "body": "In Desired pay, type the amount in whole dollars, with no cents. Then pick Hourly, Daily, Weekly, Monthly or Fixed (flat rate).",
+            "body_optional": "This one is optional. In Desired pay, type the amount in whole dollars, with no cents, and pick how often; or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Type a whole-dollar amount to continue."
+          },
+          "field_home_address": {
+            "title": "Your address",
+            "body": "Type your street, your city, the 2-letter state (like TX) and the 5-digit ZIP code. The apartment box is optional.",
+            "body_optional": "This one is optional. Type your street, city, 2-letter state (like TX) and 5-digit ZIP code, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Fill in the street, city, 2-letter state and 5-digit ZIP to continue."
+          },
+          "field_date_of_birth": {
+            "title": "Your date of birth",
+            "body": "In Date of birth, pick the day you were born.",
+            "body_optional": "This one is optional. In Date of birth, pick the day you were born, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Pick a date to continue."
+          },
+          "field_emergency_contact": {
+            "title": "Who to call in an emergency",
+            "body": "Type the name and the phone number of someone to call if something happens at work.",
+            "body_optional": "This one is optional. Type the name and phone number of someone to call if something happens at work, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Type a name and a phone number to continue."
+          },
+          "field_worked_here_before": {
+            "title": "Have you worked here before?",
+            "body": "Under “Worked here before?”, {input, select, touch {tap} other {click}} Yes or No. If you {input, select, touch {tap} other {click}} Yes, you can say when in the box that opens.",
+            "body_optional": "This one is optional. Under “Worked here before?”, {input, select, touch {tap} other {click}} Yes or No, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "{input, select, touch {Tap} other {Click}} Yes or No to continue."
+          },
+          "field_education": {
+            "title": "Your schooling",
+            "body": "In Education, open the list and pick your school level. If you pick anything but None, also answer Yes or No to “Graduated?”.",
+            "body_optional": "This one is optional. In Education, pick your school level from the list, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Pick a school level to continue."
+          },
+          "field_references": {
+            "title": "Your references",
+            "body": "{input, select, touch {Tap} other {Click}} Add reference, then type their name, how you know them and their phone number. Company is optional. You can add up to 3.",
+            "body_optional": "This one is optional. {input, select, touch {Tap} other {Click}} Add reference and type their name, how you know them and their phone number, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Add a reference with a name, a relationship and a phone number to continue."
+          },
+          "field_work_history": {
+            "title": "Your past jobs",
+            "body": "{input, select, touch {Tap} other {Click}} Add previous job, then type the company and your job title. The other boxes are optional. You can add up to 3.",
+            "body_optional": "This one is optional. {input, select, touch {Tap} other {Click}} Add previous job and type the company and your job title, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Add a job with the company and your job title to continue."
+          },
+          "field_military_service": {
+            "title": "Military service",
+            "body": "Under Military service, {input, select, touch {tap} other {click}} Yes or No. If you {input, select, touch {tap} other {click}} Yes, the boxes that open are optional.",
+            "body_optional": "This one is optional. Under Military service, {input, select, touch {tap} other {click}} Yes or No, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "{input, select, touch {Tap} other {Click}} Yes or No to continue."
+          },
+          "details_continue": {
+            "title": "Save this step",
+            "body": "{input, select, touch {Tap} other {Click}} Save and continue. If a question then says “This needs an answer”, fix it and {input, select, touch {tap} other {click}} it again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save and continue to go on."
+          },
+          "vault_retry": {
+            "title": "We can’t see your saved files",
+            "body": "Checking your saved files failed, so every file shows as not uploaded. {input, select, touch {Tap} other {Click}} Try again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Try again to continue."
+          },
+          "doc_notice_legacy": {
+            "title": "This one isn’t uploaded here",
+            "body": "The employer may ask you for it in person. It doesn’t stop you from finishing."
+          },
+          "doc_notice_unknown": {
+            "title": "We don’t know this requirement",
+            "body": "Ask the employer what they need. It doesn’t stop you from finishing."
+          },
+          "certification_doc": {
+            "title": "Your certification",
+            "body": "{input, select, touch {Tap} other {Click}} Add certification and pick a PDF or a photo (JPG or PNG). You can add up to 5. If it says Optional, you can go on without it.",
+            "wait": "Add a certification to continue."
+          },
+          "certifications": {
+            "title": "A certification the employer needs",
+            "body": "{input, select, touch {Tap} other {Click}} Yes if you have it; with No you can’t continue. If it asks for proof, {input, select, touch {tap} other {click}} Upload new and pick a PDF or a photo.",
+            "wait": "Answer Yes, with proof if it asks for it, to continue."
+          },
+          "documents_continue": {
+            "title": "On to the last step",
+            "body": "{input, select, touch {Tap} other {Click}} Continue. If something is then marked in red, fix it and {input, select, touch {tap} other {click}} it again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "review_summary": {
+            "title": "Check what we’ll send",
+            "body": "Each question should say Answered or Skipped, and your documents are counted here."
+          },
+          "review_missing": {
+            "title": "Something is still missing",
+            "body": "{input, select, touch {Tap} other {Click}} the link under the message to go back and fill it in. This guide ends here; you can finish on your own: come back to Check & finish and {input, select, touch {tap} other {click}} Finish.",
+            "wait": "{input, select, touch {Tap} other {Click}} the link to go and fix it."
+          },
+          "review_finish": {
+            "title": "Send it",
+            "body": "{input, select, touch {Tap} other {Click}} Finish to send everything to the employer.",
+            "wait": "{input, select, touch {Tap} other {Click}} Finish to send."
+          },
+          "complete": {
+            "title": "Done",
+            "body": "The employer has your details. We’ll let you know when they update your application. Back to my applications takes you to the rest."
+          },
+          "doc_resume": {
+            "saved_title": "Your resume is already saved",
+            "saved_body": "It shows Uploaded, so it counts automatically: nothing to do here. {input, select, touch {Tap} other {Click}} View to check it, and Replace only if it’s the wrong file.",
+            "title": "Add your resume",
+            "body": "{input, select, touch {Tap} other {Click}} Upload and pick your resume: a PDF or a photo (JPG or PNG). If it doesn’t go up, try again.",
+            "body_optional": "This one is optional: you can go on without it. To add it, {input, select, touch {tap} other {click}} Upload and pick a PDF or a photo (JPG or PNG).",
+            "wait": "Upload your resume to continue."
+          },
+          "doc_driver_license": {
+            "saved_title": "Your driver’s license is already saved",
+            "saved_body": "It shows Uploaded, so it counts automatically: nothing to do here. {input, select, touch {Tap} other {Click}} View to check it, and Replace only if it’s the wrong file.",
+            "title": "Add your driver’s license",
+            "body": "{input, select, touch {Tap} other {Click}} Upload and pick your driver’s license: a PDF or a photo (JPG or PNG). If it doesn’t go up, try again.",
+            "body_optional": "This one is optional: you can go on without it. To add it, {input, select, touch {tap} other {click}} Upload and pick a PDF or a photo (JPG or PNG).",
+            "wait": "Upload your driver’s license to continue."
+          },
+          "doc_work_auth_doc": {
+            "saved_title": "Your work authorization document is already saved",
+            "saved_body": "It shows Uploaded, so it counts automatically: nothing to do here. {input, select, touch {Tap} other {Click}} View to check it, and Replace only if it’s the wrong file.",
+            "title": "Add your work authorization document",
+            "body": "{input, select, touch {Tap} other {Click}} Upload and pick your work authorization document: a PDF or a photo (JPG or PNG). If it doesn’t go up, try again.",
+            "body_optional": "This one is optional: you can go on without it. To add it, {input, select, touch {tap} other {click}} Upload and pick a PDF or a photo (JPG or PNG).",
+            "wait": "Upload your work authorization document to continue."
+          },
+          "prompt_more": {
+            "title": "One more question",
+            "body": "Answer this one the same way, in your own words.",
+            "wait": "Write an answer (up to 1000 characters) to continue."
+          },
+          "certification_optional": {
+            "title": "An optional certification",
+            "body": "{input, select, touch {Tap} other {Click}} Yes or No. It never stops you from finishing."
+          }
+        }
       }
     },
     "worker_profile": {
       "title": "Your profile",
+      "description": "What employers see, and your documents.",
+      "duration": "1 min",
       "slides": {
         "seen": {
-          "title": "This is what employers see",
-          "body": "Your trade, experience, availability and the answers you gave in your own words."
+          "title": "What employers see",
+          "body": "When you apply, employers see your trade, skills, experience and availability, plus the answers you gave in your own words when you signed up. Those answers aren’t shown on this page."
         },
         "documents": {
           "title": "Add documents once",
-          "body": "Save your license, work permit or certifications here. They’re used again on every application, so you never upload twice."
+          "body": "Save your Resume, Driver's License or Work Authorization Document here. They’re used again on every application, so you don’t upload them twice. Certifications aren’t uploaded here."
         },
         "edit": {
           "title": "Keep it up to date",
-          "body": "Tap Edit any time to change your skills, availability or cities."
+          "body": "Tap Edit any time to change your name, trade, skills, availability, years of experience, location, cities, About you or certifications."
         }
       },
       "scene": {
@@ -2576,7 +3005,7 @@
         "avail": "Full-time",
         "quote": "“I finish slabs and driveways and set my own forms.”",
         "docs_head": "Documents",
-        "license": "Driver license",
+        "license": "Driver's License",
         "upload": "Upload",
         "replace": "Replace",
         "reused": "A photo of the card is fine. Used again on every application.",
@@ -2586,10 +3015,76 @@
         "sk2": "Forming",
         "sk3": "Stamped concrete",
         "saved": "Saved"
+      },
+      "guide": {
+        "intro_title": "Want a hand with your profile?",
+        "intro_body": "{input, select, touch {We’ll show you each part, one at a time: what to tap, what to pick and what to type. About 2 minutes.} other {We’ll show you each part, one at a time: what to click, what to pick and what to type. About 2 minutes.}}",
+        "counter": "Your profile · {current} of {total}",
+        "steps": {
+          "edit": {
+            "title": "Open the form",
+            "body": "{input, select, touch {Tap} other {Click}} Edit to open the form with your details.",
+            "wait": "{input, select, touch {Tap} other {Click}} Edit to continue."
+          },
+          "name": {
+            "title": "Your name",
+            "body": "Type your full name in Full name.",
+            "wait": "Type your name to continue."
+          },
+          "trade": {
+            "title": "Pick your trade",
+            "body": "Open the Trade list and pick the one you do most. If yours isn’t there, pick Other. Already right? {input, select, touch {Tap} other {Click}} Next.",
+            "wait": "Pick one to continue."
+          },
+          "trade_other": {
+            "title": "Type your trade",
+            "body": "You picked Other, so a box appeared. Type your trade in Your trade, like “Welder”, in 2 to 60 characters.",
+            "wait": "Type 2 to 60 characters to continue."
+          },
+          "skills": {
+            "title": "List your skills",
+            "body": "Type what you can do in Skills, with a comma between each one, like “framing, drywall, trim”.",
+            "wait": "Add at least one skill to continue."
+          },
+          "availability": {
+            "title": "When can you work?",
+            "body": "Pick Full-time, Part-time, Weekends or Flexible in Availability. If you never set it, it’s empty now, and you need to pick one to save.",
+            "wait": "Pick one to continue."
+          },
+          "years": {
+            "title": "Years of experience",
+            "body": "Optional. Type how many years you’ve worked, as a whole number from 0 to 80, or leave it as it is. A number already saved can be changed but not cleared (use 0 if none).",
+            "wait": "Use a whole number from 0 to 80 to continue."
+          },
+          "location": {
+            "title": "Your location",
+            "body": "Start typing your city or ZIP in Location, then pick your city from the list. A city you type but don’t pick is saved as text only, without its spot on the map.",
+            "wait": "Add your location to continue."
+          },
+          "cities": {
+            "title": "Cities where you want to work",
+            "body": "Optional. Type a city or ZIP under Cities where you want to find work, then pick it from the list to add it. Typing alone doesn’t add a city. You can add up to 10."
+          },
+          "documents": {
+            "title": "Your documents",
+            "body": "{input, select, touch {Tap} other {Click}} Upload to add a Resume, Driver's License or Work Authorization Document, or Replace to change one. Use a PDF, JPG or PNG. Each one holds one file and is saved as soon as it uploads. Certifications aren’t uploaded here."
+          },
+          "save": {
+            "title": "Save your changes",
+            "body": "{input, select, touch {Tap} other {Click}} Save. If “Please add:” shows instead, end the guide and fill in what it names.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save to finish."
+          }
+        },
+        "done": {
+          "title": "Profile saved",
+          "body": "Your changes are saved. {input, select, touch {Tap} other {Click}} Edit any time to change them again."
+        }
       }
     },
     "employer_welcome": {
       "title": "How Jale works",
+      "description": "From posting a job to hiring, in five steps.",
+      "duration": "1 min",
       "slides": {
         "post": {
           "title": "Post a job in 3 steps",
@@ -2642,10 +3137,12 @@
     },
     "employer_post_job": {
       "title": "Posting a job",
+      "description": "The three steps and what you must fill in.",
+      "duration": "1 min",
       "slides": {
         "steps": {
           "title": "Three short steps",
-          "body": "The basics, pay and schedule, then questions for applicants. Only 4 things are required: title, trade, city and workers needed."
+          "body": "The basics, pay and schedule, then questions for applicants. Required: a title, a trade, a city picked from the list, and workers needed, which starts at 1. If the trade is Other, type it too."
         },
         "city": {
           "title": "Pick the city from the list",
@@ -2664,11 +3161,11 @@
         "step1": "The basics",
         "step2": "Pay and schedule",
         "step3": "Questions",
-        "required": "Only these are required",
+        "required": "Required",
         "r1": "Title",
         "r2": "Trade",
         "r3": "City",
-        "r4": "Workers needed",
+        "r4": "Workers (starts at 1)",
         "shifts": "Shifts",
         "day": "Day",
         "evening": "Evening",
@@ -2683,10 +3180,198 @@
         "optional_tag": "Optional",
         "off_tag": "Off",
         "lock_note": "Locked once someone applies"
+      },
+      "guide": {
+        "intro_title": "Want a hand with this?",
+        "intro_body": "{input, select, touch {We’ll show you each part, one at a time: what to tap, what to pick and what to type. About 2 minutes.} other {We’ll show you each part, one at a time: what to click, what to pick and what to type. About 2 minutes.}}",
+        "counter": "Posting a job · {current} of {total}",
+        "steps": {
+          "template": {
+            "title": "Start from a template (optional)",
+            "body": "If this job is like one you saved, choose it in Start from a template. It fills in the whole form and replaces anything you typed. Or skip it."
+          },
+          "title": {
+            "title": "Name the job",
+            "body": "{input, select, touch {Tap} other {Click}} the Job Title box and type the job title, like “Forklift operator” or “Concrete finisher”.",
+            "wait": "Type a title to continue."
+          },
+          "city_check": {
+            "title": "Check the city",
+            "body": "This city came from your template. If it’s right, go on. If you change it, pick the new city from the list: typing alone doesn’t count.",
+            "wait": "{input, select, touch {Tap} other {Click}} a city in the list to continue."
+          },
+          "city": {
+            "title": "Pick the city from the list",
+            "body": "{input, select, touch {Start typing the city in Location, then tap it in the list.} other {Start typing the city in Location, then click it in the list.}} A city you type but don’t pick doesn’t count.",
+            "wait": "{input, select, touch {Tap} other {Click}} a city in the list to continue."
+          },
+          "trade": {
+            "title": "Pick the trade",
+            "body": "Open the Trade list and choose the trade. Workers with that trade are matched to your job. If it isn’t there, pick Other.",
+            "wait": "Pick one to continue."
+          },
+          "trade_other": {
+            "title": "Type the trade",
+            "body": "You picked Other, so a new box appeared. Type the trade there, like “Welder”.",
+            "wait": "Type the trade to continue."
+          },
+          "next": {
+            "title": "That’s all this screen needs",
+            "body": "Title, city and trade are the required fields here; job type and description are optional. {input, select, touch {Tap} other {Click}} Next to go on to pay and schedule.",
+            "wait": "{input, select, touch {Tap} other {Click}} Next to continue."
+          },
+          "pay": {
+            "title": "Pay (optional)",
+            "body": "Type the lowest pay in Pay Min and the highest in Pay Max, and choose the Pay Interval. Leave Pay Max blank if pay is negotiable. Pay Min can’t be more than Pay Max.",
+            "wait": "Pay Min can’t be more than Pay Max."
+          },
+          "workers": {
+            "title": "How many workers?",
+            "body": "Type how many people you need on site. It starts at 1.",
+            "wait": "Enter 1 or more to continue."
+          },
+          "shifts": {
+            "title": "Shifts (optional)",
+            "body": "Tick every shift this job can work: Day, Evening, Night or Overnight. You can pick more than one, or none."
+          },
+          "times": {
+            "title": "Start and end times (optional)",
+            "body": "Leave both empty if the hours vary. If you fill one, fill the other too: a start time without an end time, or the other way round, stops Next.",
+            "wait": "Fill both times, or clear both."
+          },
+          "certifications": {
+            "title": "Certifications (optional)",
+            "body": "If workers need a card like OSHA 10, type it and pick it from the list, or pick Add “…” to use your own words. Don’t press Enter with nothing picked: it goes to the next screen and drops what you typed."
+          },
+          "next_details": {
+            "title": "That’s pay and schedule",
+            "body": "Start Date, Expected Duration, Work days, years of experience, language and transportation are optional too. {input, select, touch {Tap} other {Click}} Next for the questions.",
+            "wait": "{input, select, touch {Tap} other {Click}} Next to continue."
+          },
+          "questions": {
+            "title": "Quick questions (optional)",
+            "body": "Asked when workers apply, answered in their own words. We suggest 2 or fewer; you can add up to 10. A question you add but leave empty stops Post Job: type it, or press Remove on it.",
+            "wait": "Type the empty question, or remove it."
+          },
+          "requirements": {
+            "title": "Questions for applicants",
+            "body": "For each row, pick Off, Optional or Required. Everything starts Off. Applicants answer these only after you request their details. Once someone applies, neither part can change."
+          },
+          "template_save": {
+            "title": "Save as template (optional)",
+            "body": "Tick Save as template to reuse this job next time. It will need a name."
+          },
+          "template_name": {
+            "title": "Name the template",
+            "body": "Type a name you’ll recognize, like “Forklift operator, Oakland”. A name is required: Post Job won’t go without one, unless you untick the box.",
+            "wait": "Type a name to continue."
+          },
+          "submit": {
+            "title": "Post the job",
+            "body": "{input, select, touch {Tap} other {Click}} Post Job to publish it. If anything goes wrong, your answers stay here.",
+            "wait": "{input, select, touch {Tap} other {Click}} Post Job to continue."
+          },
+          "post_error": {
+            "title": "That didn’t go through",
+            "body": "The red message above the buttons says why. Your answers are still here: {input, select, touch {tap} other {click}} Post Job to try again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Post Job to try again."
+          },
+          "job_limit": {
+            "title": "Plan limit reached",
+            "body": "Your plan has no free slot for another active job. The links in this box close the form and lose what you typed. To keep your answers, tick Save as template, name it and post again: the template is saved even though the job isn’t."
+          },
+          "template_taken": {
+            "title": "That name is taken",
+            "body": "You already have a template with that name. Type a different name, or untick Save as template.",
+            "wait": "Change the name to continue."
+          },
+          "template_limit": {
+            "title": "Your templates are full",
+            "body": "Your plan’s templates are full, so this one won’t be saved. {input, select, touch {Tap} other {Click}} Post without saving template to publish the job now. Manage templates and Upgrade plan close the form and lose what you typed.",
+            "wait": "{input, select, touch {Tap} other {Click}} Post without saving template to continue."
+          },
+          "post_again": {
+            "title": "Post it now",
+            "body": "{input, select, touch {Tap} other {Click}} Post Job again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Post Job to continue."
+          },
+          "template_not_saved": {
+            "title": "Your template wasn’t saved",
+            "body": "Your job is posted. The yellow note says why the template wasn’t saved, and Manage templates opens your templates."
+          },
+          "share": {
+            "title": "Share it with workers",
+            "body": "Your job is private until you share it. {input, select, touch {Tap} other {Click}} Turn on the share link to get a link and a QR code to send to workers. You can do it later on the job’s page too."
+          },
+          "done": {
+            "title": "Your job is posted",
+            "body": "{input, select, touch {Tap} other {Click}} Back to dashboard to close this and see your new job. Workers who apply show up under Applicants.",
+            "wait": "{input, select, touch {Tap} other {Click}} Back to dashboard to finish."
+          },
+          "limit": {
+            "title": "Plan limit reached",
+            "body": "Your plan has no free slot for another active job, so the form didn’t open. Any jobs listed are the ones using your slots: open one to pause or close it, which frees its slot at once."
+          },
+          "limit_actions": {
+            "title": "What you can do",
+            "body": "Pause another job goes to your dashboard, where each job has Pause. Upgrade plan opens Billing for more slots. Not now closes this.",
+            "wait": "Pick one of these to finish."
+          },
+          "edit_form": {
+            "title": "Edit this job",
+            "body": "Everything is on one form, not three screens. Change what you need, like the pay or the shifts."
+          },
+          "edit_locked": {
+            "title": "Some parts are locked",
+            "body": "This job already has applicants, so its job type, certifications and both parts of the questions can’t change: everyone who applies answers the same questions. To ask something different, post a new job."
+          },
+          "edit_workers": {
+            "title": "Workers needed",
+            "body": "This number can’t go below the workers you’ve already hired.",
+            "wait": "Enter at least the workers already hired."
+          },
+          "edit_save": {
+            "title": "Save your changes",
+            "body": "{input, select, touch {Tap} other {Click}} Save changes when you’re done. If something is missing, one red line above the buttons says what; fix it and save again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save changes to finish, or Cancel to leave without saving."
+          },
+          "tpl_name": {
+            "title": "Name the template",
+            "body": "Type a name you’ll recognize, up to 80 characters. A name is required.",
+            "wait": "Type a name to continue."
+          },
+          "tpl_form": {
+            "title": "Fill in the job",
+            "body": "The same fields as posting a job, on one form, with no start date. It needs a title, a city picked from the list and a trade: start with the title.",
+            "wait": "Type a title to continue."
+          },
+          "tpl_save": {
+            "title": "Save the template",
+            "body": "{input, select, touch {Tap} other {Click}} Save template when you’re done. If something is missing, a red line above the buttons says what.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save template to finish."
+          },
+          "tpl_city": {
+            "title": "Pick the city from the list",
+            "body": "{input, select, touch {Start typing the city in Location, then tap it in the list.} other {Start typing the city in Location, then click it in the list.}} A city you type but don’t pick doesn’t count.",
+            "wait": "{input, select, touch {Tap} other {Click}} a city in the list to continue."
+          },
+          "tpl_trade_other": {
+            "title": "Type the trade",
+            "body": "You picked Other, so a new box appeared. Type the trade there, like “Welder”.",
+            "wait": "Type the trade to continue."
+          },
+          "tpl_trade": {
+            "title": "Pick the trade",
+            "body": "Open the Trade list and choose the trade. If it isn’t there, pick Other.",
+            "wait": "Pick one to continue."
+          }
+        }
       }
     },
     "employer_applicants": {
       "title": "Your applicants",
+      "description": "Trust scores, statuses and how to hire.",
+      "duration": "1 min",
       "slides": {
         "first_look": {
           "title": "What you see first",
@@ -2725,10 +3410,92 @@
         "where": "Where",
         "where_value": "Job site address",
         "sent_wa": "Sent to the worker on WhatsApp"
+      },
+      "guide": {
+        "intro_title": "Want a hand with your applicants?",
+        "intro_body": "{input, select, touch {We’ll show you what’s on this page and what each button does, one at a time. About a minute.} other {We’ll show you what’s on this page and what each button does, one at a time. About a minute.}}",
+        "counter": "Your applicants · {current} of {total}",
+        "steps": {
+          "board_row": {
+            "title": "Everyone who applied",
+            "body": "Each row is one person: the job they applied to, their status, how well they match and their trust score. View Profile opens their answers and documents."
+          },
+          "board_jobs": {
+            "title": "One job at a time",
+            "body": "{input, select, touch {Tap} other {Click}} a job to see only its applicants. {input, select, touch {Tap} other {Click}} it again, or All jobs, to see everyone."
+          },
+          "board_status": {
+            "title": "Move them along",
+            "body": "Pick a status here; it saves as soon as you pick it. New, Contacted, In conversation and Not selected are just for you. Hired tells the worker, so it asks you to confirm first."
+          },
+          "board_hire_blocked": {
+            "title": "Why Hired is greyed out",
+            "body": "To hire someone, their details must be complete. This page has no Request details button: open View Profile to request them."
+          },
+          "board_hire_banner": {
+            "title": "Hires waiting for start details",
+            "body": "This counts the people you hired who don’t have start details yet. Someone you just marked hired is counted after you reload the page."
+          },
+          "board_start": {
+            "title": "Start details",
+            "body": "For someone hired, Add Start Details (Edit Start Details once they’re added) tells them when and where to show up, and who to ask for. Fill in at least one box to save."
+          },
+          "board_message": {
+            "title": "Write to them",
+            "body": "After the guide, {input, select, touch {tap} other {click}} Message to open a chat with this person in the Messages panel. They read it and answer on WhatsApp."
+          },
+          "job_filters": {
+            "title": "Narrow the list",
+            "body": "Filter by Status, Skills, Availability or Min experience (years). The list updates a moment after you stop typing. Clear filters shows everyone again."
+          },
+          "job_filtered_empty": {
+            "title": "No one matches",
+            "body": "The filters are hiding everyone. {input, select, touch {Tap} other {Click}} Clear filters to see everyone who applied.",
+            "wait": "Clear the filters to continue."
+          },
+          "job_row": {
+            "title": "One applicant",
+            "body": "Their status, whether you asked for their details, how well they match and their answers. This page has no status box: to change a status or hire, open View profile."
+          },
+          "job_request": {
+            "title": "Request details",
+            "body": "Request details asks this person on WhatsApp for what you marked Required. Hired unlocks once they’re complete. Once asked, the button reads Resend request. The page doesn’t refresh by itself: reload it to see their progress."
+          },
+          "job_message": {
+            "title": "Message Worker",
+            "body": "After the guide, {input, select, touch {tap} other {click}} Message Worker to send a ready-made hello on WhatsApp right away, with no preview. The chat opens in Messages."
+          },
+          "job_profile": {
+            "title": "View profile",
+            "body": "After the guide, {input, select, touch {tap} other {click}} View profile to see everything this person sent, with the status box and Save."
+          },
+          "profile_status": {
+            "title": "Their status",
+            "body": "Pick a status, then {input, select, touch {tap} other {click}} Save. Only Request details and Hired message the worker; the other statuses are just for you."
+          },
+          "profile_hire_blocked": {
+            "title": "Why Hired is greyed out",
+            "body": "Their details aren’t complete yet. Request them with Request details; Hired unlocks once they’re done."
+          },
+          "profile_request": {
+            "title": "Request details",
+            "body": "Request details asks this person on WhatsApp for what you marked Required. Once asked, the button reads Resend request. Reload the page later to see their progress."
+          },
+          "profile_docs": {
+            "title": "Their documents",
+            "body": "View or download what they uploaded. Share Upload Link and Request only copy a link for you to send; they don’t message anyone."
+          },
+          "profile_hired": {
+            "title": "Hired: now the start details",
+            "body": "Add their start details on the Applicants page: their row there has Add Start Details (or Edit Start Details once they’re added)."
+          }
+        }
       }
     },
     "employer_messages": {
       "title": "Messages",
+      "description": "How your messages reach workers on WhatsApp.",
+      "duration": "1 min",
       "slides": {
         "whatsapp": {
           "title": "Messages travel over WhatsApp",
@@ -2751,6 +3518,80 @@
         "invite": "An employer on Jale wants to talk to you about a Concrete finisher job.",
         "reply": "Reply",
         "window_chip": "Reply window open"
+      },
+      "guide": {
+        "intro_title": "Want a hand with messages?",
+        "intro_body": "{input, select, touch {We’ll show you how a message reaches the worker and where to write, one step at a time. About a minute.} other {We’ll show you how a message reaches the worker and where to write, one step at a time. About a minute.}}",
+        "counter": "Messages · {current} of {total}",
+        "steps": {
+          "first": {
+            "title": "A new conversation",
+            "body": "You haven’t written to this person yet. When you send, they get your message on WhatsApp, and their replies show up here."
+          },
+          "thread": {
+            "title": "The conversation",
+            "body": "Your messages are on the right, with a word under each: Sent, Delivered, Waiting for worker reply, or Failed. Theirs are on the left. A failed message can’t be retried: send a new one."
+          },
+          "window": {
+            "title": "When your message arrives",
+            "body": "Within 24 hours of a worker’s last message, yours goes straight to their WhatsApp. Otherwise Jale sends them an invitation first, and your message waits until they reply."
+          },
+          "write": {
+            "title": "Write your message",
+            "body": "Type it here, up to 2,000 characters. Enter sends; Shift+Enter starts a new line."
+          },
+          "send": {
+            "title": "Send it",
+            "body": "{input, select, touch {Tap} other {Click}} Send. If it doesn’t go through, a red line above the box says why, and your words stay in the box."
+          },
+          "closed": {
+            "title": "This conversation is closed",
+            "body": "Nobody can send new messages here, and a closed conversation can’t be reopened. The history stays on this page."
+          },
+          "not_interested": {
+            "title": "Not interested",
+            "body": "Not interested removes this person from your list, and they get no more messages about this job. It asks you to confirm first."
+          },
+          "close": {
+            "title": "Close",
+            "body": "Close ends the WhatsApp conversation: neither of you can send new messages. It asks you to confirm first, and the history stays."
+          },
+          "put_away": {
+            "title": "Put messages away",
+            "body": "When you finish this guide, {input, select, touch {tap} other {click}} Close (or Hide, on a phone) to put the messages away. Open them again from the Messages button."
+          },
+          "list": {
+            "title": "Your open conversations",
+            "body": "Open conversations are listed here, newest first. Pick one to read it and reply. To write to someone new, use Message on their row under Applicants."
+          }
+        }
+      }
+    },
+    "tour": {
+      "employer": {
+        "welcome_title": "Welcome to Jale",
+        "welcome_body": "A quick look at where everything is. It takes less than a minute.",
+        "start": "Show me around",
+        "not_now": "Not now",
+        "dashboard_body": "Your jobs at a glance: what is open and who applied.",
+        "post_job_title": "Post a job",
+        "post_job_body": "Start here. A job needs a title, a trade and a city picked from the list. Pay, schedule and questions come next.",
+        "messages_body": "Write to workers here. They answer on WhatsApp, and their replies show up in the thread.",
+        "applicants_body": "Everyone who applied to your jobs, with their trade, experience and trust score.",
+        "templates_body": "Save a job you post often and reuse it.",
+        "billing_body": "Your plan and how many open jobs it allows.",
+        "settings_body": "Your company profile and account details.",
+        "help_body": "All guides live here. Replay any of them, or have them show every time you start a task."
+      },
+      "worker": {
+        "welcome_title": "You’re all set",
+        "welcome_body": "Here’s where everything is. It takes less than a minute.",
+        "start": "Show me around",
+        "not_now": "Not now",
+        "find_jobs_body": "Jobs for your trade near you. Applying takes a minute.",
+        "applications_body": "Every job you applied to. You’ll see when an employer writes to you or asks for your details.",
+        "profile_body": "This is what employers see. Add your documents once and they’re used on every application.",
+        "help_body": "All guides live here. Watch any of them again whenever you want."
       }
     }
   }

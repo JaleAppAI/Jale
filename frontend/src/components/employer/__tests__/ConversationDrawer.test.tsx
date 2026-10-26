@@ -92,6 +92,7 @@ const tutorial = vi.hoisted(() => {
     mode: 'pass' as 'pass' | 'hold',
     held: [] as (() => void)[],
     latestDone: {} as Record<string, boolean | undefined>,
+    walkthrough: {} as Record<string, boolean | undefined>,
     ids: new Set<string>(),
   };
   const handle = {
@@ -100,14 +101,17 @@ const tutorial = vi.hoisted(() => {
       if (state.mode === 'hold') state.held.push(openHost);
       else openHost();
     }),
+    // The host first, at once, then the guide over it: as the real hook does.
+    runWithHost: vi.fn((openHost: () => void) => openHost()),
     replay: vi.fn(),
   };
   return { state, handle };
 });
 vi.mock('@/lib/tutorials/use-tutorial', () => ({
-  useTutorial: (id: string, options: { done: boolean | undefined }) => {
+  useTutorial: (id: string, options: { done: boolean | undefined; walkthrough?: boolean }) => {
     tutorial.state.ids.add(id);
     tutorial.state.latestDone[id] = options.done;
+    tutorial.state.walkthrough[id] = options.walkthrough;
     return tutorial.handle;
   },
 }));
@@ -188,6 +192,7 @@ afterEach(() => {
 
 beforeEach(() => {
   tutorial.handle.runBeforeHost.mockClear();
+  tutorial.handle.runWithHost.mockClear();
   tutorial.state.mode = 'pass';
   tutorial.state.held.length = 0;
   tutorial.state.ids.clear();
@@ -637,33 +642,33 @@ describe('the messages tutorial', () => {
     expect(tutorial.state.latestDone.employer_messages).toBe(true);
   });
 
-  it('holds a requested drawer until the tutorial lets it through', async () => {
+  it('opens a requested drawer at once, and asks for the messages guide over it', async () => {
     tutorial.state.mode = 'hold';
     const user = userEvent.setup();
     renderDrawer(<OpenerPage target={{ application_id: 'app-1', worker_id: 'w-1', job_id: 'job-1' }} />);
 
     await user.click(screen.getByRole('button', { name: 'open thread' }));
 
-    expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
-    expect(launcher()).toHaveAttribute('aria-expanded', 'false');
-
-    act(() => tutorial.state.held[0]());
-
-    expect(launcher()).toHaveAttribute('aria-expanded', 'true');
+    // E4 is a step-by-step guide that plays INSIDE the open drawer: no slides hold it back.
+    expect(tutorial.state.walkthrough.employer_messages).toBe(true);
+    expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
+    expect(tutorial.handle.runBeforeHost).not.toHaveBeenCalled();
+    // The launcher (now "Close"); the open thread has a Close of its own.
+    expect(document.querySelector('[data-guide="msg.launcher"]')).toHaveAttribute('aria-expanded', 'true');
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('test-token', 'conv-1', expect.anything()));
     await waitFor(() => expect(screen.getAllByText('I can start Monday')).toHaveLength(2));
   });
 
-  it('asks before the launcher opens the drawer, and not when it closes it', async () => {
+  it('asks for the guide as the launcher opens the drawer, and not when it closes it', async () => {
     const user = userEvent.setup();
     renderDrawer();
 
     await user.click(launcher());
-    expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
+    expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
     expect(launcher()).toHaveAttribute('aria-expanded', 'true');
 
     await user.click(launcher());
-    expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
+    expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
     expect(launcher()).toHaveAttribute('aria-expanded', 'false');
   });
 });

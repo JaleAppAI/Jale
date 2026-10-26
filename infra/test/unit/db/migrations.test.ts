@@ -174,6 +174,7 @@ describe('database migrations', () => {
       '134',
       '135',
       '136',
+      '137',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5970,6 +5971,110 @@ describe('database migrations', () => {
         'migration 130: user_tutorial_progress policy set drifted',
         "migration 130: a user_tutorial_progress policy is not the caller''s own row for jale_api",
         'migration 130: user_tutorial_progress.user_id must reference users(id) ON DELETE CASCADE',
+      ]) expect(closing).toContain(message);
+    });
+  });
+
+  // Hotfix 2026-10-23 (BE-H1, contract K1-v2): guide settings. One row per
+  // account, read, inserted and updated by the request login for the caller
+  // only, keyed like 130's policies (118's organization_members_self_read).
+  // No DELETE right: a row leaves only with its users row. The DB pins are in
+  // user-tutorial-settings.integration.test.ts.
+  describe('137 adds user_tutorial_settings: the caller reads, inserts and updates their own row on the request login', () => {
+    const file = '137_user_tutorial_settings.sql';
+    const text = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    const code = () => text().replace(/--[^\n]*/g, '');
+    const squash = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+    const PREDICATE = "user_id = (SELECT users.id FROM public.users WHERE users.cognito_sub = current_setting('app.current_user_id', true))";
+    const ID_SHAPE = '(employer|worker)_[a-z_]{1,40}';
+
+    it('runs as jale_admin after 136 in one transaction, ASCII only, with a lock timeout first', () => {
+      const sql = text();
+      expect(sql.startsWith('-- ============================================================\n-- 137_user_tutorial_settings.sql\n'
+        + '-- Run manually AFTER 136_retire_per_person_billing.sql,\n'
+        + '-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(code()).toMatch(/^[\x00-\x7F]*$/);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf('DO $$')).toBeGreaterThan(sql.indexOf("SET LOCAL lock_timeout = '5s';"));
+      expect(code()).toContain("IF current_user <> 'jale_admin' THEN");
+      expect(sql).toContain('migration 137: connect as jale_admin (this session runs as %)');
+      expect(sql).toContain('-- DEPLOY ORDER: apply this migration BEFORE deploying the code.');
+    });
+
+    it('refuses a replay once the table exists', () => {
+      const sql = code();
+      expect(sql).toContain("IF pg_catalog.to_regclass('public.user_tutorial_settings') IS NOT NULL THEN");
+      expect(sql).toContain('migration 137: already applied (public.user_tutorial_settings exists); it is not re-runnable');
+      expect(sql.indexOf('already applied')).toBeLessThan(sql.indexOf('CREATE TABLE'));
+    });
+
+    it("creates one row per account, cascading with users, with the list CHECK on 130's id shape, and row security forced", () => {
+      const sql = squash(code());
+      expect(sql).toContain(squash(`CREATE TABLE public.user_tutorial_settings (
+        user_id UUID PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
+        always_show BOOLEAN NOT NULL DEFAULT false,
+        muted TEXT[] NOT NULL DEFAULT '{}',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT user_tutorial_settings_muted_valid CHECK (
+          cardinality(muted) <= 16
+          AND (array_ndims(muted) IS NULL OR array_ndims(muted) = 1)
+          AND array_to_string(muted, ',', '*') ~ '^(${ID_SHAPE}(,${ID_SHAPE})*)?$'
+          AND cardinality(string_to_array(array_to_string(muted, ',', '*'), ',')) = cardinality(muted)
+        )
+      );`));
+      // The element shape is 130's tutorial_id CHECK.
+      const precedent = squash(fs.readFileSync(path.join(migrationsDir, '130_user_tutorial_progress.sql'), 'utf8'));
+      expect(precedent).toContain(`CHECK (tutorial_id ~ '^${ID_SHAPE}$')`);
+      expect(code().match(/CREATE TABLE/g)).toHaveLength(1);
+      // No new function and no trigger: the CHECK uses built-ins only, and
+      // the API's upsert sets updated_at.
+      expect(code()).not.toMatch(/CREATE (OR REPLACE )?(FUNCTION|TRIGGER)|SECURITY DEFINER|DROP |ALTER DEFAULT PRIVILEGES/);
+      expect(sql).toContain('ALTER TABLE public.user_tutorial_settings ENABLE ROW LEVEL SECURITY;');
+      expect(sql).toContain('ALTER TABLE public.user_tutorial_settings FORCE ROW LEVEL SECURITY;');
+    });
+
+    it('grants the request login SELECT, INSERT and UPDATE only, and no other login anything', () => {
+      const sql = code();
+      expect(sql.match(/^\s*GRANT /gm)).toHaveLength(1);
+      expect(sql).toContain('GRANT SELECT, INSERT, UPDATE ON public.user_tutorial_settings TO jale_api;');
+      expect(sql).not.toMatch(/^\s*REVOKE /m);
+      expect(sql).not.toMatch(/GRANT[^;]*\b(DELETE|TRUNCATE|ALL)\b/);
+    });
+
+    it("adds exactly the self-read, self-insert and self-update policies for jale_api, with 130's predicate", () => {
+      const sql = squash(code());
+      expect(sql.match(/CREATE POLICY/g)).toHaveLength(3);
+      expect(sql).toContain(`CREATE POLICY user_tutorial_settings_self_read ON public.user_tutorial_settings AS PERMISSIVE FOR SELECT TO jale_api USING (${PREDICATE});`);
+      expect(sql).toContain(`CREATE POLICY user_tutorial_settings_self_insert ON public.user_tutorial_settings AS PERMISSIVE FOR INSERT TO jale_api WITH CHECK (${PREDICATE});`);
+      expect(sql).toContain(`CREATE POLICY user_tutorial_settings_self_update ON public.user_tutorial_settings AS PERMISSIVE FOR UPDATE TO jale_api USING (${PREDICATE}) WITH CHECK (${PREDICATE});`);
+      // The same predicate 130 wrote for its own rows.
+      const precedent = squash(fs.readFileSync(path.join(migrationsDir, '130_user_tutorial_progress.sql'), 'utf8'));
+      expect(precedent).toContain(`CREATE POLICY user_tutorial_progress_self_read ON public.user_tutorial_progress AS PERMISSIVE FOR SELECT TO jale_api USING (${PREDICATE});`);
+    });
+
+    it('closes by checking row security, the exact rights, the three policies against the 118 predicate, the CHECK and the cascade', () => {
+      const sql = text();
+      const closing = sql.slice(sql.indexOf('-- ── 4. Closing check'));
+      expect(closing.indexOf('DO $$')).toBeGreaterThan(-1);
+      expect(closing.indexOf('COMMIT;')).toBeGreaterThan(closing.indexOf('DO $$'));
+      expect(closing).toContain('c.relrowsecurity AND c.relforcerowsecurity');
+      expect(closing).toContain("NOT (a.grantee = 'jale_api'::regrole::oid AND a.privilege_type IN ('SELECT', 'INSERT', 'UPDATE'))");
+      expect(closing).toContain("p.polrelid = 'public.organization_members'::regclass AND p.polname = 'organization_members_self_read'");
+      expect(closing.match(/pg_catalog\.pg_get_expr\(p\.polqual, p\.polrelid\) = v_self/g)).toHaveLength(2);
+      expect(closing.match(/pg_catalog\.pg_get_expr\(p\.polwithcheck, p\.polrelid\) = v_self/g)).toHaveLength(2);
+      expect(closing).toContain("AND p.polcmd = 'w'");
+      expect(closing).toContain("AND k.conname = 'user_tutorial_settings_muted_valid'");
+      expect(closing).toContain("k.confdeltype = 'c'");
+      for (const message of [
+        'migration 137: user_tutorial_settings must have row security enabled and forced',
+        'migration 137: jale_api cannot read, insert and update user_tutorial_settings',
+        'migration 137: an unexpected privilege on user_tutorial_settings: %',
+        'migration 137: user_tutorial_settings policy set drifted',
+        "migration 137: a user_tutorial_settings policy is not the caller''s own row for jale_api",
+        'migration 137: user_tutorial_settings_muted_valid is missing or reads %',
+        'migration 137: user_tutorial_settings.user_id must reference users(id) ON DELETE CASCADE',
       ]) expect(closing).toContain(message);
     });
   });

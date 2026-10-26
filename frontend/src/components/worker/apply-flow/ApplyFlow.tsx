@@ -54,10 +54,16 @@ export type ApplyFlowProps = {
   submitting: boolean;
   submitError: ApplyFlowSubmitError | null;
   onBackToDetails: () => void;
+  /**
+   * The profile gate's "Save and apply" opened this screen: the profile was
+   * saved, nothing was sent yet. Marked on the intro (`data-from-gate`) for
+   * the step-by-step guide, which says so.
+   */
+  cameFromGate?: boolean;
 };
 
 export function ApplyFlow({
-  job, state, dispatch, onSubmit, submitting, submitError, onBackToDetails,
+  job, state, dispatch, onSubmit, submitting, submitError, onBackToDetails, cameFromGate = false,
 }: ApplyFlowProps) {
   const t = useTranslations('worker_job_detail.apply_flow');
   const tCommon = useTranslations('common');
@@ -69,17 +75,18 @@ export function ApplyFlow({
   const canSubmit = missing.length === 0;
 
   return (
-    <DashboardPanel>
+    <DashboardPanel data-guide="apply.screen">
       <div className="space-y-5 p-5 md:p-6">
         <button
           type="button"
+          data-guide="apply.back"
           onClick={onBackToDetails}
           className="inline-block text-left text-xs font-bold uppercase tracking-wide text-[var(--jale-ink-2)] transition-colors hover:text-[var(--jale-ink)]"
         >
           {t('back_to_details')}
         </button>
 
-        <div>
+        <div data-guide="apply.intro" data-from-gate={cameFromGate ? '' : undefined}>
           {/* 1.4rem/800/-0.03em, per B4.2 -- the same headline weight the
               onboarding steps use for the one question on screen. */}
           <h2 className="text-[1.4rem] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)]">
@@ -97,37 +104,40 @@ export function ApplyFlow({
             {prompts.map((prompt, index) => {
               const value = state.answers[prompt.id] ?? '';
               return (
-                <PromptAnswerField
-                  key={prompt.id}
-                  question={prompt.text}
-                  value={value}
-                  touched={state.touched.has(prompt.id)}
-                  disabled={submitting}
-                  // Only the first: the worker arrives here from the Apply
-                  // button and the first question is what they came to answer.
-                  // A job with no prompts renders no field, so there is
-                  // nothing to focus on the one-tap path.
-                  autoFocus={index === 0}
-                  onChange={(text) => dispatch({ type: 'set_prompt_answer', promptId: prompt.id, text })}
-                  labels={{
-                    placeholder: t('placeholder'),
-                    chars: t('chars', { count: value.trim().length, max: MAX_PROMPT_ANSWER_CHARS }),
-                    tooLong: t('too_long', { max: MAX_PROMPT_ANSWER_CHARS }),
-                    blankHint: t('blank_hint'),
-                  }}
-                />
+                // One hook per question, in screen order, for the step-by-step guide.
+                <div key={prompt.id} data-guide={`apply.answer.${index + 1}`}>
+                  <PromptAnswerField
+                    question={prompt.text}
+                    value={value}
+                    touched={state.touched.has(prompt.id)}
+                    disabled={submitting}
+                    // Only the first: the worker arrives here from the Apply
+                    // button and the first question is what they came to answer.
+                    // A job with no prompts renders no field, so there is
+                    // nothing to focus on the one-tap path.
+                    autoFocus={index === 0}
+                    onChange={(text) => dispatch({ type: 'set_prompt_answer', promptId: prompt.id, text })}
+                    labels={{
+                      placeholder: t('placeholder'),
+                      chars: t('chars', { count: value.trim().length, max: MAX_PROMPT_ANSWER_CHARS }),
+                      tooLong: t('too_long', { max: MAX_PROMPT_ANSWER_CHARS }),
+                      blankHint: t('blank_hint'),
+                    }}
+                  />
+                </div>
               );
             })}
           </div>
         ) : null}
 
-        <InlineFeedback tone="info">{t('later_note')}</InlineFeedback>
+        <InlineFeedback tone="info" data-guide="apply.later">{t('later_note')}</InlineFeedback>
 
         {submitError ? (
           <InlineFeedback tone="danger">{submitError.message}</InlineFeedback>
         ) : null}
 
         <Button
+          data-guide="apply.send"
           className="w-full"
           size="lg"
           disabled={!canSubmit}

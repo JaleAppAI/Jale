@@ -10,6 +10,10 @@ vi.mock('@/i18n/navigation', () => ({
 vi.mock('@/components/layout/AppShell', () => ({ AppShell: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
 vi.mock('@/components/employer/PostJobButton', () => ({ PostJobButton: () => null }));
 vi.mock('@/contexts/PostJobContext', () => ({ useJobCreated: () => {} }));
+// The board asks the applicants guide on its page view; the inbox is one of its signals.
+vi.mock('@/contexts/UnreadMessagesContext', () => ({
+  useUnreadMessages: () => ({ loading: false, errorKind: null, items: [] }),
+}));
 // The row is its own suite's subject; here it only reports a save.
 vi.mock('../ApplicantOverviewRow', () => ({
   ApplicantOverviewRow: ({ item, onHireDetailsSaved }: {

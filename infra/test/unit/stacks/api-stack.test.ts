@@ -12,6 +12,7 @@ import { BillingStack } from '../../../lib/stacks/billing-stack';
 import { NotificationsStack } from '../../../lib/stacks/notifications-stack';
 import { ReferralsStack } from '../../../lib/stacks/referrals-stack';
 import { bedrockArns } from '../../../lib/bedrock-arns';
+import { corsHeaders } from '../../../lambda/lib/http';
 
 describe('ApiStack', () => {
   let template: Template;
@@ -588,13 +589,14 @@ describe('ApiStack', () => {
     // consent toggle (migration 057) — the Method lands in this template
     // because the resource node it hangs off belongs to ApiStack.
     // 6th is /employer/settings/digest (migration 082), declared in ApiStack.
+    // 7th is /employer/tutorials (K1-v2 guide settings, migration 137).
     template.resourcePropertiesCountIs('AWS::ApiGateway::Method', {
       HttpMethod: 'PATCH',
       AuthorizationType: 'COGNITO_USER_POOLS',
       AuthorizerId: Match.objectLike({
         Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
       }),
-    }, 6);
+    }, 7);
   });
 
   // ── A6: CORS Idempotency-Key header ──────────────────────────────────────
@@ -1141,9 +1143,11 @@ describe('ApiStack', () => {
     expect(Object.keys(template.findResources('AWS::ApiGateway::Stage'))).toHaveLength(1);
   });
 
-  // ── Sprint 29 BE-1: tutorial progress (contract K1) ──────────────────────
-  // GET and POST on /employer/tutorials and /worker/tutorials, each behind its
-  // own pool's authorizer, both served by one function on the request login.
+  // ── Sprint 29 BE-1: tutorial progress (contract K1), and K1-v2's guide
+  // settings ────────────────────────────────────────────────────────────────
+  // GET, POST and PATCH on /employer/tutorials and /worker/tutorials, each
+  // behind its own pool's authorizer, all served by one function on the
+  // request login.
   describe('tutorial progress routes', () => {
     const resources = () => template.findResources('AWS::ApiGateway::Resource') as Record<
       string, { Properties: Record<string, any> }
@@ -1172,9 +1176,9 @@ describe('ApiStack', () => {
     test.each([
       ['/employer/tutorials', 'EmployerAuthorizer'],
       ['/worker/tutorials', 'WorkerAuthorizer'],
-    ])('%s serves GET and POST behind the %s, with its CORS preflight', (route, authorizer) => {
+    ])('%s serves GET, POST and PATCH behind the %s, with its CORS preflight', (route, authorizer) => {
       const methods = methodsOn(route);
-      expect(methods.map((m) => m.Properties.HttpMethod).sort()).toEqual(['GET', 'OPTIONS', 'POST']);
+      expect(methods.map((m) => m.Properties.HttpMethod).sort()).toEqual(['GET', 'OPTIONS', 'PATCH', 'POST']);
       const functionId = tutorialFunctionId();
       for (const method of methods.filter((m) => m.Properties.HttpMethod !== 'OPTIONS')) {
         expect(method.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
@@ -1198,11 +1202,24 @@ describe('ApiStack', () => {
       const functionId = tutorialFunctionId();
       const permissions = Object.values(template.findResources('AWS::Lambda::Permission') as Record<string, any>)
         .filter((p) => JSON.stringify(p.Properties.FunctionName).includes(`"${functionId}"`));
-      expect(permissions).toHaveLength(4);
+      expect(permissions).toHaveLength(6);
       for (const permission of permissions) {
         expect(permission.Properties.Principal).toBe('apigateway.amazonaws.com');
         expect(JSON.stringify(permission.Properties.SourceArn)).not.toContain('test-invoke-stage');
       }
+    });
+
+    test.each(['/employer/tutorials', '/worker/tutorials'])('%s answers the browser preflight for PATCH', (route) => {
+      // The RestApi's default preflight allows every method, and the
+      // handler's own answers carry lib/http.ts corsHeaders(), which lists
+      // PATCH too.
+      const [preflight] = methodsOn(route).filter((m) => m.Properties.HttpMethod === 'OPTIONS');
+      expect(preflight.Properties.AuthorizationType).toBe('NONE');
+      expect(preflight.Properties.Integration.Type).toBe('MOCK');
+      const allowed: string = preflight.Properties.Integration.IntegrationResponses[0]
+        .ResponseParameters['method.response.header.Access-Control-Allow-Methods'];
+      expect(allowed.replace(/'/g, '').split(',')).toContain('PATCH');
+      expect(corsHeaders()['Access-Control-Allow-Methods'].split(',')).toContain('PATCH');
     });
 
     test('adds no throttle of its own: the stage default covers it, like the neighbouring routes', () => {

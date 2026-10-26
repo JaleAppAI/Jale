@@ -342,8 +342,16 @@ export function QuestionFieldRow({
   const tDetails = useTranslations('worker_application_details');
   const complete = isFieldComplete(fieldKey, draft);
 
+  // The step-by-step guide's hook: one step per question, which reads from
+  // these whether the row is required and already complete.
   return (
-    <div className="grid gap-2">
+    <div
+      className="grid gap-2"
+      data-guide={`details.field.${fieldKey}`}
+      data-required={required ? 'true' : 'false'}
+      data-complete={complete ? 'true' : 'false'}
+      data-skipped={skipped ? 'true' : 'false'}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <label className="text-sm font-bold text-[var(--jale-ink)]">
           {t(`fields.${fieldKey}`)}

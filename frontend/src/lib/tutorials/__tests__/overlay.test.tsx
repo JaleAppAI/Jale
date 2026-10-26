@@ -168,3 +168,44 @@ describe('without a provider', () => {
         expect(result.current).toBeNull();
     });
 });
+
+describe('overlay presence: subscribe', () => {
+    it('tells a listener when an overlay opens and when it closes, and stops once unsubscribed', () => {
+        const calls: boolean[] = [];
+        const view = (open: boolean) => (
+            <OverlayPresenceProvider>
+                <RegistryProbe />
+                <Overlay open={open} />
+            </OverlayPresenceProvider>
+        );
+        const { rerender } = render(view(false));
+        if (!registry) throw new Error('no registry');
+        const current = registry;
+        const unsubscribe = current.subscribe(() => calls.push(current.isPresent()));
+
+        rerender(view(true));
+        rerender(view(false));
+        expect(calls).toEqual([true, false]);
+
+        unsubscribe();
+        rerender(view(true));
+        expect(calls).toEqual([true, false]);
+    });
+
+    it('says nothing when a re-render registers the same overlay again', () => {
+        let count = 0;
+        const view = (label: string) => (
+            <OverlayPresenceProvider>
+                <RegistryProbe />
+                <Overlay open />
+                <span>{label}</span>
+            </OverlayPresenceProvider>
+        );
+        const { rerender } = render(view('a'));
+        registry?.subscribe(() => {
+            count += 1;
+        });
+        rerender(view('b'));
+        expect(count).toBe(0);
+    });
+});

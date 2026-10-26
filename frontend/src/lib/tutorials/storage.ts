@@ -20,7 +20,7 @@
  */
 
 import { accountScopedKey } from '@/lib/account-key';
-import type { TutorialId, TutorialRole } from '@/lib/api/tutorials';
+import type { ProgressId, TutorialRole } from '@/lib/api/tutorials';
 
 /** Every key this module writes starts here, so a sweep can find them all. */
 const PREFIX = 'jale.tutorial_record_failed.';
@@ -35,7 +35,7 @@ function store(): Storage | null {
 }
 
 /** True only when THIS account's save of THIS tutorial failed earlier in the session. */
-export function readRecordFailed(id: TutorialId, account: string | null): boolean {
+export function readRecordFailed(id: ProgressId, account: string | null): boolean {
     if (account === null) return false;
     try {
         return store()?.getItem(accountScopedKey(`${PREFIX}${id}`, account)) === '1';
@@ -44,7 +44,7 @@ export function readRecordFailed(id: TutorialId, account: string | null): boolea
     }
 }
 
-export function writeRecordFailed(id: TutorialId, account: string | null): void {
+export function writeRecordFailed(id: ProgressId, account: string | null): void {
     if (account === null) return;
     try {
         store()?.setItem(accountScopedKey(`${PREFIX}${id}`, account), '1');

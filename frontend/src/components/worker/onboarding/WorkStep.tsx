@@ -75,6 +75,7 @@ export function WorkStep({
             <StepBody>
                 <Group id={`${groupId}-years`} title={t('years')}>
                     <OptionGrid<ExperienceKey>
+                        data-guide="onb.work.years"
                         variant="grid"
                         labelledBy={`${groupId}-years`}
                         describedBy={rejected ? errorId : undefined}
@@ -87,6 +88,7 @@ export function WorkStep({
 
                 <Group id={`${groupId}-transport`} title={t('transport')}>
                     <OptionGrid<TransportKey>
+                        data-guide="onb.work.transport"
                         variant="grid"
                         labelledBy={`${groupId}-transport`}
                         describedBy={rejected ? errorId : undefined}
@@ -99,6 +101,7 @@ export function WorkStep({
 
                 <Group id={`${groupId}-availability`} title={t('availability')}>
                     <OptionGrid<AvailabilityKey>
+                        data-guide="onb.work.availability"
                         variant="grid"
                         labelledBy={`${groupId}-availability`}
                         describedBy={rejected ? errorId : undefined}
@@ -114,6 +117,7 @@ export function WorkStep({
             <StepFooter>
                 {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
                 <Button
+                    data-guide="onb.work.continue"
                     className="w-full"
                     size="lg"
                     loading={saving}
