@@ -154,6 +154,15 @@ describe('/worker/profile — the W4 tutorial', () => {
     expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
   });
 
+  it('asks for the step-by-step guide rather than the slides', () => {
+    pageState = ready([]);
+    renderIntl(<WorkerProfilePage />);
+
+    expect(tutorial.useTutorial.mock.calls.length).toBeGreaterThan(0);
+    expect(tutorial.useTutorial.mock.calls.every(([, options]) => options.walkthrough === true)).toBe(true);
+    expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
+  });
+
   it('passes done once the worker has a saved document', () => {
     pageState = ready([SAVED_DOC]);
     renderIntl(<WorkerProfilePage />);

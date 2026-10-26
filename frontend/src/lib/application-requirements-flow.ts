@@ -689,6 +689,13 @@ export function requirementsFlowReducer(
  * what the other one stored with a value the worker never looked at -- the
  * merges only commute because each door sends what it actually changed.
  *
+ * PLUS THE PREFILL the door has no answer for yet. `apply_defaults` fills the
+ * draft with the last application's answers, and "Save and continue" is the
+ * worker accepting them: they show as answered on Check & finish, so they are
+ * sent like anything typed. A prefilled key the door already holds an answer
+ * for (the other door stored it meanwhile, or this one saved it earlier) is
+ * left alone, by the same rule as above.
+ *
  * CHUNKED rather than truncated: the door rejects an oversized batch outright
  * (see `MAX_ANSWERS_PER_BATCH`), so a caller posts these in order and hydrates
  * from the LAST response.
@@ -696,8 +703,11 @@ export function requirementsFlowReducer(
 export function answersBatch(state: RequirementsFlowState): Record<string, unknown>[] {
   const { required_fields: requiredFields, optional_fields: optionalFields } = state.server.job;
   const full = buildAnswersPayload(requiredFields, optionalFields, state.draft, state.skipped);
+  const stored = state.server.answers;
+  const sends = (key: string) =>
+    state.touched.has(key) || (state.prefilledKeys.has(key) && !Object.prototype.hasOwnProperty.call(stored, key));
 
-  const touchedEntries = Object.entries(full).filter(([key]) => state.touched.has(key));
+  const touchedEntries = Object.entries(full).filter(([key]) => sends(key));
   if (touchedEntries.length === 0) return [];
 
   const chunks: Record<string, unknown>[] = [];

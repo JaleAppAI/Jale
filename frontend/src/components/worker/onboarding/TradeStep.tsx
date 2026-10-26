@@ -95,6 +95,7 @@ export function TradeStep({
             <StepHeader screen="trade" title={t('title')} subtitle={t('subtitle')} onBack={onBack} backDisabled={saving} />
             <StepBody>
                 <OptionGrid<TradeKey>
+                    data-guide="onb.trade.list"
                     options={TRADE_KEYS.map((key) => ({ value: key, label: tVocab(tradeLabelKey(key)) }))}
                     value={draft.trade}
                     disabled={saving}
@@ -102,18 +103,20 @@ export function TradeStep({
                     onChange={(trade) => onDraftChange({ trade })}
                 />
                 {draft.trade === 'other' ? (
-                    <StepField label={t('other_label')} htmlFor={`${fieldId}-other`} error={rejected} errorId={errorId}>
-                        <Input
-                            id={`${fieldId}-other`}
-                            value={draft.customTrade}
-                            placeholder={t('other_placeholder')}
-                            disabled={saving}
-                            aria-invalid={rejected || outOfBounds ? true : undefined}
-                            aria-describedby={rejected ? errorId : boundHint ? hintId : undefined}
-                            onChange={(e) => onDraftChange({ customTrade: e.target.value })}
-                        />
-                        {!rejected && boundHint ? <span id={hintId}><StepHint>{boundHint}</StepHint></span> : null}
-                    </StepField>
+                    <div data-guide="onb.trade.other">
+                        <StepField label={t('other_label')} htmlFor={`${fieldId}-other`} error={rejected} errorId={errorId}>
+                            <Input
+                                id={`${fieldId}-other`}
+                                value={draft.customTrade}
+                                placeholder={t('other_placeholder')}
+                                disabled={saving}
+                                aria-invalid={rejected || outOfBounds ? true : undefined}
+                                aria-describedby={rejected ? errorId : boundHint ? hintId : undefined}
+                                onChange={(e) => onDraftChange({ customTrade: e.target.value })}
+                            />
+                            {!rejected && boundHint ? <span id={hintId}><StepHint>{boundHint}</StepHint></span> : null}
+                        </StepField>
+                    </div>
                 ) : rejected ? (
                     <p id={errorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{rejected}</p>
                 ) : null}
@@ -133,6 +136,7 @@ export function TradeStep({
                     {switchHint ? <StepHint>{switchHint}</StepHint> : null}
                 </span>
                 <Button
+                    data-guide="onb.trade.continue"
                     className="w-full"
                     size="lg"
                     loading={saving}

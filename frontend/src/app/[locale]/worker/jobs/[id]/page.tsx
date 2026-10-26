@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useEffectEvent, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useId, useReducer, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
@@ -51,6 +51,7 @@ import {
 } from '@/lib/api/worker';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
+import { useTutorialProgress } from '@/lib/tutorials/progress';
 import { useOverlayPresence } from '@/lib/tutorials/overlay';
 
 export const dynamic = 'force-dynamic';
@@ -194,6 +195,10 @@ export default function WorkerJobDetailPage() {
   // component per its doc comment) and reset only on a job-id change --
   // never in place -- via the effect below.
   const [viewMode, setViewMode] = useState<'details' | 'apply'>('details');
+  // The apply screen was opened by the profile gate's save ("Save and apply"),
+  // which saved the profile and did not apply: the guide says so there.
+  const [cameFromGate, setCameFromGate] = useState(false);
+  const closedReasonId = useId();
   const [applyState, applyDispatch] = useReducer(applyFlowReducer, undefined, initialApplyFlowState);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<ApplyFlowSubmitError | null>(null);
@@ -280,9 +285,6 @@ export default function WorkerJobDetailPage() {
    * URL only when it is handed a state that is not already its own.
    */
   const applyParamHandledForRef = useRef<string | null>(null);
-  // Set when this visit arrived with `?apply=1`, before the param is stripped,
-  // so the W2 tutorial below never opens over a worker already mid-apply.
-  const arrivedToApplyRef = useRef(false);
   const applyFromLink = useEffectEvent(() => {
     void handleApplyClick();
   });
@@ -291,18 +293,26 @@ export default function WorkerJobDetailPage() {
     applyParamHandledForRef.current = job.id;
     const url = new URL(window.location.href);
     if (url.searchParams.get('apply') !== '1') return;
-    arrivedToApplyRef.current = true;
     url.searchParams.delete('apply');
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
     if (!job.already_applied && (job.status ?? 'active') === 'active') applyFromLink();
   }, [job]);
 
   /*
-   * W2, the applying tutorial. Its K1.5 signal -- the worker has any
+   * W2, the applying guide. Its K1.5 signal -- the worker has any
    * application -- is not on this page, so it reads ONE application of its
    * own, once per signed-in visit (a token rotation does not re-read). Until
    * that read answers `done` is `undefined`, and a failed read leaves it
-   * there: no signal means no auto-open on this page view.
+   * there: no signal means the guide does not open on its own.
+   *
+   * The guide plays where applying starts, once per start: in the profile
+   * gate when Apply (or an `?apply=1` arrival) opens it, carrying on through
+   * "Save and apply" into the apply screen; otherwise in the apply screen as
+   * it opens. So a worker sees it at the moment they start applying, and
+   * never as slides over the job page first. The slides stay in Help as the
+   * overview. An `?apply=1` arrival (or a quick tap) can open the gate or the
+   * screen before this page knows `done` or the progress store has read; the
+   * ask then waits for both, while its host is still up (`guideDueRef`).
    */
   const [hasApplied, setHasApplied] = useState<boolean | undefined>(undefined);
   const signedIn = Boolean(idToken);
@@ -317,7 +327,25 @@ export default function WorkerJobDetailPage() {
       .catch(() => { /* no signal, no auto-open: `done` stays undefined */ });
     return () => controller.abort();
   }, [signedIn]);
-  const applyTutorial = useTutorial('worker_apply', { done: hasApplied });
+  const applyTutorial = useTutorial('worker_apply', { done: hasApplied, walkthrough: true });
+  const progressStatus = useTutorialProgress()?.status;
+  /** The gate or the apply screen opened and the guide has not been asked for yet. */
+  const guideDueRef = useRef(false);
+  /** The guide was asked for in the gate: it carries on into the screen the gate opens. */
+  const guideAskedAtGateRef = useRef(false);
+  useEffect(() => {
+    const hostUp = viewMode === 'apply' || modalOpen;
+    if (!hostUp) {
+      guideDueRef.current = false;
+      return;
+    }
+    if (!guideDueRef.current || hasApplied === undefined || progressStatus === 'loading') return;
+    guideDueRef.current = false;
+    guideAskedAtGateRef.current = modalOpen && viewMode !== 'apply';
+    // The gate or the screen is already up: it is the host the guide plays in.
+    applyTutorial.runWithHost(() => {});
+  }, [viewMode, modalOpen, hasApplied, progressStatus, applyTutorial]);
+
 
   // One shared vault fetch, refetched on demand via `onVaultChanged` (after a
   // successful upload from inside `ApplyFlow`) and whenever the auth token
@@ -379,7 +407,12 @@ export default function WorkerJobDetailPage() {
    * Defaults are merged at the stage-2 door instead -- and increasingly by the
    * backend itself, which seeds them when the employer arms the stage.
    */
-  function openApplyFlow() {
+  function openApplyFlow(fromGate = false) {
+    setCameFromGate(fromGate);
+    // The screen first; the effect above then asks for the guide inside it,
+    // unless it was asked for in the gate this screen comes from.
+    guideDueRef.current = !(fromGate && guideAskedAtGateRef.current);
+    guideAskedAtGateRef.current = false;
     setViewMode('apply');
   }
 
@@ -391,6 +424,8 @@ export default function WorkerJobDetailPage() {
       const profile = await fetchProfile();
       if (!profileIsComplete(profile)) {
         setProfilePrefill(profile);
+        // The gate first; the effect above then asks for the guide inside it.
+        guideDueRef.current = true;
         setModalOpen(true);
         return;
       }
@@ -473,7 +508,7 @@ export default function WorkerJobDetailPage() {
     // of the gate -- and from here every failure is an APPLY failure, which
     // belongs to the taxonomy anchored to the apply button.
     setModalOpen(false);
-    openApplyFlow();
+    openApplyFlow(true);
   }
 
   /**
@@ -562,15 +597,29 @@ export default function WorkerJobDetailPage() {
       reportProblem(t('errors.legal_required'));
       return;
     }
+    // Both arms below reflect the outcome locally BEFORE leaving the apply
+    // screen, as a successful send does: the page then shows what the server
+    // said (applied, or closed) at once, not the old Apply button until the
+    // confirming refresh lands -- and so does the applying guide, which reads
+    // the page as the screen gives way.
     if (applyErr.status === 409) {
-      if (applyErr.code === 'user_not_provisioned') showApplyError(t('errors.account_not_ready'));
-      else showApplyError(t('errors.already_applied'));
+      if (applyErr.code === 'user_not_provisioned') {
+        showApplyError(t('errors.account_not_ready'));
+      } else {
+        showApplyError(t('errors.already_applied'));
+        setData((prev) => ({
+          ...prev,
+          already_applied: true,
+          application_status: prev.application_status ?? 'pending',
+        }));
+      }
       if (fromFlow) setViewMode('details');
       await refresh();
       return;
     }
     if (applyErr.status === 410 || applyErr.status === 404) {
       showApplyError(t('errors.job_closed'));
+      setData((prev) => ({ ...prev, status: 'closed' }));
       if (fromFlow) setViewMode('details');
       await refresh();
       return;
@@ -664,24 +713,6 @@ export default function WorkerJobDetailPage() {
    * on screen.
    */
   const pinApply = canApply;
-
-  /*
-   * Asked ONCE per page view, at the first moment both the job and the signal
-   * are known. Not over a worker who arrived with `?apply=1` (they are already
-   * applying), not over the profile gate or the in-page flow, and not on a
-   * job that can no longer take an application. Whether it then opens is the
-   * tutorial's decision (a record, the signal, another overlay).
-   */
-  const applyTutorialAskedRef = useRef(false);
-  const askApplyTutorial = useEffectEvent(() => applyTutorial.maybeAutoOpen());
-  const jobLoaded = Boolean(job);
-  useEffect(() => {
-    if (applyTutorialAskedRef.current) return;
-    if (!jobLoaded || hasApplied === undefined) return;
-    applyTutorialAskedRef.current = true;
-    if (arrivedToApplyRef.current || viewMode !== 'details' || !canApply || modalOpen || applying) return;
-    askApplyTutorial();
-  }, [jobLoaded, hasApplied, viewMode, canApply, modalOpen, applying]);
 
   /*
    * The job's facts, as the ONE card body all three job pages render.
@@ -850,6 +881,7 @@ export default function WorkerJobDetailPage() {
                 submitting={submitting}
                 submitError={submitError}
                 onBackToDetails={handleBackToDetails}
+                cameFromGate={cameFromGate}
               />
             ) : (
               /* No room is set aside here for the pinned Apply panel: it
@@ -1051,7 +1083,10 @@ export default function WorkerJobDetailPage() {
                       </InlineFeedback>
                     ) : null}
 
-                    <div className="flex flex-wrap items-center justify-end gap-3">
+                    <div
+                      data-guide={job.already_applied ? 'apply.applied' : undefined}
+                      className="flex flex-wrap items-center justify-end gap-3"
+                    >
                       {job.already_applied ? (
                         <>
                           <span className="text-sm font-medium text-[var(--jale-ink-2)]">
@@ -1066,8 +1101,13 @@ export default function WorkerJobDetailPage() {
                       ) : (
                         <div className="flex flex-col items-end gap-1.5 max-sm:w-full max-sm:items-stretch">
                           <Button
+                            data-guide="apply.button"
+                            // For the applying guide: how many questions the apply
+                            // screen will ask (counted from the gate).
+                            data-questions={(job.pre_application_prompts ?? []).length}
                             onClick={handleApplyClick}
                             disabled={!canApply}
+                            aria-describedby={canApply ? undefined : closedReasonId}
                             loading={applying}
                             loadingLabel={tCommon('loading')}
                             className="max-sm:w-full"
@@ -1082,7 +1122,19 @@ export default function WorkerJobDetailPage() {
                               made: a couple of minutes, and no documents. */}
                           {canApply ? (
                             <p className="text-xs text-[var(--jale-ink-2)] max-sm:text-center">{t('apply_hint')}</p>
-                          ) : null}
+                          ) : (
+                            /* Why Apply is greyed, said beside it: the notice
+                               at the top of the page may be screens away, and
+                               a paused job has no notice at all (and is not
+                               closed: the employer may open it again). */
+                            <p
+                              id={closedReasonId}
+                              data-guide="apply.closed"
+                              className="text-xs font-medium text-[var(--jale-ink-2)] max-sm:text-center"
+                            >
+                              {job.status === 'paused' ? t('errors.job_paused') : t('errors.job_closed')}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1098,7 +1150,10 @@ export default function WorkerJobDetailPage() {
               <ProfileCompleteModal
                 open={modalOpen}
                 initial={profilePrefill ?? undefined}
-                onClose={() => setModalOpen(false)}
+                onClose={() => {
+                  guideAskedAtGateRef.current = false;
+                  setModalOpen(false);
+                }}
                 onSubmit={handleModalSubmit}
               />
             ) : null}

@@ -26,15 +26,18 @@ import type { RequirementsFlowState, RequirementsTotals } from '@/lib/applicatio
  * whole point of this step is to be right about what the employer will
  * actually see, and only the door knows whether the last upload landed. When
  * something is still outstanding the button is disabled and the missing items
- * are named with a link back to the step that fixes them (W4c, right phone).
+ * are named with a link back to the step that fixes them (W4c, right phone):
+ * Details while a question is missing, Documents & certifications otherwise,
+ * the link naming the step it opens.
  */
 export function RequirementsReviewStep({
-  state, totals, onFinish, onGotoDocuments, saving,
+  state, totals, onFinish, onGotoStep, saving,
 }: {
   state: RequirementsFlowState;
   totals: RequirementsTotals;
   onFinish: () => void;
-  onGotoDocuments: () => void;
+  /** Opens a step of the stepper by index (0 Details, 1 Documents & certifications). */
+  onGotoStep: (index: number) => void;
   saving: boolean;
 }) {
   const t = useTranslations('worker_application_details.review');
@@ -73,10 +76,12 @@ export function RequirementsReviewStep({
     ...remaining.certifications.unproven,
   ];
   const blocked = missingLabels.length > 0;
+  // The first step that still owes the door something, in stepper order.
+  const fixStep = remaining.fields.length > 0 ? 0 : 1;
 
   return (
     <div className="anim-fade-in grid gap-4">
-      <div>
+      <div data-guide="details.review.summary">
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--jale-ink-2)]">
           {t('summary_title')}
         </p>
@@ -90,10 +95,12 @@ export function RequirementsReviewStep({
           </InlineFeedback>
           <button
             type="button"
-            onClick={onGotoDocuments}
+            data-guide="details.review.fix"
+            data-fix-step={fixStep === 0 ? 'details' : 'documents'}
+            onClick={() => onGotoStep(fixStep)}
             className="self-start text-sm font-semibold text-[var(--jale-blue-700)] underline underline-offset-2"
           >
-            {t('go_fix')}
+            {fixStep === 0 ? t('go_fix_details') : t('go_fix')}
           </button>
         </>
       ) : (
@@ -109,6 +116,7 @@ export function RequirementsReviewStep({
       <Button
         className="w-full"
         size="lg"
+        data-guide="details.review.finish"
         disabled={blocked}
         loading={saving}
         loadingLabel={tCommon('loading')}

@@ -47,7 +47,7 @@ export function RequirementsCompleteStep({
 
       <div className="grid gap-2.5">
         <Link href="/worker/applications">
-          <Button className="w-full">{t('back_to_applications')}</Button>
+          <Button className="w-full" data-guide="details.complete.back">{t('back_to_applications')}</Button>
         </Link>
         {jobId ? (
           <Link href={`/worker/jobs/${jobId}`}>

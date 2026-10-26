@@ -1256,7 +1256,8 @@
       "saved_note": "Guardado en tu perfil para que la próxima vez sea más rápido.",
       "finish": "Terminar",
       "still_missing": "Todavía falta: {items}",
-      "go_fix": "Ir a Documentos y certificaciones"
+      "go_fix": "Ir a Documentos y certificaciones",
+      "go_fix_details": "Ir a Datos"
     },
     "complete": {
       "chip": "Todo listo",
@@ -1392,7 +1393,8 @@
       "account_not_ready": "Tu cuenta todavía se está preparando. Cierra sesión, vuelve a iniciar sesión e inténtalo de nuevo.",
       "already_applied": "Ya te postulaste a este trabajo.",
       "server_error": "No pudimos enviar esta postulación ahora. Inténtalo de nuevo en unos minutos.",
-      "apply_failed": "No pudimos enviar esta postulación. Revisa tu perfil y tus documentos, e inténtalo de nuevo."
+      "apply_failed": "No pudimos enviar esta postulación. Revisa tu perfil y tus documentos, e inténtalo de nuevo.",
+      "job_paused": "El empleador pausó este trabajo. Vuelve a revisarlo más tarde."
     },
     "not_found": {
       "title": "Trabajo no encontrado",
@@ -1850,7 +1852,7 @@
     "empty_preferred_cities": "Sin ciudades seleccionadas",
     "empty_bio": "Sin descripción",
     "documents_title": "Documentos",
-    "documents_subtitle": "Los documentos cargados se reutilizan automáticamente cuando postula a un trabajo.",
+    "documents_subtitle": "Los documentos cargados se reutilizan automáticamente cuando postulas a un trabajo.",
     "documents": {
       "types": {
         "resume": "Currículum",
@@ -1889,7 +1891,14 @@
       "bio": "Acerca de ti",
       "certifications_placeholder": "OSHA 10, montacargas, CDL",
       "save": "Guardar",
-      "cancel": "Cancelar"
+      "cancel": "Cancelar",
+      "trade_label": "Oficio",
+      "trade_choose": "Elige tu oficio",
+      "trade_other_label": "Tu oficio",
+      "trade_other_placeholder": "Escribe tu oficio, p. ej. soldador, drywall, techador",
+      "trade_other_length": "Escribe tu oficio en {min} a {max} caracteres.",
+      "availability_choose": "Elige tu disponibilidad",
+      "years_required": "Escribe tus años de experiencia (0 si no tienes)."
     },
     "complete_modal": {
       "title": "Completa tu perfil",
@@ -1917,7 +1926,9 @@
     "errors": {
       "required": "Obligatorio.",
       "missing_summary": "Por favor agrega: {fields}"
-    }
+    },
+    "field_trade": "Oficio",
+    "empty_trade": "Oficio sin especificar"
   },
   "billing": {
     "title": "Facturación",
@@ -2132,7 +2143,8 @@
       "confirm_title": "¿Quisiste decir {city}, {state}?",
       "confirm_yes": "Sí, es correcto",
       "confirm_no": "No, quiero cambiarlo",
-      "cta": "Continuar"
+      "cta": "Continuar",
+      "location_pick": "Elige tu ciudad de la lista para continuar, o escribe un código postal de 5 dígitos."
     },
     "trade": {
       "title": "¿Cuál es tu oficio?",
@@ -2533,6 +2545,110 @@
         "job2": "Ayudante de concreto",
         "job2_meta": "Socorro, TX · $20/h",
         "apply": "Postularme"
+      },
+      "guide": {
+        "intro_title": "¿Te ayudamos a crear tu perfil?",
+        "intro_body": "{input, select, touch {Te mostramos qué tocar y qué escribir en cada pantalla, paso a paso. Unos 2 minutos.} other {Te mostramos dónde hacer clic y qué escribir en cada pantalla, paso a paso. Unos 2 minutos.}}",
+        "counter": "Tu perfil · {current} de {total}",
+        "steps": {
+          "terms": {
+            "title": "Lee y acepta",
+            "body": "Esta página corta dice cómo usa Jale tu información y que los mensajes de trabajo llegan por SMS y WhatsApp. {input, select, touch {Toca} other {Haz clic en}} Acepto y continúo cuando estés listo.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Acepto y continúo para seguir."
+          },
+          "name": {
+            "title": "Tu nombre",
+            "body": "Escribe tu nombre y tu apellido. Se necesitan los dos. Los empleadores ven este nombre en tus postulaciones.",
+            "wait": "Escribe los dos para continuar."
+          },
+          "location": {
+            "title": "Dónde vives",
+            "body": "{input, select, touch {Empieza a escribir tu ciudad y tócala en la lista.} other {Empieza a escribir tu ciudad y haz clic en ella en la lista.}} O escribe tu código postal de 5 dígitos. Una ciudad que escribes pero no eliges de la lista no cuenta.",
+            "wait": "Elige tu ciudad de la lista o escribe un código postal de 5 dígitos."
+          },
+          "about_continue": {
+            "title": "Sigue",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Continuar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Continuar para seguir."
+          },
+          "location_confirm": {
+            "title": "¿Es tu ciudad?",
+            "body": "Encontramos una ciudad parecida. {input, select, touch {Toca} other {Haz clic en}} Sí, es correcto si es la tuya. Si no, {input, select, touch {toca} other {haz clic en}} No, quiero cambiarlo, elige tu ciudad de la lista otra vez y {input, select, touch {toca} other {haz clic en}} Continuar.",
+            "wait": "Contesta Sí o No para seguir."
+          },
+          "trade": {
+            "title": "Tu oficio",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} el oficio que más haces. Si el tuyo no está en la lista, {input, select, touch {toca} other {haz clic en}} Otro.",
+            "wait": "Elige un oficio para continuar."
+          },
+          "trade_other": {
+            "title": "Escribe tu oficio",
+            "body": "Elegiste Otro, así que se abrió un recuadro debajo de la lista. {input, select, touch {Tócalo} other {Haz clic en él}} y escribe tu oficio, como soldador o techador: de 2 a 60 caracteres.",
+            "wait": "Escribe tu oficio en 2 a 60 caracteres para continuar."
+          },
+          "trade_back": {
+            "title": "Primero {input, select, touch {toca} other {haz clic en}} Atrás",
+            "body": "Tu oficio escrito está esperando a guardarse, así que para elegir uno de la lista, primero {input, select, touch {toca} other {haz clic en}} Atrás arriba. Luego elige tu oficio y {input, select, touch {toca} other {haz clic en}} Continuar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Atrás y luego elige tu oficio."
+          },
+          "trade_continue": {
+            "title": "Sigue",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Continuar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Continuar para seguir."
+          },
+          "years": {
+            "title": "Tiempo en este oficio",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} cuánto tiempo llevas en tu oficio.",
+            "wait": "Elige una opción para continuar."
+          },
+          "transport": {
+            "title": "Transporte propio",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Sí si tienes cómo llegar al trabajo por tu cuenta, o No. No también es una respuesta válida.",
+            "wait": "Elige Sí o No para continuar."
+          },
+          "availability": {
+            "title": "Cuándo puedes trabajar",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} cuándo puedes trabajar: Tiempo completo, Medio tiempo, Fines de semana o Flexible.",
+            "wait": "Elige una opción para continuar."
+          },
+          "work_continue": {
+            "title": "Sigue",
+            "body": "Son las tres respuestas que necesita esta pantalla. {input, select, touch {Toca} other {Haz clic en}} Continuar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Continuar para seguir."
+          },
+          "q1_lock": {
+            "title": "Tres preguntas que leen los empleadores",
+            "body": "Ahora vienen tres preguntas que contestas con tus propias palabras. Hasta terminar la pregunta 3 puedes regresar y cambiarlas; después se bloquean."
+          },
+          "answer": {
+            "title": "Contesta con tus propias palabras",
+            "body": "Escribe tu respuesta en el recuadro: al menos 15 caracteres. Con más detalle, los empleadores te eligen más fácil.",
+            "wait": "Escribe al menos 15 caracteres para continuar."
+          },
+          "answer_voice": {
+            "title": "Contesta con tus propias palabras",
+            "body": "Escribe tu respuesta en el recuadro, o {input, select, touch {toca} other {haz clic en}} el micrófono, dila y {input, select, touch {tócalo} other {haz clic en él}} otra vez para detener. Luego revisa el texto. Al menos 15 caracteres.",
+            "wait": "Escribe o di al menos 15 caracteres para continuar."
+          },
+          "question_next": {
+            "title": "Siguiente pregunta",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Siguiente.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Siguiente para seguir."
+          },
+          "q3_lock": {
+            "title": "Es la última",
+            "body": "Cuando {input, select, touch {toques} other {hagas clic en}} Completa tus preguntas, tus tres respuestas se bloquean y ya no puedes cambiarlas."
+          },
+          "q3_complete": {
+            "title": "Termina tus preguntas",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Completa tus preguntas para terminar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Completa tus preguntas para terminar."
+          },
+          "done": {
+            "title": "Todo listo",
+            "body": "Esto es lo que ven los empleadores. Estamos leyendo tus respuestas para encontrar tus habilidades; no tienes que esperar. Usa el botón de abajo para seguir."
+          }
+        }
       }
     },
     "worker_apply": {
@@ -2576,7 +2692,84 @@
         "h_details": "Quieren contratarte",
         "whatsapp": "WhatsApp · Jale",
         "emp_msg": "Hola, ¿puedes empezar el lunes a las 7 a. m.?",
-        "my_reply": "Sí, ahí estaré"
+        "my_reply": "Sí, ahí estaré",
+        "answer": "Sí, llevo mi propio taladro y nivel."
+      },
+      "guide": {
+        "intro_title": "¿Te ayudamos a postularte?",
+        "intro_body": "{input, select, touch {Te mostramos qué tocar y qué escribir, paso a paso. Unos 2 minutos.} other {Te mostramos dónde hacer clic y qué escribir, paso a paso. Unos 2 minutos.}}",
+        "counter": "Postularte · {current} de {total}",
+        "steps": {
+          "from_gate": {
+            "title": "Tu perfil está guardado",
+            "body": "Todavía no te has postulado. Termina en esta pantalla y luego {input, select, touch {toca} other {haz clic en}} Enviar postulación para postularte."
+          },
+          "answer_first": {
+            "title": "Contesta con tus propias palabras",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} el recuadro y escribe tu respuesta, como lo dirías en voz alta. Con una línea basta; hasta 1000 caracteres.",
+            "wait": "Escribe algo (hasta 1000 caracteres) para continuar."
+          },
+          "answer_more": {
+            "title": "Una pregunta más",
+            "body": "Contesta esta igual. Puedes cambiar tus respuestas hasta que envíes.",
+            "wait": "Escribe algo (hasta 1000 caracteres) para continuar."
+          },
+          "no_questions": {
+            "title": "Este empleo no tiene preguntas",
+            "body": "Este empleador no pregunta nada, así que solo tienes que enviar tu postulación."
+          },
+          "later": {
+            "title": "Sin documentos por ahora",
+            "body": "No subes nada para postularte. El empleador pide documentos solo si decide contratarte."
+          },
+          "send": {
+            "title": "Envía tu postulación",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Enviar postulación. Eso es lo que te postula; no se envía nada antes.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Enviar postulación para terminar."
+          },
+          "sent": {
+            "title": "¡Te postulaste!",
+            "body": "Tu postulación dice Aplicado mientras el empleador la revisa. Cuando el empleador te escriba, el mensaje llega por WhatsApp."
+          },
+          "closed": {
+            "title": "Este trabajo se cerró",
+            "body": "El empleador dejó de recibir postulaciones para este trabajo, así que tu postulación no se envió. Hay otros trabajos abiertos."
+          },
+          "gate_name": {
+            "title": "Tu nombre",
+            "body": "Los empleadores necesitan algunos datos antes de que puedas postularte. Escribe tu nombre completo en Nombre completo.",
+            "wait": "Escribe tu nombre para seguir."
+          },
+          "gate_skills": {
+            "title": "Tus habilidades",
+            "body": "Escribe lo que sabes hacer en Habilidades (separadas por comas), con una coma entre cada una, como “marcos, tablaroca”.",
+            "wait": "Agrega al menos una habilidad para seguir."
+          },
+          "gate_availability": {
+            "title": "¿Cuándo puedes trabajar?",
+            "body": "Elige Tiempo completo, Medio tiempo, Fines de semana o Flexible en Disponibilidad.",
+            "wait": "Elige una para seguir."
+          },
+          "gate_location": {
+            "title": "Dónde vives",
+            "body": "Escribe tu ciudad en Ubicación, como “El Paso, TX”.",
+            "wait": "Escribe tu ciudad para seguir."
+          },
+          "gate_years": {
+            "title": "Años de experiencia",
+            "body": "Opcional. Escribe cuántos años has trabajado en Años de experiencia, o déjalo como está. Si ya hay un número guardado, cámbialo pero no lo borres (usa 0 si no tienes).",
+            "wait": "Escribe un número (0 si no tienes) para seguir."
+          },
+          "gate_save": {
+            "title": "Guarda tu perfil",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Guardar y postular. Guarda tu perfil y abre tu postulación; la envías en la siguiente pantalla.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Guardar y postular para seguir."
+          },
+          "back": {
+            "title": "¿Necesitas parar?",
+            "body": "Volver al empleo guarda lo que escribiste mientras sigas en esta página. Para regresar, {input, select, touch {toca} other {haz clic en}} Seguir con la postulación."
+          }
+        }
       }
     },
     "worker_details": {
@@ -2591,26 +2784,198 @@
         },
         "saved": {
           "title": "Tus documentos guardados se agregan solos",
-          "body": "Los archivos que guardaste antes se adjuntan automáticamente. Puedes cambiar cualquiera."
+          "body": "Los archivos que guardaste antes cuentan automáticamente: aparecen como Subido. Puedes reemplazar cualquiera."
         },
         "send": {
-          "title": "Revisa y envía",
-          "body": "Revisa tus respuestas y envíalas. El empleador las ve al momento."
+          "title": "Revisa y termina",
+          "body": "Revisa tus respuestas y toca Terminar. El empleador las recibe al momento."
         }
       },
       "scene": {
         "company": "Concretos de Ejemplo",
         "five_min": "Unos 5 min",
-        "step1": "Preguntas",
-        "step2": "Documentos",
-        "step3": "Revisión",
-        "slot_name": "Licencia de manejo",
-        "from_vault": "Agregado de tus documentos guardados",
-        "replace": "Cambiar",
-        "r1": "Fecha disponible",
+        "step1": "Datos",
+        "step2": "Documentos y certificaciones",
+        "step3": "Revisar y terminar",
+        "slot_name": "Licencia de conducir",
+        "from_vault": "Subido",
+        "replace": "Reemplazar",
+        "r1": "Fecha de disponibilidad",
         "r2": "Contacto de emergencia",
-        "r3": "Licencia de manejo",
-        "send": "Enviar al empleador"
+        "r3": "Licencia de conducir",
+        "send": "Terminar"
+      },
+      "guide": {
+        "intro_title": "¿Te ayudamos con tus datos?",
+        "intro_body": "{input, select, touch {Te mostramos cada parte, una por una: qué contestar, qué archivos agregar y dónde tocar Terminar. Unos 5 minutos.} other {Te mostramos cada parte, una por una: qué contestar, qué archivos agregar y dónde hacer clic en Terminar. Unos 5 minutos.}}",
+        "counter": "Tus datos · {current} de {total}",
+        "steps": {
+          "prompts": {
+            "title": "Las preguntas del empleador",
+            "body": "Contesta esta pregunta en el recuadro, con tus propias palabras. Hasta 1000 caracteres.",
+            "wait": "Escribe una respuesta (hasta 1000 caracteres) para seguir."
+          },
+          "prompts_save": {
+            "title": "Guarda tus respuestas",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Guardar y seguir. Después vienen los datos que pidió el empleador.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Guardar y seguir para continuar."
+          },
+          "overview": {
+            "title": "Tres pasos",
+            "body": "Datos, Documentos y certificaciones, y al final Revisar y terminar. La barra muestra lo que falta. Algunas respuestas de tu última postulación ya pueden estar puestas: revísalas en el camino.",
+            "wait": "Un momento: estamos revisando tus archivos guardados."
+          },
+          "field_work_authorization": {
+            "title": "¿Puedes trabajar en EE. UU.?",
+            "body": "En “¿Autorizado para trabajar en EE. UU.?”, {input, select, touch {toca} other {haz clic en}} Sí o No.",
+            "body_optional": "Es opcional. En “¿Autorizado para trabajar en EE. UU.?”, {input, select, touch {toca} other {haz clic en}} Sí o No, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Sí o No para seguir."
+          },
+          "field_date_available": {
+            "title": "¿Cuándo puedes empezar?",
+            "body": "En Fecha de disponibilidad, elige el primer día en que puedes empezar.",
+            "body_optional": "Es opcional. En Fecha de disponibilidad, elige el primer día en que puedes empezar, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Elige una fecha para seguir."
+          },
+          "field_desired_pay": {
+            "title": "El pago que quieres",
+            "body": "En Pago deseado, escribe la cantidad en dólares enteros, sin centavos. Luego elige Por hora, Diario, Semanal, Mensual o Fijo (tarifa plana).",
+            "body_optional": "Es opcional. En Pago deseado, escribe la cantidad en dólares enteros, sin centavos, y elige cada cuánto; o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Escribe una cantidad en dólares enteros para seguir."
+          },
+          "field_home_address": {
+            "title": "Tu dirección",
+            "body": "Escribe tu calle y número, tu ciudad, el estado en 2 letras (como TX) y el código postal de 5 dígitos. El recuadro del apartamento es opcional.",
+            "body_optional": "Es opcional. Escribe tu calle y número, ciudad, estado en 2 letras (como TX) y código postal de 5 dígitos, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Llena calle, ciudad, estado en 2 letras y código postal de 5 dígitos para seguir."
+          },
+          "field_date_of_birth": {
+            "title": "Tu fecha de nacimiento",
+            "body": "En Fecha de nacimiento, elige el día en que naciste.",
+            "body_optional": "Es opcional. En Fecha de nacimiento, elige el día en que naciste, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Elige una fecha para seguir."
+          },
+          "field_emergency_contact": {
+            "title": "A quién llamar en una emergencia",
+            "body": "Escribe el nombre y el teléfono de alguien a quien llamar si te pasa algo en el trabajo.",
+            "body_optional": "Es opcional. Escribe el nombre y el teléfono de alguien a quien llamar si te pasa algo en el trabajo, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarlo fuera.",
+            "wait": "Escribe un nombre y un teléfono para seguir."
+          },
+          "field_worked_here_before": {
+            "title": "¿Ya trabajaste aquí?",
+            "body": "En “¿Ha trabajado aquí antes?”, {input, select, touch {toca} other {haz clic en}} Sí o No. Si eliges Sí, puedes escribir cuándo en el recuadro que aparece.",
+            "body_optional": "Es opcional. En “¿Ha trabajado aquí antes?”, {input, select, touch {toca} other {haz clic en}} Sí o No, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Sí o No para seguir."
+          },
+          "field_education": {
+            "title": "Tus estudios",
+            "body": "En Educación, abre la lista y elige tu nivel de estudios. Si eliges algo que no sea Ninguna, contesta también Sí o No en “¿Se graduó?”.",
+            "body_optional": "Es opcional. En Educación, elige tu nivel de estudios de la lista, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Elige un nivel de estudios para seguir."
+          },
+          "field_references": {
+            "title": "Tus referencias",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Agregar referencia y escribe el nombre, de qué conoces a la persona y el teléfono. La empresa es opcional. Puedes agregar hasta 3.",
+            "body_optional": "Es opcional. {input, select, touch {Toca} other {Haz clic en}} Agregar referencia y escribe el nombre, de qué conoces a la persona y el teléfono, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Agrega una referencia con nombre, relación y teléfono para seguir."
+          },
+          "field_work_history": {
+            "title": "Tus trabajos anteriores",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Agregar empleo anterior y escribe la empresa y tu puesto. Los demás recuadros son opcionales. Puedes agregar hasta 3.",
+            "body_optional": "Es opcional. {input, select, touch {Toca} other {Haz clic en}} Agregar empleo anterior y escribe la empresa y tu puesto, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarlo fuera.",
+            "wait": "Agrega un empleo con la empresa y tu puesto para seguir."
+          },
+          "field_military_service": {
+            "title": "Servicio militar",
+            "body": "En Servicio militar, {input, select, touch {toca} other {haz clic en}} Sí o No. Si eliges Sí, los recuadros que aparecen son opcionales.",
+            "body_optional": "Es opcional. En Servicio militar, {input, select, touch {toca} other {haz clic en}} Sí o No, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarlo fuera.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Sí o No para seguir."
+          },
+          "details_continue": {
+            "title": "Guarda este paso",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Guardar y seguir. Si después una pregunta dice “Falta responder esto”, arréglala y vuelve a tocarlo.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Guardar y seguir para continuar."
+          },
+          "vault_retry": {
+            "title": "No vemos tus archivos guardados",
+            "body": "No pudimos revisar tus archivos guardados, así que todos aparecen como no subidos. {input, select, touch {Toca} other {Haz clic en}} el botón de al lado para volver a revisarlos.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} el botón para volver a revisar."
+          },
+          "doc_notice_legacy": {
+            "title": "Esto no se sube aquí",
+            "body": "El empleador te lo pedirá en persona si lo necesita. No te impide terminar."
+          },
+          "doc_notice_unknown": {
+            "title": "No reconocemos este requisito",
+            "body": "Pregúntale al empleador qué necesita. No te impide terminar."
+          },
+          "certification_doc": {
+            "title": "Tu certificación",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Agregar certificación y elige un PDF o una foto (JPG o PNG). Puedes agregar hasta 5. Si dice Opcional, puedes seguir sin esto.",
+            "wait": "Agrega una certificación para seguir."
+          },
+          "certifications": {
+            "title": "Una certificación que pide el empleador",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Sí si la tienes; con No no puedes seguir. Si pide comprobante, {input, select, touch {toca} other {haz clic en}} Subir otro y elige un PDF o una foto.",
+            "wait": "Contesta Sí, con comprobante si lo pide, para seguir."
+          },
+          "documents_continue": {
+            "title": "Al último paso",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Seguir. Si después algo queda marcado en rojo, arréglalo y vuelve a tocarlo.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Seguir para continuar."
+          },
+          "review_summary": {
+            "title": "Revisa lo que vamos a enviar",
+            "body": "Cada pregunta debe decir Contestado o Saltado, y aquí se cuentan tus documentos."
+          },
+          "review_missing": {
+            "title": "Todavía falta algo",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} el enlace debajo del aviso para volver y completarlo. Aquí termina esta guía; puedes terminar por tu cuenta: vuelve a Revisar y terminar y {input, select, touch {toca} other {haz clic en}} Terminar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} el enlace para ir a arreglarlo."
+          },
+          "review_finish": {
+            "title": "Envíalo",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Terminar para enviarle todo al empleador.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Terminar para enviar."
+          },
+          "complete": {
+            "title": "Listo",
+            "body": "El empleador ya tiene tus datos. Te avisamos cuando cambien tu postulación. Volver a mis postulaciones te lleva a las demás."
+          },
+          "doc_resume": {
+            "saved_title": "Tu currículum ya está guardado",
+            "saved_body": "Aparece como Subido, así que cuenta automáticamente: no tienes que hacer nada. {input, select, touch {Toca} other {Haz clic en}} Ver para revisarlo, y Reemplazar solo si es el archivo equivocado.",
+            "title": "Agrega tu currículum",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Subir y elige tu currículum: un PDF o una foto (JPG o PNG). Si no se sube, vuelve a intentarlo.",
+            "body_optional": "Es opcional: puedes seguir sin esto. Para agregarlo, {input, select, touch {toca} other {haz clic en}} Subir y elige un PDF o una foto (JPG o PNG).",
+            "wait": "Sube tu currículum para seguir."
+          },
+          "doc_driver_license": {
+            "saved_title": "Tu licencia de conducir ya está guardada",
+            "saved_body": "Aparece como Subido, así que cuenta automáticamente: no tienes que hacer nada. {input, select, touch {Toca} other {Haz clic en}} Ver para revisarlo, y Reemplazar solo si es el archivo equivocado.",
+            "title": "Agrega tu licencia de conducir",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Subir y elige tu licencia de conducir: un PDF o una foto (JPG o PNG). Si no se sube, vuelve a intentarlo.",
+            "body_optional": "Es opcional: puedes seguir sin esto. Para agregarlo, {input, select, touch {toca} other {haz clic en}} Subir y elige un PDF o una foto (JPG o PNG).",
+            "wait": "Sube tu licencia de conducir para seguir."
+          },
+          "doc_work_auth_doc": {
+            "saved_title": "Tu documento de autorización de trabajo ya está guardado",
+            "saved_body": "Aparece como Subido, así que cuenta automáticamente: no tienes que hacer nada. {input, select, touch {Toca} other {Haz clic en}} Ver para revisarlo, y Reemplazar solo si es el archivo equivocado.",
+            "title": "Agrega tu documento de autorización de trabajo",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Subir y elige tu documento de autorización de trabajo: un PDF o una foto (JPG o PNG). Si no se sube, vuelve a intentarlo.",
+            "body_optional": "Es opcional: puedes seguir sin esto. Para agregarlo, {input, select, touch {toca} other {haz clic en}} Subir y elige un PDF o una foto (JPG o PNG).",
+            "wait": "Sube tu documento de autorización de trabajo para seguir."
+          },
+          "prompt_more": {
+            "title": "Una pregunta más",
+            "body": "Contesta esta igual, con tus propias palabras.",
+            "wait": "Escribe una respuesta (hasta 1000 caracteres) para seguir."
+          },
+          "certification_optional": {
+            "title": "Una certificación opcional",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Sí o No. Nunca te impide terminar."
+          }
+        }
       }
     },
     "worker_profile": {
@@ -2619,16 +2984,16 @@
       "duration": "1 min",
       "slides": {
         "seen": {
-          "title": "Esto es lo que ven los empleadores",
-          "body": "Tu oficio, tu experiencia, tu disponibilidad y las respuestas que diste con tus propias palabras."
+          "title": "Lo que ven los empleadores",
+          "body": "Cuando postulas, los empleadores ven tu oficio, tus habilidades, tu experiencia y tu disponibilidad, y también las respuestas que diste con tus propias palabras al registrarte. Esas respuestas no aparecen en esta página."
         },
         "documents": {
           "title": "Agrega tus documentos una vez",
-          "body": "Guarda aquí tu licencia, tu permiso de trabajo o tus certificaciones. Se usan de nuevo en cada postulación, así nunca los subes dos veces."
+          "body": "Guarda aquí tu Currículum, tu Licencia de conducir o tu Documento de autorización de trabajo. Se usan de nuevo en cada postulación, así no los subes dos veces. Las certificaciones no se suben aquí."
         },
         "edit": {
           "title": "Mantenlo al día",
-          "body": "Toca Editar cuando quieras para cambiar tus habilidades, tu disponibilidad o tus ciudades."
+          "body": "Toca Editar cuando quieras para cambiar tu nombre, oficio, habilidades, disponibilidad, años de experiencia, ubicación, ciudades, Acerca de ti o certificaciones."
         }
       },
       "scene": {
@@ -2639,9 +3004,9 @@
         "avail": "Tiempo completo",
         "quote": "“Hago acabado de losas y entradas, y armo mis propias cimbras.”",
         "docs_head": "Documentos",
-        "license": "Licencia de manejo",
+        "license": "Licencia de conducir",
         "upload": "Subir",
-        "replace": "Cambiar",
+        "replace": "Reemplazar",
         "reused": "Una foto de la tarjeta sirve. Se usa de nuevo en cada postulación.",
         "skills": "Habilidades",
         "edit": "Editar",
@@ -2649,6 +3014,70 @@
         "sk2": "Cimbrado",
         "sk3": "Concreto estampado",
         "saved": "Guardado"
+      },
+      "guide": {
+        "intro_title": "¿Te ayudamos con tu perfil?",
+        "intro_body": "{input, select, touch {Te mostramos cada parte, una por una: qué tocar, qué elegir y qué escribir. Unos 2 minutos.} other {Te mostramos cada parte, una por una: dónde hacer clic, qué elegir y qué escribir. Unos 2 minutos.}}",
+        "counter": "Tu perfil · {current} de {total}",
+        "steps": {
+          "edit": {
+            "title": "Abre el formulario",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Editar para abrir el formulario con tus datos.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Editar para continuar."
+          },
+          "name": {
+            "title": "Tu nombre",
+            "body": "Escribe tu nombre completo en Nombre completo.",
+            "wait": "Escribe tu nombre para continuar."
+          },
+          "trade": {
+            "title": "Elige tu oficio",
+            "body": "Abre la lista Oficio y elige el que más haces. Si el tuyo no está, elige Otro. ¿Ya está bien? {input, select, touch {Toca} other {Haz clic en}} Siguiente.",
+            "wait": "Elige uno para continuar."
+          },
+          "trade_other": {
+            "title": "Escribe tu oficio",
+            "body": "Elegiste Otro, así que apareció un recuadro. Escribe tu oficio en Tu oficio, como “Soldador”, con 2 a 60 caracteres.",
+            "wait": "Escribe de 2 a 60 caracteres para continuar."
+          },
+          "skills": {
+            "title": "Escribe tus habilidades",
+            "body": "Escribe lo que sabes hacer en Habilidades, con una coma entre cada una, como “marcos, drywall, molduras”.",
+            "wait": "Agrega al menos una habilidad para continuar."
+          },
+          "availability": {
+            "title": "¿Cuándo puedes trabajar?",
+            "body": "Elige Tiempo completo, Medio tiempo, Fines de semana o Flexible en Disponibilidad. Si nunca la elegiste, ahora está vacía y tienes que elegir una para guardar.",
+            "wait": "Elige una para continuar."
+          },
+          "years": {
+            "title": "Años de experiencia",
+            "body": "Opcional. Escribe cuántos años has trabajado, en número entero de 0 a 80, o déjalo como está. Si ya hay un número guardado, cámbialo pero no lo borres (usa 0 si no tienes).",
+            "wait": "Usa un número entero de 0 a 80 para continuar."
+          },
+          "location": {
+            "title": "Tu ubicación",
+            "body": "Empieza a escribir tu ciudad o código postal en Ubicación y luego elige tu ciudad de la lista. Una ciudad que escribes pero no eliges se guarda solo como texto, sin un punto en el mapa.",
+            "wait": "Agrega tu ubicación para continuar."
+          },
+          "cities": {
+            "title": "Ciudades donde quieres trabajar",
+            "body": "Opcional. Escribe una ciudad o código postal en Ciudades donde quieres encontrar trabajo y elígela de la lista para agregarla. Solo escribirla no la agrega. Puedes agregar hasta 10."
+          },
+          "documents": {
+            "title": "Tus documentos",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Subir para agregar un Currículum, una Licencia de conducir o un Documento de autorización de trabajo, o Reemplazar para cambiar uno. Usa un PDF, JPG o PNG. Cada uno lleva un solo archivo y se guarda en cuanto se sube. Las certificaciones no se suben aquí."
+          },
+          "save": {
+            "title": "Guarda tus cambios",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Guardar. Si en cambio aparece “Por favor agrega:”, termina la guía y completa lo que indica.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Guardar para terminar."
+          }
+        },
+        "done": {
+          "title": "Perfil guardado",
+          "body": "Tus cambios quedaron guardados. {input, select, touch {Toca} other {Haz clic en}} Editar cuando quieras para volver a cambiarlos."
+        }
       }
     },
     "employer_welcome": {

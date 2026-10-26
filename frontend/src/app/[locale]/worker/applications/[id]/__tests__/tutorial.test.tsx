@@ -7,7 +7,8 @@ import type { Application, ApplicationHire, ApplicationRequirementsState, Applic
 import type { TutorialHandle, UseTutorialOptions } from '@/lib/tutorials/types';
 
 /*
- * W3, the details tutorial: how the details page asks for it.
+ * W3, the details tutorial: how the details page asks for it. It plays as
+ * its step-by-step guide (`walkthrough`); Help's Play keeps the slides.
  *
  * It explains the stepper, so it is asked for only when the stepper is what
  * the page shows -- never over the hired card or a terminal panel (closed,
@@ -170,6 +171,28 @@ describe('/worker/applications/[id] — the W3 tutorial', () => {
 
     expect(doneSequence()).toEqual([undefined, false]);
     expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for its step-by-step guide on every call, never the slides', async () => {
+    getApplications.mockResolvedValue(pageOf([{ application_id: 'app-1', details_completed_at: null }]));
+    seed = requested();
+    renderIntl(<WorkerApplicationDetailsPage />);
+
+    await waitFor(() => expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1));
+    expect(tutorial.useTutorial.mock.calls.length).toBeGreaterThan(0);
+    expect(tutorial.useTutorial.mock.calls.every(([, options]) => options.walkthrough === true)).toBe(true);
+  });
+
+  it('asks for the guide over the employer questions left from applying, before the stepper', async () => {
+    getApplications.mockResolvedValue(pageOf([{ application_id: 'app-1', details_completed_at: null }]));
+    const base = requested();
+    seed = {
+      ...base,
+      remaining: { ...base.remaining, prompts: ['p1'], counts: { ...base.remaining.counts, prompts: 1 } },
+    };
+    renderIntl(<WorkerApplicationDetailsPage />);
+
+    await waitFor(() => expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1));
   });
 
   it('passes done once any application has its details completed', async () => {

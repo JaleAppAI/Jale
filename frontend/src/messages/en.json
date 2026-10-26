@@ -1256,7 +1256,8 @@
       "saved_note": "Saved to your profile so next time is faster.",
       "finish": "Finish",
       "still_missing": "Still missing: {items}",
-      "go_fix": "Go to Documents & certifications"
+      "go_fix": "Go to Documents & certifications",
+      "go_fix_details": "Go to Details"
     },
     "complete": {
       "chip": "All set",
@@ -1392,7 +1393,8 @@
       "account_not_ready": "Your account is still being prepared. Please sign out, sign back in, and try again.",
       "already_applied": "You already applied to this job.",
       "server_error": "We could not submit this application right now. Please try again in a few minutes.",
-      "apply_failed": "We could not submit this application. Please check your profile and documents, then try again."
+      "apply_failed": "We could not submit this application. Please check your profile and documents, then try again.",
+      "job_paused": "The employer paused this job. Check back later."
     },
     "not_found": {
       "title": "Job not found",
@@ -1889,7 +1891,14 @@
       "bio": "About you",
       "certifications_placeholder": "OSHA 10, forklift, CDL",
       "save": "Save",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "trade_label": "Trade",
+      "trade_choose": "Choose your trade",
+      "trade_other_label": "Your trade",
+      "trade_other_placeholder": "Type your trade, e.g. welder, drywall, roofer",
+      "trade_other_length": "Tell us your trade in {min}–{max} characters.",
+      "availability_choose": "Choose your availability",
+      "years_required": "Enter your years of experience (0 if none)."
     },
     "complete_modal": {
       "title": "Complete your profile",
@@ -1917,7 +1926,9 @@
     "errors": {
       "required": "Required.",
       "missing_summary": "Please add: {fields}"
-    }
+    },
+    "field_trade": "Trade",
+    "empty_trade": "Trade not added"
   },
   "billing": {
     "title": "Billing",
@@ -2132,7 +2143,8 @@
       "confirm_title": "Did you mean {city}, {state}?",
       "confirm_yes": "Yes, that's right",
       "confirm_no": "No, let me change it",
-      "cta": "Continue"
+      "cta": "Continue",
+      "location_pick": "Pick your city from the list to continue, or type a 5-digit ZIP."
     },
     "trade": {
       "title": "What's your trade?",
@@ -2533,6 +2545,110 @@
         "job2": "Concrete laborer",
         "job2_meta": "Socorro, TX · $20/h",
         "apply": "Apply"
+      },
+      "guide": {
+        "intro_title": "Want help setting up your profile?",
+        "intro_body": "{input, select, touch {We’ll show you what to tap and what to write on each screen, one step at a time. About 2 minutes.} other {We’ll show you what to click and what to write on each screen, one step at a time. About 2 minutes.}}",
+        "counter": "Your profile · {current} of {total}",
+        "steps": {
+          "terms": {
+            "title": "Read and accept",
+            "body": "This short page says how Jale uses your information and that job messages come by SMS and WhatsApp. {input, select, touch {Tap} other {Click}} I accept and continue when you’re ready.",
+            "wait": "{input, select, touch {Tap} other {Click}} I accept and continue to go on."
+          },
+          "name": {
+            "title": "Your name",
+            "body": "Type your first name and your last name. Both are needed. Employers see this name on your applications.",
+            "wait": "Type both names to continue."
+          },
+          "location": {
+            "title": "Where you live",
+            "body": "{input, select, touch {Start typing your city, then tap it in the list.} other {Start typing your city, then click it in the list.}} Or type your 5-digit ZIP. A city you type but don’t pick doesn’t count.",
+            "wait": "Pick your city from the list, or type a 5-digit ZIP."
+          },
+          "about_continue": {
+            "title": "Go on",
+            "body": "{input, select, touch {Tap} other {Click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "location_confirm": {
+            "title": "Is this your city?",
+            "body": "We found a city that looks close. {input, select, touch {Tap} other {Click}} Yes, that's right if it’s yours. If not, {input, select, touch {tap} other {click}} No, let me change it, pick your city from the list again and {input, select, touch {tap} other {click}} Continue.",
+            "wait": "Answer Yes or No to go on."
+          },
+          "trade": {
+            "title": "Your trade",
+            "body": "{input, select, touch {Tap} other {Click}} the trade you do the most. If yours isn’t on the list, {input, select, touch {tap} other {click}} Other.",
+            "wait": "Pick a trade to continue."
+          },
+          "trade_other": {
+            "title": "Type your trade",
+            "body": "You picked Other, so a box opened under the list. {input, select, touch {Tap} other {Click}} it and type your trade, like welder or roofer: 2 to 60 characters.",
+            "wait": "Type your trade in 2 to 60 characters to continue."
+          },
+          "trade_back": {
+            "title": "{input, select, touch {Tap} other {Click}} Back first",
+            "body": "Your typed trade is waiting to be saved, so to pick one from the list, {input, select, touch {tap} other {click}} Back at the top first. Then pick your trade and {input, select, touch {tap} other {click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Back, then pick your trade."
+          },
+          "trade_continue": {
+            "title": "Go on",
+            "body": "{input, select, touch {Tap} other {Click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "years": {
+            "title": "Time in this trade",
+            "body": "{input, select, touch {Tap} other {Click}} how long you’ve worked in your trade.",
+            "wait": "Pick one to continue."
+          },
+          "transport": {
+            "title": "Your own transportation",
+            "body": "{input, select, touch {Tap} other {Click}} Yes if you have your own way to get to work, or No. No is a fine answer.",
+            "wait": "Pick Yes or No to continue."
+          },
+          "availability": {
+            "title": "When you can work",
+            "body": "{input, select, touch {Tap} other {Click}} when you can work: Full-time, Part-time, Weekends or Flexible.",
+            "wait": "Pick one to continue."
+          },
+          "work_continue": {
+            "title": "Go on",
+            "body": "That’s the three answers this screen needs. {input, select, touch {Tap} other {Click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "q1_lock": {
+            "title": "Three questions employers read",
+            "body": "Next come three questions, answered in your own words. Until you finish question 3 you can go back and change them; after that they lock."
+          },
+          "answer": {
+            "title": "Answer in your own words",
+            "body": "Type your answer in the box: at least 15 characters. More detail helps employers choose you.",
+            "wait": "Write at least 15 characters to continue."
+          },
+          "answer_voice": {
+            "title": "Answer in your own words",
+            "body": "Type your answer in the box, or {input, select, touch {tap} other {click}} the microphone, say it, and {input, select, touch {tap} other {click}} it again to stop. Then check the text. At least 15 characters.",
+            "wait": "Write or say at least 15 characters to continue."
+          },
+          "question_next": {
+            "title": "Next question",
+            "body": "{input, select, touch {Tap} other {Click}} Next.",
+            "wait": "{input, select, touch {Tap} other {Click}} Next to go on."
+          },
+          "q3_lock": {
+            "title": "This is the last one",
+            "body": "After you {input, select, touch {tap} other {click}} Complete your questions, your three answers lock and you can’t change them."
+          },
+          "q3_complete": {
+            "title": "Finish your questions",
+            "body": "{input, select, touch {Tap} other {Click}} Complete your questions to finish.",
+            "wait": "{input, select, touch {Tap} other {Click}} Complete your questions to finish."
+          },
+          "done": {
+            "title": "You’re all set",
+            "body": "This is what employers see. We’re reading your answers to find your skills; you don’t have to wait. Use the button below to go on."
+          }
+        }
       }
     },
     "worker_apply": {
@@ -2576,7 +2692,84 @@
         "h_details": "They want to hire you",
         "whatsapp": "WhatsApp · Jale",
         "emp_msg": "Hi, can you start Monday at 7 AM?",
-        "my_reply": "Yes, I’ll be there"
+        "my_reply": "Yes, I’ll be there",
+        "answer": "Yes, I bring my own drill and level."
+      },
+      "guide": {
+        "intro_title": "Want help applying?",
+        "intro_body": "{input, select, touch {We’ll show you what to tap and what to write, one step at a time. About 2 minutes.} other {We’ll show you what to click and what to write, one step at a time. About 2 minutes.}}",
+        "counter": "Applying · {current} of {total}",
+        "steps": {
+          "from_gate": {
+            "title": "Your profile is saved",
+            "body": "You haven’t applied yet. Finish on this screen, then {input, select, touch {tap} other {click}} Send application to apply."
+          },
+          "answer_first": {
+            "title": "Answer in your own words",
+            "body": "{input, select, touch {Tap} other {Click}} the box and write your answer, the way you’d say it out loud. One line is enough; up to 1000 characters.",
+            "wait": "Write something (up to 1000 characters) to continue."
+          },
+          "answer_more": {
+            "title": "One more question",
+            "body": "Answer this one the same way. You can change your answers until you send.",
+            "wait": "Write something (up to 1000 characters) to continue."
+          },
+          "no_questions": {
+            "title": "No questions for this job",
+            "body": "This employer asks nothing, so you only need to send your application."
+          },
+          "later": {
+            "title": "No documents now",
+            "body": "You don’t upload anything to apply. The employer asks for documents only if they want to hire you."
+          },
+          "send": {
+            "title": "Send your application",
+            "body": "{input, select, touch {Tap} other {Click}} Send application. That is what applies; nothing is sent before it.",
+            "wait": "{input, select, touch {Tap} other {Click}} Send application to finish."
+          },
+          "sent": {
+            "title": "You applied!",
+            "body": "Your application shows Applied while the employer reviews it. When the employer writes to you, the message arrives on WhatsApp."
+          },
+          "closed": {
+            "title": "This job closed",
+            "body": "The employer stopped taking applications for this job, so your application wasn’t sent. Other jobs are still open."
+          },
+          "gate_name": {
+            "title": "Your name",
+            "body": "Employers need a few details before you can apply. Type your full name in Full name.",
+            "wait": "Type your name to continue."
+          },
+          "gate_skills": {
+            "title": "Your skills",
+            "body": "Type what you can do in Skills (comma separated), with a comma between each one, like “framing, drywall”.",
+            "wait": "Add at least one skill to continue."
+          },
+          "gate_availability": {
+            "title": "When can you work?",
+            "body": "Pick Full-time, Part-time, Weekends or Flexible in Availability.",
+            "wait": "Pick one to continue."
+          },
+          "gate_location": {
+            "title": "Where you live",
+            "body": "Type your city in Location, like “El Paso, TX”.",
+            "wait": "Type your city to continue."
+          },
+          "gate_years": {
+            "title": "Years of experience",
+            "body": "Optional. Type how many years you’ve worked in Years of experience, or leave it as it is. A number already saved can be changed but not cleared (use 0 if none).",
+            "wait": "Type a number (0 if none) to continue."
+          },
+          "gate_save": {
+            "title": "Save your profile",
+            "body": "{input, select, touch {Tap} other {Click}} Save and apply. It saves your profile and opens your application; you send it on the next screen.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save and apply to go on."
+          },
+          "back": {
+            "title": "Need to stop?",
+            "body": "Back to the job keeps what you typed while you stay on this page. To come back, {input, select, touch {tap} other {click}} Continue application."
+          }
+        }
       }
     },
     "worker_details": {
@@ -2591,26 +2784,198 @@
         },
         "saved": {
           "title": "Saved documents are added for you",
-          "body": "Files you saved before are attached automatically. You can replace any of them."
+          "body": "Files you saved before count automatically: they show as Uploaded. You can replace any of them."
         },
         "send": {
-          "title": "Review and send",
-          "body": "Check your answers, then send. The employer sees them right away."
+          "title": "Check and finish",
+          "body": "Check your answers, then tap Finish. The employer gets them right away."
         }
       },
       "scene": {
         "company": "Sample Concrete Co.",
         "five_min": "About 5 min",
-        "step1": "Questions",
-        "step2": "Documents",
-        "step3": "Review",
-        "slot_name": "Driver license",
-        "from_vault": "Added from your saved documents",
+        "step1": "Details",
+        "step2": "Documents & certifications",
+        "step3": "Check & finish",
+        "slot_name": "Driver's License",
+        "from_vault": "Uploaded",
         "replace": "Replace",
         "r1": "Date available",
         "r2": "Emergency contact",
-        "r3": "Driver license",
-        "send": "Send to employer"
+        "r3": "Driver's License",
+        "send": "Finish"
+      },
+      "guide": {
+        "intro_title": "Want a hand with your details?",
+        "intro_body": "{input, select, touch {We’ll show you each part, one at a time: what to answer, which files to add and where to tap Finish. About 5 minutes.} other {We’ll show you each part, one at a time: what to answer, which files to add and where to click Finish. About 5 minutes.}}",
+        "counter": "Your details · {current} of {total}",
+        "steps": {
+          "prompts": {
+            "title": "The employer’s questions",
+            "body": "Answer this question in its box, in your own words. Up to 1000 characters.",
+            "wait": "Write an answer (up to 1000 characters) to continue."
+          },
+          "prompts_save": {
+            "title": "Save your answers",
+            "body": "{input, select, touch {Tap} other {Click}} Save and continue. Then come the details the employer asked for.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save and continue to go on."
+          },
+          "overview": {
+            "title": "Three steps",
+            "body": "Details, Documents & certifications, then Check & finish. The bar shows what’s left. Some answers from your last application may already be filled in: check them as we go.",
+            "wait": "One moment: checking your saved files."
+          },
+          "field_work_authorization": {
+            "title": "Can you work in the US?",
+            "body": "Under “Authorized to work in the US?”, {input, select, touch {tap} other {click}} Yes or No.",
+            "body_optional": "This one is optional. Under “Authorized to work in the US?”, {input, select, touch {tap} other {click}} Yes or No, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "{input, select, touch {Tap} other {Click}} Yes or No to continue."
+          },
+          "field_date_available": {
+            "title": "When can you start?",
+            "body": "In Date available, pick the first day you can start.",
+            "body_optional": "This one is optional. In Date available, pick the first day you can start, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Pick a date to continue."
+          },
+          "field_desired_pay": {
+            "title": "The pay you want",
+            "body": "In Desired pay, type the amount in whole dollars, with no cents. Then pick Hourly, Daily, Weekly, Monthly or Fixed (flat rate).",
+            "body_optional": "This one is optional. In Desired pay, type the amount in whole dollars, with no cents, and pick how often; or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Type a whole-dollar amount to continue."
+          },
+          "field_home_address": {
+            "title": "Your address",
+            "body": "Type your street, your city, the 2-letter state (like TX) and the 5-digit ZIP code. The apartment box is optional.",
+            "body_optional": "This one is optional. Type your street, city, 2-letter state (like TX) and 5-digit ZIP code, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Fill in the street, city, 2-letter state and 5-digit ZIP to continue."
+          },
+          "field_date_of_birth": {
+            "title": "Your date of birth",
+            "body": "In Date of birth, pick the day you were born.",
+            "body_optional": "This one is optional. In Date of birth, pick the day you were born, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Pick a date to continue."
+          },
+          "field_emergency_contact": {
+            "title": "Who to call in an emergency",
+            "body": "Type the name and the phone number of someone to call if something happens at work.",
+            "body_optional": "This one is optional. Type the name and phone number of someone to call if something happens at work, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Type a name and a phone number to continue."
+          },
+          "field_worked_here_before": {
+            "title": "Have you worked here before?",
+            "body": "Under “Worked here before?”, {input, select, touch {tap} other {click}} Yes or No. If you {input, select, touch {tap} other {click}} Yes, you can say when in the box that opens.",
+            "body_optional": "This one is optional. Under “Worked here before?”, {input, select, touch {tap} other {click}} Yes or No, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "{input, select, touch {Tap} other {Click}} Yes or No to continue."
+          },
+          "field_education": {
+            "title": "Your schooling",
+            "body": "In Education, open the list and pick your school level. If you pick anything but None, also answer Yes or No to “Graduated?”.",
+            "body_optional": "This one is optional. In Education, pick your school level from the list, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Pick a school level to continue."
+          },
+          "field_references": {
+            "title": "Your references",
+            "body": "{input, select, touch {Tap} other {Click}} Add reference, then type their name, how you know them and their phone number. Company is optional. You can add up to 3.",
+            "body_optional": "This one is optional. {input, select, touch {Tap} other {Click}} Add reference and type their name, how you know them and their phone number, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Add a reference with a name, a relationship and a phone number to continue."
+          },
+          "field_work_history": {
+            "title": "Your past jobs",
+            "body": "{input, select, touch {Tap} other {Click}} Add previous job, then type the company and your job title. The other boxes are optional. You can add up to 3.",
+            "body_optional": "This one is optional. {input, select, touch {Tap} other {Click}} Add previous job and type the company and your job title, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "Add a job with the company and your job title to continue."
+          },
+          "field_military_service": {
+            "title": "Military service",
+            "body": "Under Military service, {input, select, touch {tap} other {click}} Yes or No. If you {input, select, touch {tap} other {click}} Yes, the boxes that open are optional.",
+            "body_optional": "This one is optional. Under Military service, {input, select, touch {tap} other {click}} Yes or No, or {input, select, touch {tap} other {click}} Skip to leave it out.",
+            "wait": "{input, select, touch {Tap} other {Click}} Yes or No to continue."
+          },
+          "details_continue": {
+            "title": "Save this step",
+            "body": "{input, select, touch {Tap} other {Click}} Save and continue. If a question then says “This needs an answer”, fix it and {input, select, touch {tap} other {click}} it again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save and continue to go on."
+          },
+          "vault_retry": {
+            "title": "We can’t see your saved files",
+            "body": "Checking your saved files failed, so every file shows as not uploaded. {input, select, touch {Tap} other {Click}} Try again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Try again to continue."
+          },
+          "doc_notice_legacy": {
+            "title": "This one isn’t uploaded here",
+            "body": "The employer may ask you for it in person. It doesn’t stop you from finishing."
+          },
+          "doc_notice_unknown": {
+            "title": "We don’t know this requirement",
+            "body": "Ask the employer what they need. It doesn’t stop you from finishing."
+          },
+          "certification_doc": {
+            "title": "Your certification",
+            "body": "{input, select, touch {Tap} other {Click}} Add certification and pick a PDF or a photo (JPG or PNG). You can add up to 5. If it says Optional, you can go on without it.",
+            "wait": "Add a certification to continue."
+          },
+          "certifications": {
+            "title": "A certification the employer needs",
+            "body": "{input, select, touch {Tap} other {Click}} Yes if you have it; with No you can’t continue. If it asks for proof, {input, select, touch {tap} other {click}} Upload new and pick a PDF or a photo.",
+            "wait": "Answer Yes, with proof if it asks for it, to continue."
+          },
+          "documents_continue": {
+            "title": "On to the last step",
+            "body": "{input, select, touch {Tap} other {Click}} Continue. If something is then marked in red, fix it and {input, select, touch {tap} other {click}} it again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "review_summary": {
+            "title": "Check what we’ll send",
+            "body": "Each question should say Answered or Skipped, and your documents are counted here."
+          },
+          "review_missing": {
+            "title": "Something is still missing",
+            "body": "{input, select, touch {Tap} other {Click}} the link under the message to go back and fill it in. This guide ends here; you can finish on your own: come back to Check & finish and {input, select, touch {tap} other {click}} Finish.",
+            "wait": "{input, select, touch {Tap} other {Click}} the link to go and fix it."
+          },
+          "review_finish": {
+            "title": "Send it",
+            "body": "{input, select, touch {Tap} other {Click}} Finish to send everything to the employer.",
+            "wait": "{input, select, touch {Tap} other {Click}} Finish to send."
+          },
+          "complete": {
+            "title": "Done",
+            "body": "The employer has your details. We’ll let you know when they update your application. Back to my applications takes you to the rest."
+          },
+          "doc_resume": {
+            "saved_title": "Your resume is already saved",
+            "saved_body": "It shows Uploaded, so it counts automatically: nothing to do here. {input, select, touch {Tap} other {Click}} View to check it, and Replace only if it’s the wrong file.",
+            "title": "Add your resume",
+            "body": "{input, select, touch {Tap} other {Click}} Upload and pick your resume: a PDF or a photo (JPG or PNG). If it doesn’t go up, try again.",
+            "body_optional": "This one is optional: you can go on without it. To add it, {input, select, touch {tap} other {click}} Upload and pick a PDF or a photo (JPG or PNG).",
+            "wait": "Upload your resume to continue."
+          },
+          "doc_driver_license": {
+            "saved_title": "Your driver’s license is already saved",
+            "saved_body": "It shows Uploaded, so it counts automatically: nothing to do here. {input, select, touch {Tap} other {Click}} View to check it, and Replace only if it’s the wrong file.",
+            "title": "Add your driver’s license",
+            "body": "{input, select, touch {Tap} other {Click}} Upload and pick your driver’s license: a PDF or a photo (JPG or PNG). If it doesn’t go up, try again.",
+            "body_optional": "This one is optional: you can go on without it. To add it, {input, select, touch {tap} other {click}} Upload and pick a PDF or a photo (JPG or PNG).",
+            "wait": "Upload your driver’s license to continue."
+          },
+          "doc_work_auth_doc": {
+            "saved_title": "Your work authorization document is already saved",
+            "saved_body": "It shows Uploaded, so it counts automatically: nothing to do here. {input, select, touch {Tap} other {Click}} View to check it, and Replace only if it’s the wrong file.",
+            "title": "Add your work authorization document",
+            "body": "{input, select, touch {Tap} other {Click}} Upload and pick your work authorization document: a PDF or a photo (JPG or PNG). If it doesn’t go up, try again.",
+            "body_optional": "This one is optional: you can go on without it. To add it, {input, select, touch {tap} other {click}} Upload and pick a PDF or a photo (JPG or PNG).",
+            "wait": "Upload your work authorization document to continue."
+          },
+          "prompt_more": {
+            "title": "One more question",
+            "body": "Answer this one the same way, in your own words.",
+            "wait": "Write an answer (up to 1000 characters) to continue."
+          },
+          "certification_optional": {
+            "title": "An optional certification",
+            "body": "{input, select, touch {Tap} other {Click}} Yes or No. It never stops you from finishing."
+          }
+        }
       }
     },
     "worker_profile": {
@@ -2619,16 +2984,16 @@
       "duration": "1 min",
       "slides": {
         "seen": {
-          "title": "This is what employers see",
-          "body": "Your trade, experience, availability and the answers you gave in your own words."
+          "title": "What employers see",
+          "body": "When you apply, employers see your trade, skills, experience and availability, plus the answers you gave in your own words when you signed up. Those answers aren’t shown on this page."
         },
         "documents": {
           "title": "Add documents once",
-          "body": "Save your license, work permit or certifications here. They’re used again on every application, so you never upload twice."
+          "body": "Save your Resume, Driver's License or Work Authorization Document here. They’re used again on every application, so you don’t upload them twice. Certifications aren’t uploaded here."
         },
         "edit": {
           "title": "Keep it up to date",
-          "body": "Tap Edit any time to change your skills, availability or cities."
+          "body": "Tap Edit any time to change your name, trade, skills, availability, years of experience, location, cities, About you or certifications."
         }
       },
       "scene": {
@@ -2639,7 +3004,7 @@
         "avail": "Full-time",
         "quote": "“I finish slabs and driveways and set my own forms.”",
         "docs_head": "Documents",
-        "license": "Driver license",
+        "license": "Driver's License",
         "upload": "Upload",
         "replace": "Replace",
         "reused": "A photo of the card is fine. Used again on every application.",
@@ -2649,6 +3014,70 @@
         "sk2": "Forming",
         "sk3": "Stamped concrete",
         "saved": "Saved"
+      },
+      "guide": {
+        "intro_title": "Want a hand with your profile?",
+        "intro_body": "{input, select, touch {We’ll show you each part, one at a time: what to tap, what to pick and what to type. About 2 minutes.} other {We’ll show you each part, one at a time: what to click, what to pick and what to type. About 2 minutes.}}",
+        "counter": "Your profile · {current} of {total}",
+        "steps": {
+          "edit": {
+            "title": "Open the form",
+            "body": "{input, select, touch {Tap} other {Click}} Edit to open the form with your details.",
+            "wait": "{input, select, touch {Tap} other {Click}} Edit to continue."
+          },
+          "name": {
+            "title": "Your name",
+            "body": "Type your full name in Full name.",
+            "wait": "Type your name to continue."
+          },
+          "trade": {
+            "title": "Pick your trade",
+            "body": "Open the Trade list and pick the one you do most. If yours isn’t there, pick Other. Already right? {input, select, touch {Tap} other {Click}} Next.",
+            "wait": "Pick one to continue."
+          },
+          "trade_other": {
+            "title": "Type your trade",
+            "body": "You picked Other, so a box appeared. Type your trade in Your trade, like “Welder”, in 2 to 60 characters.",
+            "wait": "Type 2 to 60 characters to continue."
+          },
+          "skills": {
+            "title": "List your skills",
+            "body": "Type what you can do in Skills, with a comma between each one, like “framing, drywall, trim”.",
+            "wait": "Add at least one skill to continue."
+          },
+          "availability": {
+            "title": "When can you work?",
+            "body": "Pick Full-time, Part-time, Weekends or Flexible in Availability. If you never set it, it’s empty now, and you need to pick one to save.",
+            "wait": "Pick one to continue."
+          },
+          "years": {
+            "title": "Years of experience",
+            "body": "Optional. Type how many years you’ve worked, as a whole number from 0 to 80, or leave it as it is. A number already saved can be changed but not cleared (use 0 if none).",
+            "wait": "Use a whole number from 0 to 80 to continue."
+          },
+          "location": {
+            "title": "Your location",
+            "body": "Start typing your city or ZIP in Location, then pick your city from the list. A city you type but don’t pick is saved as text only, without its spot on the map.",
+            "wait": "Add your location to continue."
+          },
+          "cities": {
+            "title": "Cities where you want to work",
+            "body": "Optional. Type a city or ZIP under Cities where you want to find work, then pick it from the list to add it. Typing alone doesn’t add a city. You can add up to 10."
+          },
+          "documents": {
+            "title": "Your documents",
+            "body": "{input, select, touch {Tap} other {Click}} Upload to add a Resume, Driver's License or Work Authorization Document, or Replace to change one. Use a PDF, JPG or PNG. Each one holds one file and is saved as soon as it uploads. Certifications aren’t uploaded here."
+          },
+          "save": {
+            "title": "Save your changes",
+            "body": "{input, select, touch {Tap} other {Click}} Save. If “Please add:” shows instead, end the guide and fill in what it names.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save to finish."
+          }
+        },
+        "done": {
+          "title": "Profile saved",
+          "body": "Your changes are saved. {input, select, touch {Tap} other {Click}} Edit any time to change them again."
+        }
       }
     },
     "employer_welcome": {

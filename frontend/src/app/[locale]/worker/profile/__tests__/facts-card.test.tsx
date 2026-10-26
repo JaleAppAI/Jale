@@ -161,7 +161,7 @@ const K = {
 };
 
 describe('worker profile -- the facts card', () => {
-  it('renders the five Datos tiles as dt/dd pairs', () => {
+  it('renders the six Datos tiles as dt/dd pairs', () => {
     seedWith(FULL);
     renderIntl(<WorkerProfilePage />);
 
@@ -174,6 +174,9 @@ describe('worker profile -- the facts card', () => {
     expect(tile(K.years).value).toHaveTextContent('9');
     expect(tile(K.availability).value).toHaveTextContent(
       message('worker_profile.availability.full_time'),
+    );
+    expect(tile(message('worker_profile.field_trade')).value).toHaveTextContent(
+      message('worker_vocab.trade.electrician'),
     );
     // Three sections (tiles, chips, bio) means exactly two dividers.
     expect(factsCard().querySelectorAll('[data-divider="true"]')).toHaveLength(2);

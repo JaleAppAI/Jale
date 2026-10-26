@@ -8,9 +8,11 @@ import { SceneChip, SceneFrame, SceneNote, SceneRow, SceneSegments, SlideIn, Tap
 /**
  * W3, `worker_details`: what happens when an employer asks for the worker's
  * details. Drawn from `W3-DetailsTutorial.dc.html`, slide for slide, with the
- * board's copy: about 5 minutes in three steps, saved documents added for
- * them, then review and send. It opens over the details stepper and ends on
- * "Start" (`cta_last`), because the worker begins the steps right after.
+ * board's copy: about 5 minutes in three steps, saved documents counted for
+ * them, then check and finish. The labels are the details page's own (its
+ * step names, the "Uploaded" badge, Finish). Help's Play shows these slides;
+ * the details page itself plays the step-by-step guide
+ * (`../guides/worker-details`). It ends on "Start" (`cta_last`).
  *
  * Scenes are decoration (`aria-hidden` throughout, R7): each slide's title
  * and body say everything the picture shows.
@@ -61,7 +63,7 @@ function SavedScene() {
   );
 }
 
-/** Three answers checked, then Send to employer. */
+/** Three answers checked, then Finish. */
 function SendScene() {
   const t = useTranslations(`${NAMESPACE}.scene`);
   const check = <span className="font-bold text-[var(--jale-success-text)]">✓</span>;

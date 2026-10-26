@@ -133,17 +133,25 @@ export function OnboardingFlow({
 
     /*
      * W1, the onboarding tutorial (K1.5: done once the run is `ready`). It is
-     * asked for ONCE per page view, and only on the first screen -- a worker
-     * resuming later in the run, or stopped on an exit panel, is past the
-     * point it explains. Whether it opens is the tutorial's decision (a
-     * record, this signal, another overlay), not this flow's.
+     * asked for ONCE per page view, on the first screen this view shows: the
+     * terms for a new run, or the screen a resumed run stands on (another
+     * device, WhatsApp, a reload), so a worker who comes back mid-way with no
+     * record gets the guide from where they are. Not over an exit panel or
+     * the summary (the run is over there). Whether it opens is the
+     * tutorial's decision (a record, this signal, mute, another overlay), not
+     * this flow's.
+     *
+     * What opens is the step-by-step guide (`walkthrough`), not the slides:
+     * it points at each screen's real controls as the worker reaches them,
+     * so the worker sees one thing, not a slide deck and then a guide. The
+     * slides stay in Help as the overview.
      */
-    const tutorial = useTutorial('worker_onboarding', { done: flow.server.lifecycle === 'ready' });
+    const tutorial = useTutorial('worker_onboarding', { done: flow.server.lifecycle === 'ready', walkthrough: true });
     const tutorialAskedRef = useRef(false);
     const askTutorial = useEffectEvent(() => tutorial.maybeAutoOpen());
     useEffect(() => {
         if (tutorialAskedRef.current) return;
-        if (screen !== 'terms' || flow.blocked || stuck) return;
+        if (screen === 'done' || flow.blocked || stuck) return;
         tutorialAskedRef.current = true;
         askTutorial();
     }, [screen, flow.blocked, stuck]);
@@ -400,7 +408,11 @@ export function OnboardingFlow({
                                     <InlineFeedback tone="info">{tOnboarding(`rejection.${flow.notice}`)}</InlineFeedback>
                                 </div>
                             ) : null}
-                            {renderScreen()}
+                            {/* Which screen this is, for the step-by-step guide:
+                                the address never changes between screens. */}
+                            <div data-guide="onb.screen" data-screen={screen} className="flex flex-1 flex-col">
+                                {renderScreen()}
+                            </div>
                         </>
                     )}
         </OnboardingShell>

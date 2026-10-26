@@ -24,6 +24,7 @@ import { NewPostModal } from '@/components/media-board/NewPostModal';
 import { getVaultDocuments, updateWorkerProfile, getWorkerPosts, deleteWorkerPost } from '@/lib/api/worker';
 import type { WorkerProfileData, WorkerProfilePatch, WorkerVaultDoc, DocType, WorkerPost } from '@/lib/api/worker';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
+import { isTradeKey, tradeLabel } from '@/lib/worker-vocab';
 
 export const dynamic = 'force-dynamic';
 
@@ -70,6 +71,7 @@ export default function WorkerProfilePage() {
     const t = useTranslations('worker_profile');
     const tCommon = useTranslations('common');
     const tMedia = useTranslations('media_board');
+    const tVocab = useTranslations('worker_vocab');
 
     const [editing, setEditing] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -165,9 +167,14 @@ export default function WorkerProfilePage() {
      * per page view, and not over the edit form or a media overlay; whether
      * it opens is the tutorial's decision (a record, the signal, another
      * overlay).
+     *
+     * What opens is the step-by-step guide (`walkthrough`), not the slides:
+     * it points at the real Edit button, the form's controls, the Documents
+     * card and Save (`data-guide="profile.*"`). The slides stay in Help as
+     * the overview.
      */
     const hasSavedDocument = data ? data.docs.length > 0 : undefined;
-    const profileTutorial = useTutorial('worker_profile', { done: hasSavedDocument });
+    const profileTutorial = useTutorial('worker_profile', { done: hasSavedDocument, walkthrough: true });
     const profileTutorialAskedRef = useRef(false);
     const askProfileTutorial = useEffectEvent(() => profileTutorial.maybeAutoOpen());
     const overlayOpen = editing || composing || selectedPost !== null;
@@ -196,6 +203,10 @@ export default function WorkerProfilePage() {
     // Not `!profile?.years_experience`: a worker with 0 years has answered.
     const experienceSet =
         profile?.years_experience !== null && profile?.years_experience !== undefined;
+    // As saved: the server may have turned a typed trade into a standard one.
+    const trade = isTradeKey(profile?.main_trade)
+        ? tradeLabel(tVocab, profile.main_trade, profile.main_trade_other)
+        : null;
 
     return (
         <AppShell role="worker" title={t('title')}>
@@ -204,8 +215,8 @@ export default function WorkerProfilePage() {
                     /* Same archetype, geometry AND props as `loading.tsx`, so the
                        route-level skeleton and this one are the same picture — the
                        handover from server render to client fetch costs no visible
-                       swap. Five tiles, three chip facts, the bio paragraph. */
-                    <ProfileSkeleton sections={[5, 3]} />
+                       swap. Six tiles, three chip facts, the bio paragraph. */
+                    <ProfileSkeleton sections={[6, 3]} />
                 ) : phase === 'error' && errorKind ? (
                     <DashboardPanel>
                         <ErrorState kind={errorKind} onRetry={retry} />
@@ -228,7 +239,12 @@ export default function WorkerProfilePage() {
                                 title={profile.full_name ?? t('info_title')}
                                 action={
                                     editing ? null : (
-                                        <Button variant="outline" size="sm" onClick={startEditing}>
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={startEditing}
+                                            data-guide="profile.edit"
+                                        >
                                             {t('edit_button')}
                                         </Button>
                                     )
@@ -250,7 +266,11 @@ export default function WorkerProfilePage() {
                                         both would double the card's inset. */}
                                     {saved ? (
                                         <div className="px-5 pt-4">
-                                            <InlineFeedback tone="success" onDismiss={() => setSaved(false)}>
+                                            <InlineFeedback
+                                                tone="success"
+                                                onDismiss={() => setSaved(false)}
+                                                data-guide="profile.saved"
+                                            >
                                                 {tCommon('feedback.saved')}
                                             </InlineFeedback>
                                         </div>
@@ -263,6 +283,9 @@ export default function WorkerProfilePage() {
                                                 </FactsCard.Tile>
                                                 <FactsCard.Tile label={t('field_phone')}>
                                                     <span data-private className="tabular-nums">{profile.phone}</span>
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile label={t('field_trade')} muted={!trade}>
+                                                    {trade ?? t('empty_trade')}
                                                 </FactsCard.Tile>
                                                 <FactsCard.Tile label={t('field_location')} muted={!profile.location}>
                                                     {profile.location || t('empty_location')}
@@ -356,7 +379,7 @@ export default function WorkerProfilePage() {
 
                         {/* id="documents" kept from the original markup for future deep-linking. */}
                         <div id="documents">
-                            <DashboardPanel>
+                            <DashboardPanel data-guide="profile.documents">
                                 <PanelHeader title={t('documents_title')} />
                                 <div className="space-y-4 px-5 py-5">
                                     <p className="text-xs text-[var(--jale-ink-2)]">{t('documents_subtitle')}</p>
