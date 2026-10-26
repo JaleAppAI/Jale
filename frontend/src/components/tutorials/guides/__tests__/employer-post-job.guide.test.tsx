@@ -363,6 +363,72 @@ describe('the post-job guide: Enter submits the step (inventory Part A §7)', ()
     });
 });
 
+describe('the post-job guide: the other Enter cases (inventory Part A §7)', () => {
+    it('Enter in Location with nothing picked is refused: the wizard stays on screen 1 and the guide on the city', async () => {
+        openWizard();
+        await reach('intro');
+        await press('start');
+        await reach('title');
+        type('post.title', 'Framer');
+        await press('next');
+        await reach('city');
+        type('post.city', 'Hay');
+        await flush();
+        enterIn('post.city');
+        await flush();
+        expect(mark('post.form')).toHaveAttribute('data-step', '1');
+        expect(currentStep()).toBe('city');
+        expect(createJob).not.toHaveBeenCalled();
+    });
+
+    it('Enter in the certifications box moves the wizard on: the guide follows to screen 3’s first step', async () => {
+        openWizard();
+        await throughScreenOne();
+        await reach('next');
+        await wizardNext();
+        await reach('pay');
+        await press('next');
+        await reach('workers');
+        await press('next');
+        await reach('shifts');
+        await press('next');
+        await reach('times');
+        await press('next');
+        await reach('certifications');
+        type('post.certifications', 'OSHA');
+        await flush();
+        enterIn('post.certifications');
+        expect(mark('post.form')).toHaveAttribute('data-step', '3');
+        await reach('questions', 3000);
+    });
+
+    it('Enter in the template name box posts the job: the guide follows to the posted screen and completes there', async () => {
+        const view = openWizard();
+        await toSubmit();
+        act(() => {
+            fireEvent.click(screen.getByRole('checkbox', { name: message('employer_dashboard.modal.template_save_toggle') }));
+        });
+        await flush();
+        await press('next');
+        await reach('template_name');
+        type('post.template_name', 'Framer, Hayward');
+        await flush();
+        enterIn('post.template_name');
+        await flush();
+        await flush();
+        await waitFor(() => expect(createJob).toHaveBeenCalledTimes(1));
+        expect(saveJobTemplate).toHaveBeenCalledTimes(1);
+        await reach('share');
+        await press('next');
+        await reach('done');
+        act(() => {
+            fireEvent.click(mark('post.back') as HTMLElement);
+        });
+        await waitFor(() => expect(view.onDismiss).toHaveBeenCalledWith('completed'));
+        expect(view.onDismiss).not.toHaveBeenCalledWith('skipped');
+    });
+});
+
 describe('the post-job guide: branches on screen 1', () => {
     it('adds the Other box step when Other is picked, and the counter grows by one', async () => {
         openWizard();
