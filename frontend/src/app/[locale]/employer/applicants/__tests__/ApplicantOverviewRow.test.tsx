@@ -25,8 +25,9 @@ vi.mock('@/contexts/ConversationDrawerContext', () => ({
 }));
 
 const toastError = vi.fn();
+const toastSuccess = vi.fn();
 vi.mock('@/components/ui/toast', () => ({
-  useToast: () => ({ success: vi.fn(), error: toastError, info: vi.fn() }),
+  useToast: () => ({ success: toastSuccess, error: toastError, info: vi.fn() }),
 }));
 
 const updateApplicantStatus = vi.fn();
@@ -277,6 +278,7 @@ describe('ApplicantOverviewRow actions', () => {
     // as `hireBlockReason` does: the option is offered and the 409 is the
     // authority -- the same arrangement the worker detail page relies on.
     await user.selectOptions(select, 'hired');
+    await user.click(screen.getByRole('button', { name: message('employer_applicants.hire_confirm.confirm') }));
 
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe('pending'));
     expect(toastError).toHaveBeenCalledWith(message('employer_applicants.hire_blocked'));
@@ -460,5 +462,70 @@ describe('ApplicantOverviewRow hire gate', () => {
   it('never greys out the status of someone already hired', () => {
     renderIntl(<ApplicantOverviewRow item={withDetails('not_requested', { application_status: 'hired' })} />);
     expect(hiredOption()).not.toBeDisabled();
+  });
+});
+
+/*
+ * Hotfix 2026-10-24: picking Hired on the board saved at once, with no
+ * confirmation, although Hired is the one move here that messages the worker.
+ * It now asks first, in the app's confirm dialog (safe action focused), and
+ * says what happened once saved. No undo: the worker has been told by then.
+ */
+describe('ApplicantOverviewRow: Hired asks first', () => {
+  const select = () => screen.getByRole('combobox', { name: message('employer_applicants.status_label') }) as HTMLSelectElement;
+  const confirmTitle = () => interpolate(message('employer_applicants.hire_confirm.title'), { name: 'Maria Garcia' });
+
+  beforeEach(() => {
+    toastError.mockReset();
+    toastSuccess.mockReset();
+    updateApplicantStatus.mockReset();
+  });
+
+  it('asks before marking someone hired, and sends nothing until confirmed', async () => {
+    const user = userEvent.setup();
+    renderIntl(<ApplicantOverviewRow item={item} />);
+    await user.selectOptions(select(), 'hired');
+
+    const dialog = screen.getByRole('dialog', { name: confirmTitle() });
+    expect(dialog).toHaveTextContent(interpolate(message('employer_applicants.hire_confirm.body'), { name: 'Maria Garcia' }));
+    expect(updateApplicantStatus).not.toHaveBeenCalled();
+    expect(select().value).toBe('pending');
+    await waitFor(() => expect(screen.getByRole('button', { name: message('employer_applicants.hire_confirm.cancel') })).toHaveFocus());
+  });
+
+  it('keeps the old status, and sends nothing, when the confirmation is cancelled', async () => {
+    const user = userEvent.setup();
+    renderIntl(<ApplicantOverviewRow item={item} />);
+    await user.selectOptions(select(), 'hired');
+    await user.click(screen.getByRole('button', { name: message('employer_applicants.hire_confirm.cancel') }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(select().value).toBe('pending');
+    expect(updateApplicantStatus).not.toHaveBeenCalled();
+  });
+
+  it('saves on confirm and says the hire was made, pointing at the start details', async () => {
+    const user = userEvent.setup();
+    updateApplicantStatus.mockResolvedValue({ status: 'hired' });
+    renderIntl(<ApplicantOverviewRow item={item} />);
+    await user.selectOptions(select(), 'hired');
+    await user.click(screen.getByRole('button', { name: message('employer_applicants.hire_confirm.confirm') }));
+
+    await waitFor(() => expect(updateApplicantStatus).toHaveBeenCalledWith('test-token', 'j-1', 'w-1', 'hired'));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(
+      interpolate(message('employer_applicants.hired_saved_details'), { name: 'Maria Garcia' }),
+    ));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: message('employer_applicants.hire_details.add') })).toBeInTheDocument();
+  });
+
+  it('still saves the other statuses at once, with no question', async () => {
+    const user = userEvent.setup();
+    updateApplicantStatus.mockResolvedValue({ status: 'not_interested' });
+    renderIntl(<ApplicantOverviewRow item={item} />);
+    await user.selectOptions(select(), 'not_interested');
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(updateApplicantStatus).toHaveBeenCalledWith('test-token', 'j-1', 'w-1', 'not_interested');
   });
 });

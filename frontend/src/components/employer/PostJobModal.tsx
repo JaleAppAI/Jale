@@ -26,7 +26,7 @@ import { DurationField } from '@/components/employer/DurationField';
 import { ExperienceStepper } from '@/components/employer/ExperienceStepper';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
-import { JobPostedFooter, JobPostedPanel } from '@/components/employer/JobPostedPanel';
+import { JobPostedFooter, JobPostedPanel, type TemplateNotSaved } from '@/components/employer/JobPostedPanel';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
 import { PayFields } from '@/components/employer/PayFields';
@@ -156,10 +156,27 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   /*
    * The job this run posted (sprint 29). While set, the dialog shows the
    * "Job posted" screen instead of a step -- the same dialog, so nothing
-   * stacks and focus stays inside it. `templateNotSavedLimit` is the cap the
-   * ticked template ran into, or null when there is nothing to say about it.
+   * stacks and focus stays inside it. `templateNotSaved` says why the ticked
+   * template was not saved, or is null when there is nothing to say about it.
    */
-  const [posted, setPosted] = useState<{ job: Job; templateNotSavedLimit: number | null } | null>(null);
+  const [posted, setPosted] = useState<{ job: Job; templateNotSaved: TemplateNotSaved | null } | null>(null);
+  /*
+   * "Save as template" ticked with no name (hotfix 2026-10-24). It used to
+   * post the job and save nothing, silently. Post is now refused at the name
+   * box: the employer asked for a template, and a block keeps that fixable
+   * (type a name, or untick the box) where reporting "skipped" afterwards
+   * would only tell them it was lost. Cleared by typing a name or unticking.
+   */
+  const [templateNameMissing, setTemplateNameMissing] = useState(false);
+  /**
+   * Post has been pressed and refused at least once in this draft (a name to
+   * fix, a server error, a limit). Only the step-by-step guide reads it, from
+   * the form's `data-post-refused`: its "post again" step applies after a
+   * refusal, not before the first press, so its step count stays honest.
+   */
+  const [postRefused, setPostRefused] = useState(false);
+  const templateNameRef = useRef<HTMLInputElement>(null);
+  const templateNameErrorId = useId();
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
@@ -284,6 +301,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setSaveAsTemplate(false);
     setTemplateName('');
     setTemplateNotice('');
+    setTemplateNameMissing(false);
+    setPostRefused(false);
     setTemplateLimit(null);
     setDescriptionGenerating(false);
     setFieldProblem(null);
@@ -431,6 +450,12 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setFieldProblem(null);
 
     const name = templateName.trim();
+    if (wantsTemplate && !name) {
+      setTemplateNameMissing(true);
+      setPostRefused(true);
+      templateNameRef.current?.focus();
+      return;
+    }
     // Pre-check the template name against the loaded list BEFORE any network
     // call: once the job posts, the modal closes and a failed template save
     // has nowhere left to surface. Catching the collision here keeps it
@@ -440,6 +465,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       templates.some((tpl) => tpl.name === name && tpl.id !== savedTemplateIdRef.current)
     ) {
       setTemplateNotice('name_taken');
+      setPostRefused(true);
       return;
     }
     // And pre-check the CAP the same way, for the same reason: the template
@@ -456,6 +482,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       templateLimit !== null && templates.length >= templateLimit
     ) {
       setTemplateNotice('limit');
+      setPostRefused(true);
       return;
     }
     setLoading(true);
@@ -465,6 +492,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     // What the post did not achieve: shown on the posted screen, and reported
     // to the caller with the job.
     let templateShortfall: JobCreatedOutcome['templateNotSaved'];
+    // Why the template was not saved, for the posted screen.
+    let templateNotSaved: TemplateNotSaved | null = null;
     let templateSavedNew = false;
 
     if (wantsTemplate && name) {
@@ -489,8 +518,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           setTemplateNotice('limit');
           setTemplateLimit(limit);
           templateShortfall = { templateLimit: limit };
+          templateNotSaved = { reason: 'limit', limit };
         } else if (err instanceof ApiError && err.code === 'template_name_taken') {
+          // The server's backstop for a list gone stale: the job still posts,
+          // and the posted screen says the template did not.
           setTemplateNotice('name_taken');
+          templateNotSaved = { reason: 'name_taken' };
+        } else {
+          templateNotSaved = { reason: 'failed' };
         }
       }
     }
@@ -501,7 +536,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       if (templateShortfall) outcome.templateNotSaved = templateShortfall;
       if (templateSavedNew) outcome.templateSaved = true;
       onJobCreated(job, templateShortfall || templateSavedNew ? outcome : undefined);
-      setPosted({ job, templateNotSavedLimit: templateShortfall?.templateLimit ?? null });
+      setPosted({ job, templateNotSaved });
     } catch (err) {
       try {
         handleLegalWall(err, '/employer/dashboard');
@@ -510,6 +545,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       } catch {
         // Not a legal wall — fall through to the normal failure paths.
       }
+      setPostRefused(true);
 
       // The typed `job_limit_reached` code is the one failure with its own
       // story: the plan's ceiling, the jobs holding the slots, and the two ways
@@ -623,6 +659,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               loading={loading}
               loadingLabel={tCommon('loading')}
               className="flex-1"
+              data-guide="post.submit"
             >
               {t('post_job_docs.submit')}
             </Button>
@@ -633,7 +670,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       {posted ? (
         <JobPostedPanel
           job={posted.job}
-          templateNotSavedLimit={posted.templateNotSavedLimit}
+          templateNotSaved={posted.templateNotSaved}
           onNavigate={handleClose}
         />
       ) : (
@@ -696,7 +733,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         <p className="mt-1 text-sm text-[var(--jale-ink-2)]">{stepHint}</p>
       </div>
 
-      <form id={formId} ref={formRef} onSubmit={handleStepSubmit} data-guide="post.form" data-step={step}>
+      <form
+        id={formId}
+        ref={formRef}
+        onSubmit={handleStepSubmit}
+        data-guide="post.form"
+        data-step={step}
+        data-post-refused={postRefused ? 'true' : undefined}
+      >
       {/*
         The form's DEFAULT BUTTON, and the reason Enter works at all.
 
@@ -718,7 +762,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       {step === 1 && (
         <div className="grid gap-4">
           {templates.length > 0 ? (
-            <Field label={t('modal.template_select_label')}>
+            <Field label={t('modal.template_select_label')} guide="post.template">
               <div className="flex items-center gap-2">
                 <Select
                   value=""
@@ -786,7 +830,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                 />
               </div>
               {checkCity && (
-                <p className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.template_check_city')}</p>
+                <p data-guide="post.city_check" className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.template_check_city')}</p>
               )}
               {cityMissing && (
                 <p id={cityHelperId} className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.location_pick_helper')}</p>
@@ -850,6 +894,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
       {step === 2 && (
         <div className="grid gap-4">
+          <div data-guide="post.pay">
           <PayFields
             payMin={form.pay_min}
             payMax={form.pay_max}
@@ -863,6 +908,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                 : null
             }
           />
+          </div>
           <PayReferenceHint trade={form.trade_category} cityKey={form.city_key} variant="employer" />
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.start_date')}>
@@ -890,6 +936,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             onChange={(value) => update('expected_duration_bucket', value)}
           />
           <ScheduleFields
+            guide="post"
             workDays={form.work_days}
             shiftStart={form.shift_start}
             shiftEnd={form.shift_end}
@@ -953,6 +1000,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               onChange={() => update('transportation_required', !form.transportation_required)}
             />
           </div>
+          <div data-guide="post.certifications">
           <CertificationsPicker
             certificationRequirements={form.certification_requirements}
             legacyCertifications={form.certifications}
@@ -967,6 +1015,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             // the legacy field the moment it's touched.
             onChange={(next) => setForm((current) => ({ ...current, certification_requirements: next, certifications: '' }))}
           />
+          </div>
         </div>
       )}
 
@@ -975,6 +1024,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         {/* ABOVE the picker, deliberately: these are the only questions an
             applicant meets while applying. Everything the picker configures
             below now waits for "Request details". */}
+        <div data-guide="post.questions">
         <PreApplicationPromptsEditor
           prompts={form.pre_application_prompts}
           onChange={(next) => {
@@ -987,7 +1037,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               : null
           }
         />
+        </div>
 
+        <div data-guide="post.requirements">
         <RequirementsPicker
           requirements={form.requirements}
           onChange={(next) => setForm((current) => ({ ...current, requirements: next }))}
@@ -996,32 +1048,51 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           onCertificationTierChange={setCertificationTier}
           onCertificationProofToggle={toggleCertificationProof}
         />
+        </div>
 
-        <div className="rounded-[10px] border border-[var(--jale-divider)] p-4">
+        <div className="rounded-[10px] border border-[var(--jale-divider)] p-4" data-guide="post.template_save">
           <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
             <input
               type="checkbox"
               checked={saveAsTemplate}
-              onChange={(e) => setSaveAsTemplate(e.target.checked)}
+              onChange={(e) => {
+                setSaveAsTemplate(e.target.checked);
+                if (!e.target.checked) setTemplateNameMissing(false);
+              }}
             />
             {t('modal.template_save_toggle')}
           </label>
           {saveAsTemplate && (
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="mt-3 flex flex-col gap-1.5" data-guide="post.template_name">
               <Input
+                ref={templateNameRef}
                 value={templateName}
-                onChange={(e) => setTemplateName(e.target.value)}
+                onChange={(e) => {
+                  setTemplateName(e.target.value);
+                  if (e.target.value.trim()) setTemplateNameMissing(false);
+                  // "You already have a template with that name" is about the
+                  // name that was there; a new one answers it.
+                  setTemplateNotice((current) => (current === 'name_taken' ? '' : current));
+                }}
                 placeholder={t('modal.template_name_placeholder')}
+                aria-label={t('modal.template_name_placeholder')}
+                aria-invalid={templateNameMissing ? true : undefined}
+                aria-describedby={templateNameMissing ? templateNameErrorId : undefined}
                 className="flex-1"
               />
+              {templateNameMissing ? (
+                <FieldMessage id={templateNameErrorId}>{t('templates.name_required')}</FieldMessage>
+              ) : null}
             </div>
           )}
           {templateNotice === 'name_taken' && (
-            <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
+            <p data-guide="post.template_taken" className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
           )}
           {/* Deliberately NOT "Plan limit reached": the job still posts. The
               only thing at stake is the template, and the button beside the
               CTAs is the one-click way to accept that and carry on. */}
+          {templateLimitModel ? (
+          <div data-guide="post.template_limit">
           <PlanLimitNotice
             model={templateLimitModel}
             className="mt-2"
@@ -1045,6 +1116,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               </Button>
             }
           />
+          </div>
+          ) : null}
         </div>
         </div>
       )}
@@ -1053,11 +1126,15 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       {error || jobLimit ? (
         <div ref={feedbackRef} className="mt-5 flex flex-col gap-2">
           {error ? (
-            <InlineFeedback tone="danger">
+            <InlineFeedback tone="danger" data-guide="post.error">
               <span className="block">{error}</span>
             </InlineFeedback>
           ) : null}
-          <PlanLimitNotice model={jobLimit} onNavigate={handleClose} />
+          {jobLimit ? (
+            <div data-guide="post.job_limit">
+              <PlanLimitNotice model={jobLimit} onNavigate={handleClose} />
+            </div>
+          ) : null}
         </div>
       ) : null}
       </>

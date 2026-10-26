@@ -12,8 +12,9 @@ import { roleOfTutorial, useTutorialProgress, type TutorialProgressValue } from 
  * ELIGIBLE means, at this instant: the progress read has succeeded for the
  * tour's role, the account has no outcome for the tour and no failed-save
  * flag, no tutorial is pending or up, and no other overlay is open. Whether
- * the person is "new" is the host's to decide (the employer dashboard: no job
- * ever; the worker gate: onboarding just finished).
+ * the person is "new" is the host's to decide (the employer dashboard: an
+ * empty board on an account created since the tour's release; the worker
+ * gate: onboarding just finished).
  */
 export function mayAutoPlayTour(progress: TutorialProgressValue, id: TourId): boolean {
     return (

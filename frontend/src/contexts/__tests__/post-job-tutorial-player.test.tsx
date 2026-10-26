@@ -290,6 +290,42 @@ describe('"Post a job" with the real post-job guide', () => {
         expect(posts()).toHaveLength(1);
     });
 
+    it('closing the wizard mid-guide ends the guide as skipped; reopening the wizard does not bring it back', async () => {
+        const first = serveSnapshot([], plan(3));
+        renderPage();
+        await settle();
+
+        press();
+        await first.answer();
+        const intro = await screen.findByRole('dialog', {
+            name: message('tutorial.employer_post_job.guide.intro_title'),
+        });
+        act(() => {
+            fireEvent.click(within(intro).getByRole('button', { name: message('tutorial.common.guide.employer.start') }));
+        });
+        await settle();
+        expect(document.querySelector('[data-spotlight] [data-step="title"]')).not.toBeNull();
+
+        // The wizard's own close, with the guide on its first step.
+        const wizardBox = wizardDialog() as HTMLElement;
+        act(() => {
+            fireEvent.click(within(wizardBox).getByRole('button', { name: message('common.feedback.dismiss') }));
+        });
+        await settle();
+        expect(wizardDialog()).toBeNull();
+        expect(guideLayer()).toBeNull();
+        expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'employer_post_job', outcome: 'skipped' }]);
+
+        const again = serveSnapshot([], plan(3));
+        press();
+        await again.answer();
+        await waitFor(() => expect(wizardDialog()).not.toBeNull());
+        await settle();
+        expect(guideIntro()).toBeNull();
+        expect(guideLayer()).toBeNull();
+        expect(posts()).toHaveLength(1);
+    });
+
     it('never plays for an employer who already has a job', async () => {
         const snapshot = serveSnapshot([activeJob], plan(3));
         renderPage();

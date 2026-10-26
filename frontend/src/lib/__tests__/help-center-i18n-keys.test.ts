@@ -39,7 +39,7 @@ const ROLE_KEYS = ['switch', 'helper_on', 'muted_title', 'muted_empty', 'muted_t
 
 const DESCRIPTIONS: Record<string, [string, string]> = {
     employer_welcome: ['From posting a job to hiring, in five steps.', 'De publicar un empleo a contratar, en cinco pasos.'],
-    employer_post_job: ['The three steps and the 4 required fields.', 'Los tres pasos y los 4 datos obligatorios.'],
+    employer_post_job: ['The three steps and what you must fill in.', 'Los tres pasos y lo que debe llenar.'],
     employer_applicants: ['Trust scores, statuses and how to hire.', 'Puntajes de confianza, estados y cómo contratar.'],
     employer_messages: ['How your messages reach workers on WhatsApp.', 'Cómo les llegan sus mensajes a los trabajadores por WhatsApp.'],
     worker_onboarding: ['The 7 short steps and the three questions.', 'Los 7 pasos cortos y las tres preguntas.'],

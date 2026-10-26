@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 
 import type { Applicant, EmployerJobDetail, InboxItem } from '@/lib/api/employer';
@@ -233,8 +233,17 @@ async function settle() {
 }
 
 const tourTitle = () => message('tutorial.employer_applicants.title');
-const tourDialog = () => screen.queryByRole('dialog', { name: tourTitle() });
+/** The step-by-step guide's callout, when one is drawn. */
+const guideCard = () => document.querySelector<HTMLElement>('[data-spotlight] [role="dialog"]');
+/** The slides player (E3 no longer plays them here) or the guide's callout. */
+const tourDialog = () => screen.queryByRole('dialog', { name: tourTitle() }) ?? guideCard();
 const posts = () => tutorialCalls().filter(([method]) => method === 'POST');
+
+beforeAll(async () => {
+    // The guides' lazy chunk, fetched once up front: a cold first import
+    // would otherwise spend the first test's wait on module transforms.
+    await import('@/components/tutorials/GuideHost');
+});
 
 let rectsSpy: ReturnType<typeof vi.spyOn>;
 beforeAll(() => {
@@ -264,14 +273,23 @@ describe('job page: the real applicants tour', () => {
         expect(tourDialog()).toBeNull();
 
         act(() => inbox.set({ loading: false, errorKind: null, items: [inboxRow('contacted')] }));
-        const tour = await screen.findByRole('dialog', { name: tourTitle() });
-        expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-        expect(within(tour).getByRole('heading', { level: 2 }).textContent).toBe(
-            message('tutorial.employer_applicants.slides.first_look.title'),
+        // E3 is a step-by-step guide over this page's own applicants.
+        const intro = await waitFor(() => {
+            const card = guideCard();
+            expect(card?.getAttribute('data-step')).toBe('intro');
+            return card as HTMLElement;
+        }, { timeout: 4000 });
+        expect(within(intro).getByRole('heading', { level: 2 }).textContent).toBe(
+            message('tutorial.employer_applicants.guide.intro_title'),
         );
+        act(() => {
+            fireEvent.click(within(intro).getByRole('button', { name: message('tutorial.common.guide.employer.start') }));
+        });
+        // This page's steps: the filters first (no status control here).
+        await waitFor(() => expect(guideCard()?.getAttribute('data-step')).toBe('job_filters'));
 
         act(() => {
-            fireEvent.click(within(tour).getByRole('button', { name: message('tutorial.common.skip') }));
+            fireEvent.click(within(guideCard() as HTMLElement).getByRole('button', { name: message('tutorial.common.guide.end') }));
         });
         await settle();
         expect(tourDialog()).toBeNull();

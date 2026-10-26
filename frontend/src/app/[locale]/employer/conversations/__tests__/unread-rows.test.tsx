@@ -2,7 +2,7 @@
 import * as React from 'react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 /*
@@ -108,6 +108,8 @@ const tutorial = vi.hoisted(() => {
       if (state.mode === 'hold') state.held.push(openHost);
       else openHost();
     }),
+    // The host first, at once, then the guide over it: as the real hook does.
+    runWithHost: vi.fn((openHost: () => void) => openHost()),
     replay: vi.fn(),
   };
   return { state, handle };
@@ -185,6 +187,7 @@ const UNREAD = () => message('employer_messages.unread');
 
 beforeEach(() => {
   tutorial.handle.runBeforeHost.mockClear();
+  tutorial.handle.runWithHost.mockClear();
   tutorial.state.mode = 'pass';
   tutorial.state.held.length = 0;
   for (const id of Object.keys(tutorial.state.latestDone)) delete tutorial.state.latestDone[id];
@@ -392,7 +395,7 @@ describe('the messages tutorial on the Messages board', () => {
     await waitFor(() => expect(rowFor('Maria Garcia')).toBeInTheDocument());
   });
 
-  it('holds the picked thread until the tutorial lets it through', async () => {
+  it('opens the picked thread at once, and asks for the messages guide over it', async () => {
     tutorial.state.mode = 'hold';
     const user = userEvent.setup();
     renderIntl(<EmployerConversationsPage />);
@@ -400,10 +403,8 @@ describe('the messages tutorial on the Messages board', () => {
 
     await user.click(rowFor('Maria Garcia'));
 
-    expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
-    expect(getConversation).not.toHaveBeenCalled();
-
-    act(() => tutorial.state.held[0]());
+    expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
+    expect(tutorial.handle.runBeforeHost).not.toHaveBeenCalled();
 
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('test-token', 'conv-1', expect.anything()));
   });

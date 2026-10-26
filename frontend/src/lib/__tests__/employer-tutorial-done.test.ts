@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
     applicantsTutorialDone,
+    createdSinceAppTour,
+    EMPLOYER_APP_TOUR_RELEASED_AT,
     hasJobsDone,
     messagesTutorialDone,
     type InboxSignal,
@@ -82,5 +84,23 @@ describe('messagesTutorialDone', () => {
     it('is not done when no row has a conversation', () => {
         expect(messagesTutorialDone(inbox({ items: [row('pending'), row('hired')] }))).toBe(false);
         expect(messagesTutorialDone(inbox())).toBe(false);
+    });
+});
+
+describe('createdSinceAppTour (the app tour is for accounts created since its release)', () => {
+    it('starts at midnight Mountain time on the release day', () => {
+        expect(EMPLOYER_APP_TOUR_RELEASED_AT).toBe('2026-10-25T00:00:00-06:00');
+        expect(createdSinceAppTour('2026-10-25T06:00:00.000Z')).toBe(true);
+        expect(createdSinceAppTour('2026-10-25T05:59:59.999Z')).toBe(false);
+    });
+    it('is true after the release and false before it', () => {
+        expect(createdSinceAppTour('2026-11-02T18:30:00Z')).toBe(true);
+        expect(createdSinceAppTour('2026-08-01T00:00:00Z')).toBe(false);
+    });
+    it('is false for a missing or unreadable date', () => {
+        expect(createdSinceAppTour(null)).toBe(false);
+        expect(createdSinceAppTour(undefined)).toBe(false);
+        expect(createdSinceAppTour('')).toBe(false);
+        expect(createdSinceAppTour('not a date')).toBe(false);
     });
 });

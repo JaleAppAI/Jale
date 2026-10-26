@@ -457,7 +457,7 @@ describe('the post-job tutorial', () => {
         await waitFor(() => expect(tutorial.replays).toEqual([true, false]));
     });
 
-    it('never runs the guide when the plan gate refuses a replay', async () => {
+    it('plays the guide over the limit dialog on a replay', async () => {
         getBilling.mockResolvedValueOnce(freePlan);
         function HelpLikePage() {
             const { openPostJob } = usePostJob();
@@ -478,7 +478,25 @@ describe('the post-job tutorial', () => {
         fireEvent.click(screen.getByRole('button', { name: 'guide me' }));
         await waitFor(() =>
             expect(screen.getByText(message('billing.limit_dialog.title'))).toBeInTheDocument());
+        // The dialog is the guide's host: opened by runWithHost, as a replay.
+        expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
+        expect(tutorial.replays).toEqual([true]);
+        expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();
+    });
+
+    it('does not spend a first automatic play on the limit dialog, and records nothing', async () => {
+        getBilling.mockResolvedValueOnce(freePlan);
+        renderIntl(
+            <PostJobProvider>
+                <PostJobButton />
+            </PostJobProvider>,
+        );
+        fireEvent.click(postJobButton());
+        await waitFor(() =>
+            expect(screen.getByText(message('billing.limit_dialog.title'))).toBeInTheDocument());
         expect(tutorial.handle.runWithHost).not.toHaveBeenCalled();
+        expect(tutorial.handle.runBeforeHost).not.toHaveBeenCalled();
+        expect(tutorial.replays).toEqual([]);
     });
 
     it('forgets what a page told it once that page is gone', () => {

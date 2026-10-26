@@ -148,13 +148,16 @@ export default function EmployerConversationsPage() {
   } = useUnreadMessages();
 
   /*
-   * The messages tutorial (E4) plays before a conversation the employer picks
-   * opens, for an employer with no conversation yet (K1.5), judged by the
+   * The messages tutorial (E4) plays once a conversation the employer picks
+   * has opened (`runWithHost`, a step-by-step guide over it), for an employer
+   * with no conversation yet (K1.5), judged by the
    * session inbox as the drawer judges it. Arriving on a thread by link is not
    * a pick and opens it directly.
    */
   const messagesTutorial = useTutorial('employer_messages', {
     done: messagesTutorialDone({ loading: polledLoading, errorKind: polledErrorKind, items: polledItems }),
+    // E4 is a step-by-step guide over the conversation just opened.
+    walkthrough: true,
   });
 
   const items = useMemo(() => inboxData?.items ?? [], [inboxData]);
@@ -476,7 +479,7 @@ export default function EmployerConversationsPage() {
             Traced in the messaging lambda: within 24 hours of the worker's last
             message a free-form message goes straight through; otherwise an
             invitation goes first and the message waits for the reply. */}
-        <p className="text-xs text-[var(--jale-ink-2)] md:col-span-4">{t('whatsapp_window_caption')}</p>
+        <p className="text-xs text-[var(--jale-ink-2)] md:col-span-4" data-guide="msg.caption">{t('whatsapp_window_caption')}</p>
       </section>
 
       {/* One bordered container; every pane inside it is separated by dividers,
@@ -554,7 +557,7 @@ export default function EmployerConversationsPage() {
                   <InboxRow
                     item={item}
                     selected={selectedKey === item.application_id}
-                    onSelect={() => messagesTutorial.runBeforeHost(() => openItem(item.application_id))}
+                    onSelect={() => messagesTutorial.runWithHost(() => openItem(item.application_id))}
                     unread={
                       item.conversation_id && item.conversation_id in unreadByConversation
                         ? unreadByConversation[item.conversation_id]

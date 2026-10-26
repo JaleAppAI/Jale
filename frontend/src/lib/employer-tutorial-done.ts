@@ -34,6 +34,24 @@ export function hasJobsDone(jobs: readonly unknown[] | null | undefined): boolea
 }
 
 /**
+ * The employer app tour's release: the start of that day, Mountain time.
+ *
+ * The tour auto-plays only for an account created at or after this moment.
+ * An empty board alone does not make an account new: an older employer may
+ * never have posted, or may have deleted every job (deletes are hard), and
+ * tutorial records only began with this release, so "no tour record" cannot
+ * tell them apart either.
+ */
+export const EMPLOYER_APP_TOUR_RELEASED_AT = '2026-10-25T00:00:00-06:00';
+
+/** The account was created at or after the app tour's release. An unreadable date is not. */
+export function createdSinceAppTour(createdAt: string | null | undefined): boolean {
+    if (!createdAt) return false;
+    const created = Date.parse(createdAt);
+    return Number.isFinite(created) && created >= Date.parse(EMPLOYER_APP_TOUR_RELEASED_AT);
+}
+
+/**
  * E3: any application on any of the employer's jobs is past applied, as the
  * page's own applicants or the inbox show it. Unknown while either source is
  * still loading; a failed inbox read leaves the page's data to answer alone.
