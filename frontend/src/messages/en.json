@@ -3627,7 +3627,9 @@
       "email": "Email",
       "name": "Name (optional)",
       "submit": "Send invite",
-      "sent": "Invite sent to {email}."
+      "sent": "Invite sent to {email}.",
+      "seats_full": "All seats are in use. Remove a member or revoke an invite to free one.",
+      "seats_remedy": "Remove a member or revoke an invite to free one."
     },
     "errors": {
       "email_in_use": "This email already has a Jale employer account with another company.",
@@ -3659,7 +3661,8 @@
       "revoke": "Revoke",
       "empty": "No pending invites.",
       "resent": "Invite resent to {email}.",
-      "revoked": "Invite revoked."
+      "revoked": "Invite revoked.",
+      "resend_wait": "Try again in {seconds}s."
     },
     "members": {
       "title": "Members",
@@ -3676,7 +3679,10 @@
       "reassign_label": "Move their jobs to",
       "confirm": "Remove and move jobs",
       "cancel": "Cancel",
-      "done": "{name} was removed. {count, plural, one {# job moved.} other {# jobs moved.}}"
+      "done": "{name} was removed. {count, plural, one {# job moved.} other {# jobs moved.}}",
+      "jobs_move": "{count, plural, one {# open job will move to {name}.} other {# open jobs will move to {name}.}}",
+      "access": "They lose access right away and their login is disabled.",
+      "access_pending": "{name} was removed, but we couldn't disable their login yet. We'll retry automatically."
     },
     "reassign": {
       "label": "Responsible",

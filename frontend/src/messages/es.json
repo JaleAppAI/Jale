@@ -3627,7 +3627,9 @@
       "email": "Correo electrónico",
       "name": "Nombre (opcional)",
       "submit": "Enviar invitación",
-      "sent": "Invitación enviada a {email}."
+      "sent": "Invitación enviada a {email}.",
+      "seats_full": "Todos los puestos de capataz están en uso. Quite a un miembro o revoque una invitación para liberar uno.",
+      "seats_remedy": "Quite a un miembro o revoque una invitación para liberar uno."
     },
     "errors": {
       "email_in_use": "Este correo ya tiene una cuenta de empleador en Jale con otra empresa.",
@@ -3659,7 +3661,8 @@
       "revoke": "Revocar",
       "empty": "No hay invitaciones pendientes.",
       "resent": "Invitación reenviada a {email}.",
-      "revoked": "Invitación revocada."
+      "revoked": "Invitación revocada.",
+      "resend_wait": "Inténtelo de nuevo en {seconds} s."
     },
     "members": {
       "title": "Miembros",
@@ -3676,7 +3679,10 @@
       "reassign_label": "Pasar sus empleos a",
       "confirm": "Quitar y pasar empleos",
       "cancel": "Cancelar",
-      "done": "Se quitó a {name}. {count, plural, one {Se pasó # empleo.} other {Se pasaron # empleos.}}"
+      "done": "Se quitó a {name}. {count, plural, one {Se pasó # empleo.} other {Se pasaron # empleos.}}",
+      "jobs_move": "{count, plural, one {# empleo abierto pasará a {name}.} other {# empleos abiertos pasarán a {name}.}}",
+      "access": "Perderá el acceso de inmediato y se desactivará su inicio de sesión.",
+      "access_pending": "Se quitó a {name}, pero aún no pudimos desactivar su inicio de sesión. Lo volveremos a intentar automáticamente."
     },
     "reassign": {
       "label": "Responsable",
