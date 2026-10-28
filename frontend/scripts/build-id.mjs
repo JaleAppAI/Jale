@@ -24,7 +24,14 @@ const FRONTEND_DIR = resolve(dirname(SCRIPT_PATH), '..');
 export const HASHED_DIRECTORIES = ['src', 'public'];
 
 /** Single files at the top of the frontend that are hashed when present. */
-export const HASHED_FILES = ['package.json', 'package-lock.json', 'next.config.mjs', 'tsconfig.json', 'postcss.config.js'];
+export const HASHED_FILES = [
+  'package.json',
+  'package-lock.json',
+  'next.config.mjs',
+  'security-headers.mjs',
+  'tsconfig.json',
+  'postcss.config.js',
+];
 
 /**
  * Every pattern in `frontend/.dockerignore`, mirrored here because that file
