@@ -429,3 +429,39 @@ describe('parseApiError — retry_after_seconds', () => {
     }
   });
 });
+
+describe('parseApiError — Phase 3 team payloads', () => {
+  it('keeps a camelCase retryAfterSeconds as its own key; the snake_case one is untouched', async () => {
+    const err = await parseApiError(jsonResponse(429, { error: 'invite_rate_limited', retryAfterSeconds: 42 }), 'x');
+    expect(err.payload.retryAfterSeconds).toBe(42);
+    expect(err.payload.retry_after_seconds).toBeUndefined();
+  });
+
+  it('drops a malformed retryAfterSeconds', async () => {
+    for (const bad of ['soon', -1, Number.NaN, null]) {
+      const err = await parseApiError(jsonResponse(503, { error: 'busy', retryAfterSeconds: bad }), 'x');
+      expect(err.payload.retryAfterSeconds).toBeUndefined();
+      expect(err.payload.retry_after_seconds).toBeUndefined();
+    }
+  });
+
+  it('keeps membershipStatus only when it is removed or suspended', async () => {
+    const removed = await parseApiError(jsonResponse(403, { error: 'membership_inactive', membershipStatus: 'removed' }), 'x');
+    expect(removed.payload.membershipStatus).toBe('removed');
+    const odd = await parseApiError(jsonResponse(403, { error: 'membership_inactive', membershipStatus: 'active' }), 'x');
+    expect(odd.payload.membershipStatus).toBeUndefined();
+  });
+});
+
+describe('classifyError — membership blocked', () => {
+  it('reads a MembershipBlockedError as a non-retryable forbidden', async () => {
+    const { MembershipBlockedError } = await import('../../api');
+    expect(classifyError(new MembershipBlockedError('removed', false))).toEqual({
+      kind: 'forbidden',
+      status: 403,
+      code: 'membership_inactive',
+      retryable: false,
+    });
+    expect(classifyError(new MembershipBlockedError('no_organization')).code).toBe('no_organization');
+  });
+});

@@ -424,7 +424,23 @@
       "panel_bullet_3": "Fotos de trabajos anteriores",
       "panel_bullet_4": "Mensajee a los candidatos directamente",
       "panel_bullet_5": "Gratis para empezar",
-      "forgot_not_confirmed": "Su cuenta aún no está confirmada. Enviamos un código de confirmación nuevo a {email}. Ingréselo abajo para terminar su registro."
+      "forgot_not_confirmed": "Su cuenta aún no está confirmada. Enviamos un código de confirmación nuevo a {email}. Ingréselo abajo para terminar su registro.",
+      "invite": {
+        "title": "Únase a {companyName} en Jale",
+        "body": "{companyName} lo invitó como capataz. Cree su cuenta con {email}.",
+        "rejoin_body": "{companyName} lo volvió a invitar. Inicie sesión con {email} para unirse de nuevo.",
+        "rejoin_submit": "Iniciar sesión y unirse",
+        "not_found": "Este enlace de invitación no es válido. Pida uno nuevo a su empresa.",
+        "expired": "Su invitación venció; pida a su empresa que se la reenvíe.",
+        "revoked": "Esta invitación fue cancelada. Pida una nueva a su empresa.",
+        "used": "Esta invitación ya se usó. Inicie sesión.",
+        "email_mismatch": "Inicie sesión con el correo al que se envió esta invitación.",
+        "already_member": "Esta cuenta ya pertenece a una empresa en Jale, así que no puede unirse a otra.",
+        "employer_required": "Inicie sesión con una cuenta de empleador de Jale para aceptar esta invitación.",
+        "busy": "Estamos procesando otros cambios en este momento. Espere un momento e inténtelo de nuevo.",
+        "generic": "Algo salió mal. Inténtelo de nuevo."
+      },
+      "account_disabled": "Esta cuenta no puede iniciar sesión. Si su empresa lo quitó, pida al propietario que lo vuelva a invitar."
     },
     "shell": {
       "language_toggle": "English",
@@ -481,7 +497,8 @@
       "errors": {
         "required": "Obligatorio.",
         "missing_summary": "Por favor agregue: {fields}"
-      }
+      },
+      "foreman_company_hint": "Solo el propietario de su empresa puede cambiar estos datos."
     },
     "digest": {
       "title": "Notificaciones",
@@ -672,7 +689,8 @@
       "billing": "Facturación",
       "settings": "Configuración",
       "templates": "Plantillas",
-      "unread_badge": "{count, plural, one {# mensaje sin leer} other {# mensajes sin leer}}"
+      "unread_badge": "{count, plural, one {# mensaje sin leer} other {# mensajes sin leer}}",
+      "team": "Equipo"
     },
     "hero": {
       "eyebrow": "¿Ya conoce Jale?",
@@ -1968,7 +1986,9 @@
     "company": {
       "owner_only": "Solo el propietario de su empresa puede cambiar el plan o administrar la facturación.",
       "suspended_title": "Algunos miembros del equipo están suspendidos",
-      "suspended_body": "{count, plural, one {# capataz está suspendido y no puede} other {# capataces están suspendidos y no pueden}} usar la cuenta de su empresa mientras su plan tenga menos puestos que miembros. Cambie su plan para restablecerlos."
+      "suspended_body": "{count, plural, one {# capataz está suspendido y no puede} other {# capataces están suspendidos y no pueden}} usar la cuenta de su empresa mientras su plan tenga menos puestos que miembros. Cambie su plan para restablecerlos.",
+      "suspended_body_pro": "{count, plural, one {# capataz está suspendido y no puede} other {# capataces están suspendidos y no pueden}} usar la cuenta de su empresa porque todos los puestos están ocupados. Quítelos en la página Equipo o contacte al soporte de Jale.",
+      "seats": "Puestos de capataz: {used} de {limit} en uso"
     },
     "actions": {
       "upgrade": "Mejorar plan",
@@ -2010,7 +2030,9 @@
       "cta_pause_job": "Pausar otro empleo",
       "cta_manage_templates": "Administrar plantillas",
       "dismiss": "Ahora no",
-      "body_jobs_preflight": "No puede publicar un trabajo ahora. Su plan permite {limit, plural, one {# trabajo abierto} other {# trabajos abiertos}} y ya tiene {used}. Pause, cierre o elimine uno para publicar otro, o mejore su plan."
+      "body_jobs_preflight": "No puede publicar un trabajo ahora. Su plan permite {limit, plural, one {# trabajo abierto} other {# trabajos abiertos}} y ya tiene {used}. Pause, cierre o elimine uno para publicar otro, o mejore su plan.",
+      "foreman_body": "Su empresa alcanzó el límite de su plan; pida al propietario que lo mejore.",
+      "pro_owner_hint": "Ya tiene el plan más alto. Pause o cierre un empleo, o elimine una plantilla, para liberar un espacio."
     },
     "limit_reached": {
       "modal_message": "Ha alcanzado el límite de su plan de {limit, plural, one {# publicación de empleo activa} other {# publicaciones de empleo activas}}. Mejore su plan para publicar más.",
@@ -3593,6 +3615,98 @@
         "profile_body": "Esto es lo que ven los empleadores. Agrega tus documentos una vez y se usan en cada postulación.",
         "help_body": "Aquí están todas las guías. Vuelve a ver cualquiera cuando quieras."
       }
+    }
+  },
+  "employer_team": {
+    "title": "Equipo",
+    "seats": "{used} de {limit} puestos de capataz en uso",
+    "seats_pending": "{count, plural, one {# invitación pendiente} other {# invitaciones pendientes}}",
+    "no_seats": "Su plan no incluye puestos de capataz. Mejore su plan para invitar capataces.",
+    "invite": {
+      "title": "Invitar a un capataz",
+      "email": "Correo electrónico",
+      "name": "Nombre (opcional)",
+      "submit": "Enviar invitación",
+      "sent": "Invitación enviada a {email}."
+    },
+    "errors": {
+      "email_in_use": "Este correo ya tiene una cuenta de empleador en Jale con otra empresa.",
+      "already_member": "Esta persona ya forma parte de su equipo.",
+      "invite_pending": "Ya hay una invitación pendiente para este correo. Reenvíela.",
+      "seat_limit_reached": "Todos sus puestos de capataz están en uso.",
+      "invite_rate_limited": "Demasiadas invitaciones por ahora. Inténtelo más tarde.",
+      "invalid_email": "Ingrese un correo electrónico válido.",
+      "generic": "Algo salió mal. Inténtelo de nuevo.",
+      "invalid_contact_name": "Ese nombre es demasiado largo. Use 120 caracteres o menos.",
+      "invite_closed": "Esta invitación ya no está pendiente. La lista ya está actualizada.",
+      "invite_not_found": "No encontramos esa invitación. La lista ya está actualizada.",
+      "member_not_found": "No encontramos a ese miembro del equipo. Actualice la página e inténtelo de nuevo.",
+      "member_has_jobs": "Este capataz todavía tiene empleos. Elija quién se hará cargo de ellos e inténtelo de nuevo.",
+      "already_removed": "Este capataz ya fue quitado del equipo. Actualice la página.",
+      "cannot_remove_owner": "El propietario no se puede quitar del equipo.",
+      "invalid_assignee": "Esa persona no puede hacerse cargo de estos empleos en este momento. Actualice la página y elija a otra persona.",
+      "job_not_found": "No encontramos este empleo. Actualice la página.",
+      "owner_required": "Solo el propietario de su empresa puede administrar el equipo.",
+      "employer_required": "Inicie sesión con una cuenta de empleador de Jale para administrar un equipo.",
+      "busy": "Estamos procesando otros cambios en este momento. Espere un momento e inténtelo de nuevo.",
+      "job_move_conflict": "Este empleo fue reasignado; actualice la página para continuar."
+    },
+    "pending": {
+      "title": "Invitaciones pendientes",
+      "expires": "Vence el {date}",
+      "expired": "Vencida",
+      "resend": "Reenviar",
+      "revoke": "Revocar",
+      "empty": "No hay invitaciones pendientes.",
+      "resent": "Invitación reenviada a {email}.",
+      "revoked": "Invitación revocada."
+    },
+    "members": {
+      "title": "Miembros",
+      "owner": "Propietario",
+      "foreman": "Capataz",
+      "suspended": "Suspendido",
+      "jobs": "{count, plural, one {# empleo abierto} other {# empleos abiertos}}",
+      "remove": "Quitar",
+      "you": "Usted"
+    },
+    "remove": {
+      "title": "¿Quitar a {name}?",
+      "body": "Sus empleos y conversaciones pasarán a la persona que elija. Después no podrá iniciar sesión.",
+      "reassign_label": "Pasar sus empleos a",
+      "confirm": "Quitar y pasar empleos",
+      "cancel": "Cancelar",
+      "done": "Se quitó a {name}. {count, plural, one {Se pasó # empleo.} other {Se pasaron # empleos.}}"
+    },
+    "reassign": {
+      "label": "Responsable",
+      "save": "Cambiar",
+      "done": "Este empleo ahora es de {name}."
+    },
+    "no_seats_link": "Ver planes"
+  },
+  "employer_access": {
+    "no_organization": {
+      "title": "Su invitación venció",
+      "body": "Su invitación venció; pida a su empresa que se la reenvíe.",
+      "start_title": "O cree su propia empresa",
+      "start_name": "Nombre de la empresa",
+      "start_submit": "Crear mi empresa"
+    },
+    "suspended": {
+      "title": "Su acceso está en pausa",
+      "body": "El plan de su empresa no tiene un puesto para usted en este momento. Consulte con el propietario de su empresa."
+    },
+    "removed": {
+      "title": "Ya no forma parte de este equipo",
+      "body": "Su empresa lo quitó de su equipo en Jale. Pida al propietario que lo vuelva a invitar.",
+      "has_invite": "Tiene una nueva invitación de su empresa. Abra el enlace de su correo de invitación para unirse de nuevo."
+    },
+    "sign_out": "Cerrar sesión",
+    "errors": {
+      "invalid_company_name": "Ingrese el nombre de su empresa (hasta 120 caracteres).",
+      "busy": "Estamos procesando otros cambios en este momento. Espere un momento e inténtelo de nuevo.",
+      "generic": "Algo salió mal. Inténtelo de nuevo."
     }
   }
 }

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { apiFetch, DEFAULT_TIMEOUT_MS, LegalWallError, PROVISIONING_RETRY_DELAYS_MS } from '../api';
+import {
+  apiFetch,
+  DEFAULT_TIMEOUT_MS,
+  isMembershipBlockedError,
+  LegalWallError,
+  MembershipBlockedError,
+  PROVISIONING_RETRY_DELAYS_MS,
+} from '../api';
 import { ApiError } from '../api/errors';
 import { registerAuthBridge, type AuthBridge } from '../auth-bridge';
 
@@ -542,5 +549,90 @@ describe('apiFetch Accept-Language', () => {
     vi.stubGlobal('window', { location: { pathname: '/es/worker/profile' } });
     await apiFetch('/worker/profile', { headers: { 'Accept-Language': 'en' } }, 'tok');
     expect(acceptLanguageOfCall(1)).toBe('en');
+  });
+});
+
+describe('apiFetch membership-blocked 403s (Phase 3)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://api.example.test');
+    vi.stubEnv('NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  async function blockedErrorFor(body: unknown): Promise<MembershipBlockedError> {
+    fetchMock.mockResolvedValueOnce(mockResponse(403, body));
+    const err = await apiFetch('/employer/jobs', {}, 'tok').catch((e: unknown) => e);
+    expect(isMembershipBlockedError(err)).toBe(true);
+    return err as MembershipBlockedError;
+  }
+
+  it('403 no_organization throws MembershipBlockedError(no_organization)', async () => {
+    const err = await blockedErrorFor({ error: 'no_organization' });
+
+    expect(err).toBeInstanceOf(MembershipBlockedError);
+    expect(err.reason).toBe('no_organization');
+    expect(err.hasInvite).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('403 membership_inactive removed throws reason removed with hasInvite from the body; suspended or absent gives reason suspended', async () => {
+    const removedWithInvite = await blockedErrorFor({ error: 'membership_inactive', membershipStatus: 'removed', hasInvite: true });
+    expect(removedWithInvite.reason).toBe('removed');
+    expect(removedWithInvite.hasInvite).toBe(true);
+
+    const removed = await blockedErrorFor({ error: 'membership_inactive', membershipStatus: 'removed' });
+    expect(removed.reason).toBe('removed');
+    expect(removed.hasInvite).toBe(false);
+
+    // Only a literal `true` counts as an invite.
+    const truthy = await blockedErrorFor({ error: 'membership_inactive', membershipStatus: 'removed', hasInvite: 'yes' });
+    expect(truthy.hasInvite).toBe(false);
+
+    const suspended = await blockedErrorFor({ error: 'membership_inactive', membershipStatus: 'suspended', hasInvite: false });
+    expect(suspended.reason).toBe('suspended');
+
+    const absent = await blockedErrorFor({ error: 'membership_inactive' });
+    expect(absent.reason).toBe('suspended');
+    // The access page re-reads membership for the real status in this case.
+    expect(absent.statusKnown).toBe(false);
+    expect(suspended.statusKnown).toBe(true);
+  });
+
+  it('other 403s are returned as before', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(403, { error: 'owner_required' }));
+    const res = await apiFetch('/employer/team/members', {}, 'tok');
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: 'owner_required' });
+
+    fetchMock.mockResolvedValueOnce(mockResponse(403, { error: 'legal_required' }));
+    await expect(apiFetch('/employer/jobs', {}, 'tok')).rejects.toThrow(LegalWallError);
+  });
+
+  it('flag off: a no_organization or membership_inactive 403 is returned as a plain response (Phase 2)', async () => {
+    vi.stubEnv('NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED', 'false');
+
+    fetchMock.mockResolvedValueOnce(mockResponse(403, { error: 'no_organization' }));
+    const orgless = await apiFetch('/employer/jobs', {}, 'tok');
+    expect(orgless.status).toBe(403);
+
+    fetchMock.mockResolvedValueOnce(mockResponse(403, { error: 'membership_inactive', membershipStatus: 'removed' }));
+    const inactive = await apiFetch('/employer/jobs', {}, 'tok');
+    expect(inactive.status).toBe(403);
+  });
+
+  it('isMembershipBlockedError recognises the error by its name marker too', () => {
+    expect(isMembershipBlockedError(new MembershipBlockedError('removed', true))).toBe(true);
+    const lookalike = Object.assign(new Error('membership_blocked'), { name: 'MembershipBlockedError', reason: 'suspended', hasInvite: false });
+    expect(isMembershipBlockedError(lookalike)).toBe(true);
+    expect(isMembershipBlockedError(new Error('x'))).toBe(false);
+    expect(isMembershipBlockedError(null)).toBe(false);
   });
 });

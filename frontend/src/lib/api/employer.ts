@@ -1338,8 +1338,14 @@ export type EmployerBilling = {
   /** Company active jobs that are not in the caller's own jobs list (0 for the owner, who lists every member's). */
   otherMembersActiveJobs?: number;
   role?: 'owner' | 'foreman';
-  /** The owner only: foreman seats in use, the plan's seats, and foremen suspended by a downgrade. */
-  seats?: { used: number; limit: number; suspended: number } | null;
+  /**
+   * The owner only (null for a foreman): active foremen (`used`), the plan's
+   * seats, and foremen suspended by a downgrade. Phase 3 adds `pending`, the
+   * live invites, each of which holds a seat: a meter shows
+   * `used + (pending ?? 0)` against `limit`. Optional: an API from before
+   * Phase 3 omits it.
+   */
+  seats?: { used: number; limit: number; suspended: number; pending?: number } | null;
 };
 
 export async function getBilling(

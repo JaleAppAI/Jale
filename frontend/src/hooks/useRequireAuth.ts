@@ -4,7 +4,8 @@ import { useLocale } from 'next-intl';
 import { useRouter as useNextRouter } from 'next/navigation';
 import { usePathname, useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { isLegalWallError } from '@/lib/api';
+import { isLegalWallError, isMembershipBlockedError } from '@/lib/api';
+import { clearEmployerMembershipCache } from '@/lib/employer-membership-store';
 import { buildLoginUrl } from '@/lib/login-url';
 
 type UserType = 'worker' | 'employer';
@@ -97,10 +98,26 @@ export function useRequireAuth({ enabled = true, role }: UseRequireAuthOptions =
         nextRouter.replace(buildLoginUrl(locale, dest, currentReturnPath()));
     }, [enabled, isLoading, isAuthenticated, roleMatches, requiredRole, userType, nextRouter, locale]);
 
+    /**
+     * The walls a request can hit, each a redirect rather than a message:
+     *   - the legal wall: accept the current terms, then come back;
+     *   - a blocked company membership (Phase 3; `apiFetch` raises it only with
+     *     the team flag on): the access screen for the reason, with `invite=1`
+     *     when a re-invite is waiting. A 403 that named no status sends no
+     *     reason, and the screen waits for its own membership read. The cached
+     *     membership is dropped: it no longer describes this login. No return
+     *     URL: there is nothing to come back to until the membership changes.
+     * Anything else is re-thrown for the page to handle.
+     */
     const handleLegalWall = useCallback((err: unknown, returnUrl: string) => {
         if (isLegalWallError(err)) {
             sessionStorage.setItem('legalReturnUrl', returnUrl);
             router.replace('/legal/accept');
+        } else if (isMembershipBlockedError(err)) {
+            clearEmployerMembershipCache();
+            router.replace(err.statusKnown
+                ? `/employer/access?reason=${err.reason}${err.hasInvite ? '&invite=1' : ''}`
+                : '/employer/access');
         } else {
             throw err;
         }
