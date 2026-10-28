@@ -98,7 +98,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const current = jobRes.rows[0]?.employer_id;
     if (!current) {
       await client.query('ROLLBACK');
-      return response(404, { error: 'not_found' });
+      return response(404, { error: 'job_not_found' });
     }
 
     // 3. Already theirs: nothing to write.
@@ -126,7 +126,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     );
     if (moved.rowCount !== 1) {
       await client.query('ROLLBACK');
-      return response(404, { error: 'not_found' });
+      return response(404, { error: 'job_not_found' });
     }
 
     await client.query('COMMIT');

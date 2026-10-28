@@ -151,7 +151,7 @@ describe('employer-team-job-reassign', () => {
     const res = await handler(makeEvent(validBody));
 
     expect(res.statusCode).toBe(404);
-    expect(JSON.parse(res.body)).toEqual({ error: 'not_found' });
+    expect(JSON.parse(res.body)).toEqual({ error: 'job_not_found' });
     expect(jobsUpdates()).toHaveLength(0);
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
   });
@@ -160,7 +160,7 @@ describe('employer-team-job-reassign', () => {
     updateResult = { rowCount: 0 };
     const res = await handler(makeEvent(validBody));
     expect(res.statusCode).toBe(404);
-    expect(JSON.parse(res.body)).toEqual({ error: 'not_found' });
+    expect(JSON.parse(res.body)).toEqual({ error: 'job_not_found' });
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
   });
 

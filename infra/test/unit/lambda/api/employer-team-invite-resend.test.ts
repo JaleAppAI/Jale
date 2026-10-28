@@ -145,11 +145,11 @@ describe('employer-team-invite-resend', () => {
     expect(seatLimit).toBe(2);
   });
 
-  it('too_soon: 429 with retry_after_seconds', async () => {
+  it('too_soon: 429 with retryAfterSeconds', async () => {
     definerRow = refusal('too_soon', 42);
     const res = await handler(event(validBody));
     expect(res.statusCode).toBe(429);
-    expect(JSON.parse(res.body)).toEqual({ error: 'invite_rate_limited', retry_after_seconds: 42 });
+    expect(JSON.parse(res.body)).toEqual({ error: 'invite_rate_limited', retryAfterSeconds: 42 });
     expect(sqlCalls()).toContain('ROLLBACK');
     expect(callIndex('org_team_invite_queue_email')).toBe(-1);
   });

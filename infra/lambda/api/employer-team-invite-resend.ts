@@ -17,7 +17,7 @@ import { renderOrgInviteEmail } from '../lib/org-invite-email-template';
  * re-sends a pending invite, `{ inviteId, locale }`. A new token replaces the
  * old one (the old link stops working), the invite gets a new week, and a new
  * email is queued. 133's org_team_invite_resend enforces the 60-second
- * cooldown (too_soon, with retry_after_seconds), 5 resends per invite and 20
+ * cooldown (too_soon, with retryAfterSeconds), 5 resends per invite and 20
  * sends per company a day, and a free seat for an expired invite (it trusts
  * p_seat_limit).
  *
@@ -189,7 +189,7 @@ async function resendInvite(cognitoSub: string, request: ResendRequest, baseUrl:
       const mappedResponse = inviteWriteResponse(row.outcome, row.retry_after_seconds);
       await client.query('ROLLBACK');
       const body: Record<string, unknown> = { error: mappedResponse.error };
-      if (mappedResponse.retryAfterSeconds !== undefined) body.retry_after_seconds = mappedResponse.retryAfterSeconds;
+      if (mappedResponse.retryAfterSeconds !== undefined) body.retryAfterSeconds = mappedResponse.retryAfterSeconds;
       return { kind: 'response', response: response(mappedResponse.statusCode, body) };
     }
 
