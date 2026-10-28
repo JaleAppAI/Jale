@@ -9,6 +9,7 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
   updateEmployerProfile: (...args: unknown[]) => updateEmployerProfile(...args),
 }));
 
+import { ApiError } from '../api/errors';
 import * as flushModule from '../employer-profile-flush';
 import { loadEmployerProfileWithPendingFlush } from '../employer-profile-flush';
 
@@ -175,5 +176,102 @@ describe('the profile load while the dashboard is still saving', () => {
   it('reads the profile when nothing is pending', async () => {
     expect(await loadEmployerProfileWithPendingFlush('tok')).toEqual({ id: 'e1', company_name: null });
     expect(getEmployerProfile).toHaveBeenCalledTimes(1);
+  });
+});
+
+/*
+ * Phase 3 (Task 16, I4): an invited foreman's sign-up stages only
+ * `{ contact_name, phone }`. A foreman may not write company fields, and
+ * `signup_source` is a company sign-up's analytics, so the flush adds it only
+ * when the stash carries `company_name` -- otherwise the first save after an
+ * invite sign-up would carry a company sign-up's source.
+ */
+describe('an invite sign-up\'s first save (Phase 3)', () => {
+  it('invite-mode pending profile has only contact_name and phone; the flush sends no signup_source', async () => {
+    const invitePending = { contact_name: 'Ana Ruiz', phone: '+12105550100' };
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(invitePending));
+    sessionStorage.setItem('jale.signup-source', JSON.stringify(STASH));
+
+    await flushPending('tok');
+
+    expect(updateEmployerProfile).toHaveBeenCalledTimes(1);
+    expect(updateEmployerProfile).toHaveBeenCalledWith('tok', invitePending);
+    // Both stashes are spent once the save lands, as for any sign-up.
+    expect(sessionStorage.getItem('pendingEmployerProfile')).toBeNull();
+    expect(sessionStorage.getItem('jale.signup-source')).toBeNull();
+  });
+
+  it('a company stash refused 403 owner_required (the login became a foreman) resends only contact_name and phone, then forgets it', async () => {
+    const companyStash = { ...PENDING, contact_name: 'Ana Ruiz', phone: '+12105550100', city: 'Austin' };
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(companyStash));
+    sessionStorage.setItem('jale.signup-source', JSON.stringify(STASH));
+    updateEmployerProfile
+      .mockRejectedValueOnce(new ApiError(403, 'owner_required'))
+      .mockResolvedValueOnce({ id: 'e1', contact_name: 'Ana Ruiz' });
+
+    await expect(flushPending('tok')).resolves.toEqual({ id: 'e1', contact_name: 'Ana Ruiz' });
+
+    expect(updateEmployerProfile).toHaveBeenCalledTimes(2);
+    expect(updateEmployerProfile).toHaveBeenLastCalledWith('tok', { contact_name: 'Ana Ruiz', phone: '+12105550100' });
+    expect(sessionStorage.getItem('pendingEmployerProfile')).toBeNull();
+    expect(sessionStorage.getItem('jale.signup-source')).toBeNull();
+  });
+
+  it('another 403 is not retried and keeps the stash', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(PENDING));
+    updateEmployerProfile.mockRejectedValueOnce(new ApiError(403, 'employer_required'));
+
+    await expect(flushPending('tok')).rejects.toMatchObject({ code: 'employer_required' });
+    expect(updateEmployerProfile).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem('pendingEmployerProfile')).not.toBeNull();
+  });
+
+  it('still adds signup_source to a company sign-up\'s stash', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(PENDING));
+    sessionStorage.setItem('jale.signup-source', JSON.stringify(STASH));
+
+    await flushPending('tok');
+
+    expect(updateEmployerProfile).toHaveBeenCalledWith('tok', {
+      ...PENDING,
+      signup_source: { src: 'partner', entry: 'signup_page' },
+    });
+  });
+});
+
+describe('the stored invite (Phase 3)', () => {
+  it('stores { token, email } with the email normalised, and reads it back', async () => {
+    const { storePendingInvite, readPendingInvite, PENDING_INVITE_KEY } = await import('../employer-profile-flush');
+
+    storePendingInvite({ token: 'tok-1', email: '  Ana@Example.COM ' });
+
+    expect(PENDING_INVITE_KEY).toBe('pendingInvite');
+    expect(JSON.parse(sessionStorage.getItem(PENDING_INVITE_KEY) as string)).toEqual({ token: 'tok-1', email: 'ana@example.com' });
+    expect(readPendingInvite()).toEqual({ token: 'tok-1', email: 'ana@example.com' });
+  });
+
+  it('matches the stored invite only to its own email, case-insensitive and trimmed', async () => {
+    const { storePendingInvite, storedInviteTokenFor } = await import('../employer-profile-flush');
+
+    storePendingInvite({ token: 'tok-1', email: 'ana@example.com' });
+
+    expect(storedInviteTokenFor(' ANA@example.com ')).toBe('tok-1');
+    expect(storedInviteTokenFor('someone@example.com')).toBeNull();
+    expect(storedInviteTokenFor('')).toBeNull();
+  });
+
+  it('reads a malformed or missing stash as none, and clears it', async () => {
+    const { readPendingInvite, clearPendingInvite, storedInviteTokenFor } = await import('../employer-profile-flush');
+
+    expect(readPendingInvite()).toBeNull();
+    sessionStorage.setItem('pendingInvite', '{not json');
+    expect(readPendingInvite()).toBeNull();
+    sessionStorage.setItem('pendingInvite', JSON.stringify({ token: 42, email: 'a@b.c' }));
+    expect(readPendingInvite()).toBeNull();
+    expect(storedInviteTokenFor('a@b.c')).toBeNull();
+
+    sessionStorage.setItem('pendingInvite', JSON.stringify({ token: 't', email: 'a@b.c' }));
+    clearPendingInvite();
+    expect(sessionStorage.getItem('pendingInvite')).toBeNull();
   });
 });
