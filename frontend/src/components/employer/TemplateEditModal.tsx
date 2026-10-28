@@ -4,6 +4,7 @@ import type { FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useEmployerMembership, type EmployerMembership } from '@/hooks/useEmployerMembership';
+import { MEMBERSHIP_DISABLED } from '@/lib/employer-membership-store';
 import { planLimitAudienceFor } from '@/hooks/usePlanLimitAudience';
 import { ApiError, saveJobTemplate, type JobTemplate } from '@/lib/api/employer';
 import { isTeamManagementEnabled } from '@/lib/feature-flags';
@@ -38,10 +39,8 @@ interface Props {
 
 export function TemplateEditModal(props: Props) {
   // Same split as PostJobModal: flag off, no membership hook and Phase 2's copy.
-  return isTeamManagementEnabled() ? <TeamAwareTemplateEditModal {...props} /> : <TemplateEditModalView {...props} membership={TEAM_OFF} />;
+  return isTeamManagementEnabled() ? <TeamAwareTemplateEditModal {...props} /> : <TemplateEditModalView {...props} membership={MEMBERSHIP_DISABLED} />;
 }
-
-const TEAM_OFF: EmployerMembership = { status: 'disabled' };
 
 function TeamAwareTemplateEditModal(props: Props) {
   const membership = useEmployerMembership();

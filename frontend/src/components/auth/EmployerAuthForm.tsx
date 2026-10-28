@@ -5,10 +5,10 @@ import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode, type AuthTokens } from '@/lib/cognito';
 import { captureSignupSource } from '@/lib/signup-source';
-import { isLegalWallError, isMembershipBlockedError, type MembershipBlockedError } from '@/lib/api';
+import { isLegalWallError, isMembershipBlockedError } from '@/lib/api';
 import { ApiError } from '@/lib/api/errors';
 import { acceptInvite, getMembership } from '@/lib/api/team';
-import { clearEmployerMembershipCache } from '@/lib/employer-membership-store';
+import { clearEmployerMembershipCache, membershipAccessPath } from '@/lib/employer-membership-store';
 import { clearPendingInvite, storedInviteTokenFor } from '@/lib/employer-profile-flush';
 import { isTeamManagementEnabled } from '@/lib/feature-flags';
 import { authErrorKey, confirmErrorKey, forgotErrorKey, resendErrorKey } from '@/lib/auth-errors';
@@ -128,13 +128,6 @@ function isDisabledAccountError(err: unknown): boolean {
     return (e?.code ?? e?.name) === 'NotAuthorizedException' && e?.message === 'User is disabled.';
 }
 
-/** Where `useRequireAuth().handleLegalWall` sends a blocked login; the same URL. */
-function accessPath(err: MembershipBlockedError): string {
-    return err.statusKnown
-        ? `/employer/access?reason=${err.reason}${err.hasInvite ? '&invite=1' : ''}`
-        : '/employer/access';
-}
-
 /**
  * The invite page, WITHOUT a locale: `legalReturnUrl` goes through next-intl's
  * router, which adds the locale itself (a prefixed path became `/en/en/…`).
@@ -187,7 +180,7 @@ export async function settleInviteAccept(
         }
         return { kind: 'legal_wall' };
     }
-    if (isMembershipBlockedError(refusal)) return { kind: 'blocked', path: accessPath(refusal) };
+    if (isMembershipBlockedError(refusal)) return { kind: 'blocked', path: membershipAccessPath(refusal) };
     const code = refusal instanceof ApiError ? refusal.code : null;
     if (code === 'invite_used' && loginIsInvitee) {
         try {
@@ -195,7 +188,7 @@ export async function settleInviteAccept(
             clearPendingInvite();
             return { kind: 'joined' };
         } catch (err) {
-            if (isMembershipBlockedError(err)) return { kind: 'blocked', path: accessPath(err) };
+            if (isMembershipBlockedError(err)) return { kind: 'blocked', path: membershipAccessPath(err) };
             // Any other failure: the `used` copy.
         }
     }

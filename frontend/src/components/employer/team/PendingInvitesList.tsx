@@ -10,7 +10,7 @@ import { PanelHeader } from '@/components/ui/panel-header';
 import type { TeamInvite } from '@/lib/api/team';
 import { formatLongDate } from '@/lib/date';
 import type { TeamActionResult } from './types';
-import { secondsLeft, useNow } from './useNow';
+import { secondsLeft, useCooldownClock } from './useCooldownClock';
 
 const ERROR_ID = 'team-pending-error';
 
@@ -57,7 +57,7 @@ export function PendingInvitesList({
         const byLastSend = Number.isFinite(sent) ? sent + RESEND_COOLDOWN_MS : 0;
         return Math.max(byLastSend, rateLimitedUntil[invite.inviteId] ?? 0);
     };
-    const now = useNow(invites.map(resendAt));
+    const now = useCooldownClock(invites.map(resendAt));
 
     async function run(invite: TeamInvite, action: Busy['action']) {
         if (busyRef.current) return;

@@ -143,10 +143,42 @@ describe('employer access page', () => {
         expect(screen.getByRole('heading', { level: 1, name: message('employer_access.removed.title') })).toBeInTheDocument();
     });
 
-    it('no reason and a failing membership read: the suspended screen, never a blank page', async () => {
+    it('no reason and a failing membership read: an error card with Retry and sign-out, never "paused" and never blank (M4)', async () => {
         getMembership.mockRejectedValue(new ApiError(500, 'internal_error'));
         renderIntl(<EmployerAccessPage />);
-        await waitFor(() => expect(screen.getByText(message('employer_access.suspended.title'))).toBeInTheDocument());
+
+        expect(await screen.findByRole('button', { name: message('common.retry') })).toBeInTheDocument();
+        expect(screen.getByRole('heading', { level: 1, name: message('common.error_state.title') })).toBeInTheDocument();
+        expect(screen.getByText(message('common.errors.server'))).toBeInTheDocument();
+        expect(screen.queryByText(message('employer_access.suspended.title'))).toBeNull();
+        expect(screen.getByRole('button', { name: message('employer_access.sign_out') })).toBeInTheDocument();
+        expect(replace).not.toHaveBeenCalled();
+    });
+
+    it('Retry re-reads the membership: a blocked answer paints its reason (M4)', async () => {
+        getMembership.mockRejectedValueOnce(new ApiError(0, 'offline'));
+        renderIntl(<EmployerAccessPage />);
+        const retry = await screen.findByRole('button', { name: message('common.retry') });
+
+        getMembership.mockRejectedValueOnce(new MembershipBlockedError('removed', true));
+        fireEvent.click(retry);
+
+        expect(await screen.findByRole('heading', { level: 1, name: message('employer_access.removed.title') })).toBeInTheDocument();
+        expect(screen.getByText(message('employer_access.removed.has_invite'))).toBeInTheDocument();
+        expect(getMembership).toHaveBeenCalledTimes(2);
+        expect(screen.queryByRole('button', { name: message('common.retry') })).toBeNull();
+    });
+
+    it('Retry re-reads the membership: an active answer goes to the dashboard (M4)', async () => {
+        getMembership.mockRejectedValueOnce(new ApiError(503, 'busy'));
+        renderIntl(<EmployerAccessPage />);
+        const retry = await screen.findByRole('button', { name: message('common.retry') });
+
+        getMembership.mockResolvedValueOnce(ACTIVE);
+        fireEvent.click(retry);
+
+        await waitFor(() => expect(replace).toHaveBeenCalledWith('/employer/dashboard'));
+        expect(getMembership).toHaveBeenCalledTimes(2);
     });
 
     it('arrival drops the cached membership, whatever the answer', async () => {
@@ -349,6 +381,22 @@ describe('employer access page', () => {
         fireEvent.click(submitButton());
 
         await waitFor(() => expect(handleLegalWall).toHaveBeenCalledWith(wall, expect.any(String)));
+    });
+
+    it('the legal-wall return URL has no locale: next-intl adds it (I1, never /en/en/…)', async () => {
+        window.history.replaceState(null, '', '/en/employer/access?reason=no_organization');
+        state.search = '?reason=no_organization';
+        stillBlocked('no_organization');
+        const wall = Object.assign(new Error('legal_required'), { name: 'LegalWallError' });
+        startCompany.mockRejectedValue(wall);
+        renderIntl(<EmployerAccessPage />);
+        await settle();
+
+        fireEvent.change(nameInput(), { target: { value: 'Acme' } });
+        fireEvent.click(submitButton());
+
+        await waitFor(() => expect(handleLegalWall).toHaveBeenCalledWith(wall, '/employer/access?reason=no_organization'));
+        window.history.replaceState(null, '', '/');
     });
 
     it('sign out clears the employer session', async () => {

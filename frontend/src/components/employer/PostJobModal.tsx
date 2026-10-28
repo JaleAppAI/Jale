@@ -7,6 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { useEmployerMembership, type EmployerMembership } from '@/hooks/useEmployerMembership';
+import { MEMBERSHIP_DISABLED } from '@/lib/employer-membership-store';
 import { planLimitAudienceFor, type AudienceBilling } from '@/hooks/usePlanLimitAudience';
 import {
   ApiError, createJob, getBilling, listJobTemplates, saveJobTemplate, withTemplateId,
@@ -102,10 +103,8 @@ export function PostJobModal(props: Props) {
   // Team flag off: Phase 2's modal, without the membership hook at all (no
   // request). On: the same modal, told who is reading its plan-limit copy. A
   // component choice on a build-time flag, not a conditional hook call.
-  return isTeamManagementEnabled() ? <TeamAwarePostJobModal {...props} /> : <PostJobModalView {...props} membership={TEAM_OFF} />;
+  return isTeamManagementEnabled() ? <TeamAwarePostJobModal {...props} /> : <PostJobModalView {...props} membership={MEMBERSHIP_DISABLED} />;
 }
-
-const TEAM_OFF: EmployerMembership = { status: 'disabled' };
 
 function TeamAwarePostJobModal(props: Props) {
   const membership = useEmployerMembership();

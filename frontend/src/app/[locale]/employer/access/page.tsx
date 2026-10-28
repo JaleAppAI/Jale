@@ -6,9 +6,10 @@ import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { isLegalWallError, isMembershipBlockedError, type MembershipBlockedReason } from '@/lib/api';
-import { ApiError } from '@/lib/api/errors';
+import { ApiError, classifyError, errorMessageKey, type ErrorKind } from '@/lib/api/errors';
 import { getMembership, startCompany } from '@/lib/api/team';
 import {
+    ACCESS_PAGE_PATH,
     clearEmployerMembershipCache,
     resetAccessRedirectGuard,
     takeAccessRedirect,
@@ -46,8 +47,9 @@ function parseReason(raw: string | null): MembershipBlockedReason | null {
  * On arrival the page drops the cached membership and re-reads it: GET
  * `/employer/team/membership` always names the status and whether a re-invite
  * is waiting. Until it answers, a URL with a reason paints that reason; one
- * without paints the loading card. An active answer (an invite was accepted
- * meanwhile) goes to the dashboard -- at most once per page load
+ * without paints the loading card, and if the read then fails for any reason
+ * other than "blocked", an error card with Retry. An active answer (an invite
+ * was accepted meanwhile) goes to the dashboard -- at most once per page load
  * (`takeAccessRedirect`), so a route that keeps answering 403 cannot bounce
  * the login between the two screens forever.
  *
@@ -77,6 +79,10 @@ function AccessScreen() {
     const [submitting, setSubmitting] = useState(false);
     const [startError, setStartError] = useState<StartError | null>(null);
     const [signingOut, setSigningOut] = useState(false);
+    // A membership read that failed for a reason other than "blocked", while
+    // the URL named no reason: the error card, with Retry (M4).
+    const [loadError, setLoadError] = useState<ErrorKind | null>(null);
+    const [attempt, setAttempt] = useState(0);
     const nameInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -102,15 +108,23 @@ function AccessScreen() {
                     setReason(err.reason);
                     setHasInvite(err.hasInvite);
                 } else {
-                    // Any other failure keeps what the URL said.
-                    setReason((current) => current ?? 'suspended');
+                    // Any other failure (offline, a 500, a second `busy`) says
+                    // nothing about the membership: a reason the URL named
+                    // stays; with none, the error card offers Retry rather
+                    // than guessing "paused".
+                    setLoadError(classifyError(err).kind);
                 }
             },
         );
         return () => {
             live = false;
         };
-    }, [idToken, router]);
+    }, [idToken, router, attempt]);
+
+    const retryMembership = () => {
+        setLoadError(null);
+        setAttempt((n) => n + 1);
+    };
 
     const goToDashboard = () => {
         clearEmployerMembershipCache();
@@ -156,7 +170,7 @@ function AccessScreen() {
             return;
         } catch (err) {
             if (isLegalWallError(err)) {
-                handleLegalWall(err, currentPath());
+                handleLegalWall(err, legalReturnPath());
                 return;
             }
             if (err instanceof ApiError && err.code === 'already_member') {
@@ -183,6 +197,38 @@ function AccessScreen() {
             setSigningOut(false);
         }
     };
+
+    const signOutButton = (
+        <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={handleSignOut}
+            loading={signingOut}
+            loadingLabel={tCommon('loading')}
+        >
+            {t('sign_out')}
+        </Button>
+    );
+
+    if (reason === null && loadError !== null) {
+        return (
+            <main className={FRAME}>
+                <DashboardPanel as="div" className={CARD}>
+                    <div>
+                        <h1 className="mb-2 text-xl font-extrabold leading-[1.3] tracking-[-0.02em] text-[var(--jale-ink)]">
+                            {tCommon('error_state.title')}
+                        </h1>
+                        <p className="text-sm text-[var(--jale-ink-2)]">{tCommon(errorMessageKey(loadError))}</p>
+                    </div>
+                    <Button type="button" className="w-full" onClick={retryMembership}>
+                        {tCommon('retry')}
+                    </Button>
+                    {signOutButton}
+                </DashboardPanel>
+            </main>
+        );
+    }
 
     if (reason === null) {
         return (
@@ -236,22 +282,17 @@ function AccessScreen() {
                     </form>
                 ) : null}
 
-                <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full"
-                    onClick={handleSignOut}
-                    loading={signingOut}
-                    loadingLabel={tCommon('loading')}
-                >
-                    {t('sign_out')}
-                </Button>
+                {signOutButton}
             </DashboardPanel>
         </main>
     );
 }
 
-function currentPath(): string {
-    if (typeof window === 'undefined') return '';
-    return `${window.location.pathname}${window.location.search}`;
+/**
+ * This screen, with its query and WITHOUT a locale: `legalReturnUrl` goes
+ * through next-intl's router, which adds the locale itself (the address bar's
+ * `/en/employer/access` became `/en/en/…`, a 404).
+ */
+function legalReturnPath(): string {
+    return `${ACCESS_PAGE_PATH}${typeof window === 'undefined' ? '' : window.location.search}`;
 }

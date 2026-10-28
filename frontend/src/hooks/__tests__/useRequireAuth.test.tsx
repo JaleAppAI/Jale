@@ -258,6 +258,44 @@ describe('useRequireAuth — membership-blocked logins (Phase 3)', () => {
         expect(readMembershipCache(0)).toBeNull();
     });
 
+    it.each([
+        '/en/employer/access',
+        '/es/auth/employer/invite',
+        // The locale-less forms too (next-intl's default locale may omit it).
+        '/employer/access',
+        '/auth/employer/invite',
+    ])('already on %s: a blocked error routes nowhere and keeps the cache (C1)', (pathname) => {
+        // The address bar at the moment of the redirect.
+        window.history.replaceState(null, '', pathname);
+        render(<HandlerProbe />);
+        const cached = {
+            epoch: 0,
+            promise: new Promise<never>(() => {}),
+            value: { status: 'ready', role: 'owner', companyName: 'Acme', userId: 'u', organizationId: 'o' } as const,
+            blockedRouted: false,
+        };
+        writeMembershipCache(cached);
+
+        expect(() => handleLegalWall(blocked('removed', true), pathname)).not.toThrow();
+
+        expect(i18nReplace).not.toHaveBeenCalled();
+        expect(replace).not.toHaveBeenCalled();
+        expect(readMembershipCache(0)).toBe(cached);
+    });
+
+    it('a page whose path only starts like the access screen is still routed', () => {
+        window.history.replaceState(null, '', '/en/employer/access-log');
+        render(<HandlerProbe />);
+        handleLegalWall(blocked('suspended', false), '/en/employer/access-log');
+        expect(i18nReplace).toHaveBeenLastCalledWith('/employer/access?reason=suspended');
+    });
+
+    it('the legal wall still applies on those pages', () => {
+        window.history.replaceState(null, '', '/en/employer/access');
+        render(<HandlerProbe />);
+        expect(() => handleLegalWall(new Error('boom'), '/employer/access')).toThrow('boom');
+    });
+
     it('any other error is still re-thrown', () => {
         render(<HandlerProbe />);
         expect(() => handleLegalWall!(new Error('boom'), '/x')).toThrow('boom');

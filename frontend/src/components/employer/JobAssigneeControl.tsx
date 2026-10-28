@@ -12,6 +12,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { ApiError } from '@/lib/api/errors';
 import { getTeam, reassignJob, teamErrorMessageKey, type TeamMember } from '@/lib/api/team';
+import { membershipRole } from '@/lib/employer-membership-store';
 import { isTeamManagementEnabled } from '@/lib/feature-flags';
 
 type JobAssigneeControlProps = {
@@ -38,7 +39,8 @@ type JobAssigneeControlProps = {
 export function JobAssigneeControl(props: JobAssigneeControlProps) {
     const membership = useEmployerMembership();
     if (!isTeamManagementEnabled()) return null;
-    if (membership.status !== 'ready' || membership.role !== 'owner') return null;
+    // `ready` only: an `error`'s billing role is not enough to move jobs.
+    if (membership.status !== 'ready' || membershipRole(membership) !== 'owner') return null;
     return <OwnerAssigneePicker {...props} />;
 }
 

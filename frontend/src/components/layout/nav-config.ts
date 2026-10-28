@@ -1,5 +1,5 @@
 import type { IconName } from '@/components/ui/icon';
-import type { EmployerMembership } from '@/lib/employer-membership-store';
+import { membershipRole, type EmployerMembership } from '@/lib/employer-membership-store';
 
 export type ShellRole = 'worker' | 'employer';
 
@@ -128,16 +128,9 @@ export const employerSidebarSecondaryNav: NavItem[] = [employerTeamNav, employer
  *   company) is never an owner; the hook has already routed it away.
  */
 export function employerNavRole(membership: EmployerMembership): 'owner' | 'foreman' | null {
-    switch (membership.status) {
-        case 'disabled':
-            return 'owner';
-        case 'ready':
-            return membership.role;
-        case 'error':
-            return membership.billingRole ?? 'owner';
-        default:
-            return null;
-    }
+    if (membership.status === 'disabled') return 'owner';
+    const role = membershipRole(membership);
+    return membership.status === 'error' ? role ?? 'owner' : role;
 }
 
 /**

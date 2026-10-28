@@ -115,6 +115,60 @@ describe('AuthProvider — two roles in one browser', () => {
 });
 
 describe('AuthProvider — signing out', () => {
+    it('an employer sign-out drops the stored invite token (M5); a worker sign-out leaves it', async () => {
+        const invite = JSON.stringify({ token: 'tok-1', email: 'ana@example.com' });
+        localStorage.setItem(WORKER_SLOT, 'rt-worker');
+        window.history.replaceState(null, '', '/es/worker/home');
+        sessionStorage.setItem('pendingInvite', invite);
+        const user = userEvent.setup();
+
+        const worker = renderProvider();
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:worker'));
+        await user.click(screen.getByRole('button', { name: 'sign out' }));
+        await waitFor(() => expect(localStorage.getItem(WORKER_SLOT)).toBeNull());
+        // Not the worker's: an employer invite in the same tab stays.
+        expect(sessionStorage.getItem('pendingInvite')).toBe(invite);
+        worker.unmount();
+
+        localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
+        window.history.replaceState(null, '', '/es/employer/dashboard');
+        renderProvider();
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:employer'));
+        await user.click(screen.getByRole('button', { name: 'sign out' }));
+
+        // A live bearer token must not outlast the session on a shared device.
+        await waitFor(() => expect(sessionStorage.getItem('pendingInvite')).toBeNull());
+    });
+
+    it('a refused (expired) employer token keeps the stored invite: the invite page reads it back after the legal wall', async () => {
+        const invite = JSON.stringify({ token: 'tok-1', email: 'ana@example.com' });
+        localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
+        sessionStorage.setItem('pendingInvite', invite);
+        window.history.replaceState(null, '', '/es/auth/employer/invite');
+        apiFetch.mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
+
+        renderProvider();
+
+        await waitFor(() => expect(localStorage.getItem(EMPLOYER_SLOT)).toBeNull());
+        expect(sessionStorage.getItem('pendingInvite')).toBe(invite);
+    });
+
+    it('another tab\'s employer sign-out drops this tab\'s stored invite', async () => {
+        const invite = JSON.stringify({ token: 'tok-1', email: 'ana@example.com' });
+        localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
+        sessionStorage.setItem('pendingInvite', invite);
+        window.history.replaceState(null, '', '/es/auth/employer/invite');
+
+        renderProvider();
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:employer'));
+
+        // The other tab removed the slot: the browser's storage event.
+        localStorage.removeItem(EMPLOYER_SLOT);
+        window.dispatchEvent(new StorageEvent('storage', { key: EMPLOYER_SLOT, oldValue: 'rt-employer', newValue: null }));
+
+        await waitFor(() => expect(sessionStorage.getItem('pendingInvite')).toBeNull());
+    });
+
     it('leaves the other role signed in', async () => {
         localStorage.setItem(WORKER_SLOT, 'rt-worker');
         localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');

@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link, useRouter } from '@/i18n/navigation';
 import { useEmployerMembership } from '@/hooks/useEmployerMembership';
+import { membershipRole } from '@/lib/employer-membership-store';
 import { usePageData } from '@/hooks/usePageData';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
@@ -76,12 +77,7 @@ function TeamScreen() {
     const router = useRouter();
     const membership = useEmployerMembership();
 
-    const role =
-        membership.status === 'ready'
-            ? membership.role
-            : membership.status === 'error'
-                ? membership.billingRole
-                : null;
+    const role = membershipRole(membership);
     const isForeman = role === 'foreman';
     // An `error` with no billing role either: let the server decide (the list
     // answers 403 `owner_required` to a foreman, shown as the error state).

@@ -8,6 +8,7 @@ import { getMembership } from '@/lib/api/team';
 import {
     clearEmployerMembershipCache,
     dropMembershipCacheEntry,
+    MEMBERSHIP_DISABLED,
     readMembershipCache,
     writeMembershipCache,
     type EmployerMembership,
@@ -16,6 +17,7 @@ import {
     type SettledMembership,
 } from '@/lib/employer-membership-store';
 import { isTeamManagementEnabled } from '@/lib/feature-flags';
+import { currentReturnPath } from '@/lib/login-url';
 
 /**
  * The signed-in employer's place in their company (Phase 3).
@@ -43,7 +45,6 @@ import { isTeamManagementEnabled } from '@/lib/feature-flags';
 export type { EmployerMembership } from '@/lib/employer-membership-store';
 export { clearEmployerMembershipCache };
 
-const DISABLED: EmployerMembership = { status: 'disabled' };
 const LOADING: EmployerMembership = { status: 'loading' };
 
 function blocked(err: MembershipBlockedError): MembershipLoadResult {
@@ -84,11 +85,6 @@ function cachedLoad(token: string, epoch: number): MembershipCacheEntry {
     return entry;
 }
 
-function currentPath(): string {
-    if (typeof window === 'undefined') return '';
-    return `${window.location.pathname}${window.location.search}`;
-}
-
 export function useEmployerMembership(): EmployerMembership {
     const enabled = isTeamManagementEnabled();
     // The employer's token without arming a sign-in redirect: the page that
@@ -111,7 +107,9 @@ export function useEmployerMembership(): EmployerMembership {
             if (blockedError && !entry.blockedRouted) {
                 entry.blockedRouted = true;
                 try {
-                    handleLegalWall(blockedError, currentPath());
+                    // A blocked error is never the legal wall, so this return
+                    // URL is never stored; it is passed for the signature.
+                    handleLegalWall(blockedError, currentReturnPath() ?? '');
                 } catch {
                     // handleLegalWall only re-throws what it does not route; a
                     // blocked error always routes.
@@ -123,7 +121,7 @@ export function useEmployerMembership(): EmployerMembership {
         };
     }, [enabled, idToken, epoch, handleLegalWall]);
 
-    if (!enabled) return DISABLED;
+    if (!enabled) return MEMBERSHIP_DISABLED;
     if (!idToken) return LOADING;
     if (settled && settled.epoch === epoch) return settled.value;
     // A later mount renders an answer another caller already settled on its

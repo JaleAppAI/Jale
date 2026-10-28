@@ -8,7 +8,7 @@ import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
 import { PanelHeader } from '@/components/ui/panel-header';
 import type { TeamActionResult } from './types';
-import { useNow } from './useNow';
+import { useCooldownClock } from './useCooldownClock';
 
 /** The backend's contact-name limit (`invalid_contact_name` above it). */
 const CONTACT_NAME_MAX = 120;
@@ -56,7 +56,7 @@ export function InviteForm({
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<{ message: string; field: Field } | null>(null);
     const [cooldownUntil, setCooldownUntil] = useState(0);
-    const now = useNow([cooldownUntil]);
+    const now = useCooldownClock([cooldownUntil]);
     const coolingDown = cooldownUntil > now;
     const emailRef = useRef<HTMLInputElement>(null);
     // A ref, not state: two clicks in one tick both see `submitting === false`.

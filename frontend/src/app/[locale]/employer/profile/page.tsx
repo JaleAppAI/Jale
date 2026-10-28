@@ -3,6 +3,7 @@ import { useId, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useEmployerMembership, type EmployerMembership } from '@/hooks/useEmployerMembership';
+import { membershipRole } from '@/lib/employer-membership-store';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
@@ -84,10 +85,10 @@ function companyRole(
     profileRole: EmployerProfileView['role'],
 ): 'owner' | 'foreman' | null {
     if (membership === null) return 'owner';
-    if (membership.status === 'ready') return membership.role;
+    if (membership.status === 'ready') return membershipRole(membership);
     if (membership.status === 'blocked') return null;
     if (profileRole === 'owner' || profileRole === 'foreman') return profileRole;
-    if (membership.status === 'error') return membership.billingRole ?? 'owner';
+    if (membership.status === 'error') return membershipRole(membership) ?? 'owner';
     return null;
 }
 

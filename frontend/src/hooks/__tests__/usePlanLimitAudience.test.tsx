@@ -11,6 +11,7 @@ vi.mock('@/hooks/useEmployerMembership', () => ({
 }));
 
 import { planLimitAudienceFor, usePlanLimitAudience, type AudienceBilling } from '@/hooks/usePlanLimitAudience';
+import { upgradeOffered } from '@/lib/plan-limit';
 
 const ready = (role: 'owner' | 'foreman'): EmployerMembership => ({
     status: 'ready', role, companyName: 'Bravo', userId: 'u', organizationId: 'o',
@@ -45,8 +46,20 @@ describe('planLimitAudienceFor', () => {
 
     it('falls back to billing\'s role while membership is unknown, else null', () => {
         expect(planLimitAudienceFor({ status: 'loading' }, { role: 'foreman' })).toEqual({ role: 'foreman', planCode: null });
-        expect(planLimitAudienceFor({ status: 'blocked', reason: 'removed', hasInvite: false })).toEqual({ role: null, planCode: null });
         expect(planLimitAudienceFor({ status: 'error', billingRole: null }, null)).toEqual({ role: null, planCode: null });
+    });
+
+    it('a blocked membership is never read as the owner: no upgrade offered, with or without billing (M1)', () => {
+        for (const reason of ['removed', 'suspended', 'no_organization'] as const) {
+            const blocked: EmployerMembership = { status: 'blocked', reason, hasInvite: false };
+            for (const billing of [undefined, null, { planCode: 'employer_free' }, { role: 'owner' as const, planCode: 'employer_free' }]) {
+                const audience = planLimitAudienceFor(blocked, billing);
+                expect(audience?.role).toBe('foreman');
+                expect(upgradeOffered(audience)).toBe(false);
+            }
+        }
+        expect(planLimitAudienceFor({ status: 'blocked', reason: 'removed', hasInvite: false }, { planCode: 'employer_pro' }))
+            .toEqual({ role: 'foreman', planCode: 'employer_pro' });
     });
 });
 

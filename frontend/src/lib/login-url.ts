@@ -47,6 +47,21 @@ export function sanitizeReturnPath(raw: string | null): string | null {
 }
 
 /**
+ * Where the visitor is now, read from the address bar: path and query, LOCALE
+ * INCLUDED -- the form `buildLoginUrl` and `assignReturnPath` take.
+ *
+ * NOT from next-intl's `usePathname`: that strips the locale, and a return URL
+ * without one drops a Spanish-speaking worker into the English tree. (The
+ * opposite of what `legalReturnUrl` wants: that one goes through next-intl's
+ * router and must carry NO locale.) Undefined during SSR, where there is no
+ * address bar and no redirect to build.
+ */
+export function currentReturnPath(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return `${window.location.pathname}${window.location.search}`;
+}
+
+/**
  * The login page for `userType`, optionally carrying where to come back to.
  * An unsafe or absent `returnPath` is simply dropped -- never rendered.
  */
