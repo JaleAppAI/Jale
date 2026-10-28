@@ -9,6 +9,7 @@ import { usePageData } from '@/hooks/usePageData';
 import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { formatShortDate, formatWeekdayDate } from '@/lib/date';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { usePlanLimitAudience } from '@/hooks/usePlanLimitAudience';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
@@ -39,7 +40,8 @@ import { useAppTour } from '@/lib/tutorials/use-app-tour';
 import { useTutorialProgress } from '@/lib/tutorials/progress';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
-import { isHealthyPaidPlan, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
+import { companyTemplateCount, isHealthyPaidPlan, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
 import type { PlanLimitModel } from '@/lib/plan-limit';
 import type { JobStatus, WritableJobStatus } from '@/lib/status';
 
@@ -237,9 +239,15 @@ export default function EmployerDashboardPage() {
                 ),
             ]);
 
+            // Phase 3 (team flag on): the meter counts the COMPANY's templates,
+            // `billing.templateUsage`, falling back to the list's length.
+            const freshTemplates = isTeamManagementEnabled()
+                ? companyTemplateCount(freshBilling, freshTemplateCount)
+                : freshTemplateCount;
+
             // `??`, so a real 0 is kept and only a MISSING answer falls back.
             const billing = freshBilling ?? lastGoodRef.current.billing;
-            const templateCount = freshTemplateCount ?? lastGoodRef.current.templateCount;
+            const templateCount = freshTemplates ?? lastGoodRef.current.templateCount;
             lastGoodRef.current = { billing, templateCount };
 
             return { jobs: jobList, billing, templateCount };
@@ -249,7 +257,19 @@ export default function EmployerDashboardPage() {
     });
 
     const jobs = useMemo(() => data?.jobs ?? [], [data]);
-    const signage = useMemo(() => subscriptionSignage(data?.billing ?? null), [data]);
+    /*
+     * Phase 3, team flag on: who reads this board -- the membership's role,
+     * else the one billing names (`usePlanLimitAudience`). Signage is the
+     * owner's -- a foreman can neither upgrade nor re-subscribe -- so a foreman
+     * gets no SubscriptionBanner and no "View plan", and a refused resume speaks
+     * to their role. Flag off: undefined, Phase 2, every reader the owner.
+     */
+    const limitAudience = usePlanLimitAudience(data?.billing);
+    const isForeman = limitAudience?.role === 'foreman';
+    const signage = useMemo(
+        () => (isForeman ? null : subscriptionSignage(data?.billing ?? null)),
+        [data, isForeman],
+    );
     const healthyPlan = useMemo(() => isHealthyPaidPlan(data?.billing ?? null), [data]);
 
     const filteredJobs = useMemo(() => {
@@ -466,7 +486,7 @@ export default function EmployerDashboardPage() {
             } catch {
                 // Not a legal wall — fall through.
             }
-            const model = planLimitModel(err, jobs);
+            const model = planLimitModel(err, jobs, limitAudience);
             if (model) {
                 setPlanLimit(model);
                 return;
@@ -691,6 +711,7 @@ export default function EmployerDashboardPage() {
                                                         billing={data?.billing ?? null}
                                                         templateCount={data?.templateCount ?? null}
                                                         loading={phase !== 'ready'}
+                                                        viewPlan={!isForeman}
                                                     />
                                                 </div>
                                                 <Button

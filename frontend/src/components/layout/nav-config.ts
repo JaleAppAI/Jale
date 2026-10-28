@@ -1,4 +1,5 @@
 import type { IconName } from '@/components/ui/icon';
+import type { EmployerMembership } from '@/lib/employer-membership-store';
 
 export type ShellRole = 'worker' | 'employer';
 
@@ -16,6 +17,13 @@ export type NavItem = {
     activePrefixes?: string[];
     /** When true, only an exact pathname match activates this item. */
     exact?: boolean;
+    /**
+     * Shown only to the company's owner (Phase 3). See `isEmployerNavItemVisible`
+     * for how the role is decided while it is still unknown.
+     */
+    ownerOnly?: boolean;
+    /** Shown only while the named feature flag is on. `'team'`: `isTeamManagementEnabled()`. */
+    flag?: 'team';
 };
 
 export function isNavItemActive(item: NavItem, pathname: string): boolean {
@@ -40,12 +48,29 @@ export const employerPrimaryNav: NavItem[] = [
     { key: 'templates', href: '/employer/templates', icon: 'briefcase', labelKey: 'nav.templates' },
 ];
 
-/** Employer Billing link (live). */
+/**
+ * Employer Team link (Phase 3): the owner's invites and members. Owner-only and
+ * behind the team flag, so with the flag off the sidebar is Phase 2's. Never on
+ * the mobile bar (four tabs is its ceiling; see `employerMobileNav`).
+ */
+export const employerTeamNav: NavItem = {
+    key: 'team',
+    href: '/employer/team',
+    // No dedicated "people" glyph exists in the icon set; `user` is the
+    // nearest, as for Applicants and Settings.
+    icon: 'user',
+    labelKey: 'nav.team',
+    ownerOnly: true,
+    flag: 'team',
+};
+
+/** Employer Billing link (live). Only the owner pays (Phase 2), so owner-only. */
 export const employerBillingNav: NavItem = {
     key: 'billing',
     href: '/employer/billing',
     icon: 'chart',
     labelKey: 'nav.billing',
+    ownerOnly: true,
 };
 
 /** Employer Settings link (live). */
@@ -81,6 +106,53 @@ export const employerMobileNav: NavItem[] = [
     ...employerPrimaryNav.filter((item) => !employerSidebarOnlyKeys.has(item.key)),
     employerSettingsNav,
 ];
+
+/**
+ * The sidebar's items after the primary nav, in order: Team, Billing, Settings.
+ * Team and Billing drop out by `isEmployerNavItemVisible`.
+ */
+export const employerSidebarSecondaryNav: NavItem[] = [employerTeamNav, employerBillingNav, employerSettingsNav];
+
+/**
+ * Who the employer nav is drawn for: `'owner'`, `'foreman'`, or `null` while
+ * that is not known.
+ *
+ * - `disabled` (team flag off): `'owner'`. Every login is its company's owner,
+ *   which draws exactly Phase 2's nav.
+ * - `ready`: the membership's role.
+ * - `error`: billing's role, read by the hook after the failure. `null` there
+ *   (billing failed too, or named no role) counts as the owner, so an owner
+ *   never loses Billing to a flaky membership call; the server enforces
+ *   `owner_required` anyway.
+ * - `loading` and `blocked`: `null`. A blocked login (removed, suspended, no
+ *   company) is never an owner; the hook has already routed it away.
+ */
+export function employerNavRole(membership: EmployerMembership): 'owner' | 'foreman' | null {
+    switch (membership.status) {
+        case 'disabled':
+            return 'owner';
+        case 'ready':
+            return membership.role;
+        case 'error':
+            return membership.billingRole ?? 'owner';
+        default:
+            return null;
+    }
+}
+
+/**
+ * Whether an employer nav item is drawn: a flagged item only with its flag on,
+ * an owner-only item only for a known owner (hidden while the role is `null`).
+ */
+export function isEmployerNavItemVisible(
+    item: NavItem,
+    role: 'owner' | 'foreman' | null,
+    teamEnabled: boolean,
+): boolean {
+    if (item.flag === 'team' && !teamEnabled) return false;
+    if (item.ownerOnly && role !== 'owner') return false;
+    return true;
+}
 
 /** Worker primary nav — mirrors the worker bottom tab bar. */
 export const workerPrimaryNav: NavItem[] = [

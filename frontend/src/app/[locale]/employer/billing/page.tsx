@@ -28,6 +28,7 @@ import {
     startCheckout,
 } from '@/lib/api/employer';
 import type { EmployerBilling } from '@/lib/api/employer';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
 import { SUBSCRIPTION_STATUS_KEYS } from '@/lib/plan-limit';
 import { formatLongDate } from '@/lib/date';
 
@@ -110,6 +111,7 @@ export default function EmployerBillingPage() {
     const { handleLegalWall } = useRequireAuth();
     const searchParams = useSearchParams();
     const t = useTranslations('billing');
+    const tTeam = useTranslations('employer_team');
     const locale = useLocale();
 
     const [checkoutBusy, setCheckoutBusy] = useState(false);
@@ -210,6 +212,20 @@ export default function EmployerBillingPage() {
     const canManage = isOwner && !!billing?.subscription;
     const canUpgrade = isOwner && (billing ? billing.planCode !== EMPLOYER_PRO_PLAN_CODE : false);
     const suspendedForemen = isOwner ? billing?.seats?.suspended ?? 0 : 0;
+    const isPro = billing?.planCode === EMPLOYER_PRO_PLAN_CODE;
+    /*
+     * Phase 3, the team flag on. The owner's foreman seats: every live invite
+     * holds a seat, so the line counts them as used. A plan with no seats and
+     * nobody on them says nothing rather than "0 of 0". A Pro owner cannot
+     * change to a bigger plan, so their suspended banner says to remove
+     * members instead. With the flag off the page is Phase 2's.
+     */
+    const teamEnabled = isTeamManagementEnabled();
+    const seats = teamEnabled && isOwner ? billing?.seats ?? null : null;
+    const pendingInvites = seats?.pending ?? 0;
+    const seatsUsed = seats ? seats.used + pendingInvites : 0;
+    const showSeats = seats !== null && (seats.limit > 0 || seatsUsed > 0);
+    const suspendedBodyKey = teamEnabled && isPro ? 'company.suspended_body_pro' : 'company.suspended_body';
     const usagePercent = billing && billing.activeJobLimit > 0
         ? Math.min(100, Math.round((billing.activeJobUsage / billing.activeJobLimit) * 100))
         : 0;
@@ -277,7 +293,7 @@ export default function EmployerBillingPage() {
                                     <InlineFeedback tone="warning">
                                         <span className="block font-bold">{t('company.suspended_title')}</span>
                                         <span className="mt-1 block">
-                                            {t('company.suspended_body', { count: suspendedForemen })}
+                                            {t(suspendedBodyKey, { count: suspendedForemen })}
                                         </span>
                                     </InlineFeedback>
                                 )}
@@ -288,7 +304,7 @@ export default function EmployerBillingPage() {
                                                 {t('current_plan.label')}
                                             </p>
                                             <h2 className="mt-1 text-xl font-extrabold text-[var(--jale-ink)]">
-                                                {billing.planCode === EMPLOYER_PRO_PLAN_CODE
+                                                {isPro
                                                     ? t('plan_name.employer_pro')
                                                     : t('plan_name.employer_free')}
                                             </h2>
@@ -315,6 +331,17 @@ export default function EmployerBillingPage() {
                                             })}
                                             percent={usagePercent}
                                         />
+                                        {showSeats && seats && (
+                                            <p className="mt-3 flex flex-wrap gap-x-2 text-xs font-semibold tabular-nums text-[var(--jale-ink-2)]">
+                                                <span>{t('company.seats', { used: seatsUsed, limit: seats.limit })}</span>
+                                                {pendingInvites > 0 && (
+                                                    <>
+                                                        <span aria-hidden="true">·</span>
+                                                        <span>{tTeam('seats_pending', { count: pendingInvites })}</span>
+                                                    </>
+                                                )}
+                                            </p>
+                                        )}
                                     </div>
 
                                     <div className="border-b border-[var(--jale-divider)] px-5 py-2">

@@ -35,11 +35,18 @@ export type TemplateNotSaved =
 export function JobPostedPanel({
     job,
     templateNotSaved,
+    offerUpgrade = true,
     onNavigate,
 }: {
     job: Job;
     /** The ticked template, when it was not saved; null when there is nothing to say. */
     templateNotSaved: TemplateNotSaved | null;
+    /**
+     * Whether the template-limit note links to Billing's upgrade (Phase 3:
+     * `upgradeOffered` -- not for a foreman, nor for an owner already on Pro).
+     * Defaults to Phase 2's always.
+     */
+    offerUpgrade?: boolean;
     /** Called before a link inside the panel navigates, so the dialog closes first. */
     onNavigate: () => void;
 }) {
@@ -129,7 +136,7 @@ export function JobPostedPanel({
                         >
                             {t('templates.manage_link')}
                         </Link>
-                        {templateNotSaved.reason === 'limit' ? (
+                        {templateNotSaved.reason === 'limit' && offerUpgrade ? (
                             <Link
                                 href="/employer/billing"
                                 onClick={onNavigate}

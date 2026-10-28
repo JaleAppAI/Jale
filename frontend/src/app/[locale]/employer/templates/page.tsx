@@ -5,6 +5,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { usePlanLimitAudience, type AudienceBilling } from '@/hooks/usePlanLimitAudience';
 import { useJobCreated } from '@/contexts/PostJobContext';
 import { AppShell } from '@/components/layout/AppShell';
 import { PostJobButton } from '@/components/employer/PostJobButton';
@@ -18,6 +19,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { TemplateEditModal } from '@/components/employer/TemplateEditModal';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import { deleteJobTemplate, getBilling, listJobTemplates, type JobTemplate } from '@/lib/api/employer';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
+import { companyTemplateCount, upgradeOffered } from '@/lib/plan-limit';
 import { templateRowSummary, TRADE_CATEGORIES } from '@/lib/job-form';
 import { formatLongDate } from '@/lib/date';
 
@@ -33,6 +36,16 @@ export default function EmployerTemplatesPage() {
 
   const [templates, setTemplates] = useState<JobTemplate[]>([]);
   const [templateLimit, setTemplateLimit] = useState<number | null>(null);
+  /*
+   * Phase 3, team flag on: the company's templates as billing counted them
+   * (`templateUsage`), and how many rows the list held when that count was
+   * taken (its first load), so `companyTemplateCount` can keep it live.
+   */
+  const [templateUsage, setTemplateUsage] = useState<number | null>(null);
+  const [listedAtLoad, setListedAtLoad] = useState<number | null>(null);
+  /** The plan and role billing names, for who reads the limit note (Phase 3). */
+  const [billingPlan, setBillingPlan] = useState<AudienceBilling>(null);
+  const limitAudience = usePlanLimitAudience(billingPlan);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<JobTemplate | null>(null);
@@ -54,7 +67,10 @@ export default function EmployerTemplatesPage() {
     setLoading(true);
     setLoadError(null);
     listJobTemplates(idToken)
-      .then(setTemplates)
+      .then((list) => {
+        setTemplates(list);
+        setListedAtLoad((first) => first ?? list.length);
+      })
       .catch((err) => {
         try {
           handleLegalWall(err, '/employer/templates');
@@ -77,11 +93,34 @@ export default function EmployerTemplatesPage() {
     if (!idToken) return;
     // Billing failure just degrades the meter to a plain count.
     getBilling(idToken)
-      .then((b) => setTemplateLimit(b.templateLimit))
+      .then((b) => {
+        setTemplateLimit(b.templateLimit);
+        setBillingPlan({ planCode: b.planCode, role: b.role });
+        if (isTeamManagementEnabled() && typeof b.templateUsage === 'number') setTemplateUsage(b.templateUsage);
+      })
       .catch(() => {});
   }, [idToken]);
 
-  const atLimit = templateLimit !== null && templates.length >= templateLimit;
+  /*
+   * What counts against `templateLimit`: with the team flag on, the company's
+   * templates (`billing.templateUsage`), moved by every save and delete made
+   * here; otherwise, and whenever billing has no such figure, the list.
+   */
+  const templateCount =
+    companyTemplateCount(templateUsage === null ? null : { templateUsage }, templates.length, listedAtLoad)
+    ?? templates.length;
+  const atLimit = templateLimit !== null && templateCount >= templateLimit;
+  /*
+   * The limit note, by who reads it (Phase 3; flag off, always Phase 2's).
+   * "Upgrade for more" and its Billing link are only for an owner who can
+   * upgrade: a foreman is told to ask the owner, a Pro owner how to free a slot.
+   */
+  const offerUpgrade = upgradeOffered(limitAudience);
+  const limitNote = limitAudience?.role === 'foreman'
+    ? tBilling('limit_dialog.foreman_body')
+    : offerUpgrade
+      ? t('templates.limit_note')
+      : tBilling('limit_dialog.pro_owner_hint');
   /*
    * "{count} of {limit} templates" read as a fraction of a whole, and at zero
    * it stated a quantity of templates that does not exist ("0 of 3
@@ -92,10 +131,10 @@ export default function EmployerTemplatesPage() {
    * own: with no limit to state, a bare count is the only honest meter.
    */
   const meter = templateLimit === null
-    ? t('templates.meter_count', { count: templates.length })
-    : templates.length === 0
+    ? t('templates.meter_count', { count: templateCount })
+    : templateCount === 0
       ? t('templates.meter_empty', { limit: templateLimit })
-      : t('templates.meter', { count: templates.length, limit: templateLimit });
+      : t('templates.meter', { count: templateCount, limit: templateLimit });
 
   const mergeSaved = (saved: JobTemplate) => {
     setTemplates((current) => {
@@ -136,13 +175,15 @@ export default function EmployerTemplatesPage() {
 
         {atLimit && (
           <InlineFeedback tone="warning" className="mb-5">
-            <span className="block">{t('templates.limit_note')}</span>
-            <Link
-              href="/employer/billing"
-              className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
-            >
-              {tBilling('limit_reached.cta')}
-            </Link>
+            <span className="block">{limitNote}</span>
+            {offerUpgrade && (
+              <Link
+                href="/employer/billing"
+                className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
+              >
+                {tBilling('limit_reached.cta')}
+              </Link>
+            )}
           </InlineFeedback>
         )}
 
