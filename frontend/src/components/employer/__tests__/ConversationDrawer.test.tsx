@@ -132,6 +132,7 @@ import {
 } from '@/contexts/ConversationDrawerContext';
 import type { ConversationTarget } from '@/contexts/ConversationDrawerContext';
 import type { InboxItem } from '@/lib/api/employer';
+import { ApiError } from '@/lib/api/errors';
 
 function inboxItem(overrides: Partial<InboxItem> & { application_id: string }): InboxItem {
   return {
@@ -690,5 +691,57 @@ describe('overlay presence', () => {
 
     await user.click(toggle());
     expect(overlay.calls.at(-1)).toBe(false);
+  });
+});
+
+/*
+ * Phase 3: `POST /employer/conversations` answers 409 `job_move_conflict` when
+ * the owner reassigned the job while the conversation was being created.
+ * Nothing was sent; the drawer says so in its own words and re-reads the
+ * inbox. With the team flag off the answer cannot arrive, and the drawer is
+ * unchanged.
+ */
+describe('a first message to an applicant whose job just moved', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function sendFirstMessage() {
+    const user = userEvent.setup();
+    startConversation.mockRejectedValue(new ApiError(409, 'job_move_conflict'));
+    renderDrawer(<OpenerPage target={{ application_id: 'app-2', worker_id: 'w-2', job_id: 'job-1' }} />);
+    await user.click(screen.getByRole('button', { name: 'open thread' }));
+    await screen.findByText('Jose Ruiz');
+    await user.type(
+      screen.getByPlaceholderText(message('employer_messages.composer_placeholder')),
+      'Are you available Monday?',
+    );
+    const before = refreshInbox.mock.calls.length;
+    await user.click(screen.getByRole('button', { name: message('employer_messages.send') }));
+    await waitFor(() => expect(startConversation).toHaveBeenCalled());
+    return before;
+  }
+
+  it('says the job was reassigned and re-reads the inbox', async () => {
+    vi.stubEnv('NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED', 'true');
+
+    const before = await sendFirstMessage();
+
+    expect(await screen.findByText(message('employer_team.errors.job_move_conflict'))).toBeInTheDocument();
+    expect(refreshInbox.mock.calls.length).toBeGreaterThan(before);
+    // Nothing was sent, so the employer's message is still there to resend.
+    expect(screen.getByPlaceholderText(message('employer_messages.composer_placeholder'))).toHaveValue(
+      'Are you available Monday?',
+    );
+  });
+
+  it('flag off: the same answer reads as before, and the inbox is not re-read', async () => {
+    const before = await sendFirstMessage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: message('employer_messages.send') })).not.toHaveAttribute('aria-busy'),
+    );
+    expect(screen.queryByText(message('employer_team.errors.job_move_conflict'))).not.toBeInTheDocument();
+    expect(refreshInbox.mock.calls.length).toBe(before);
   });
 });

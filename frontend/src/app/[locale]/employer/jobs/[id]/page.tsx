@@ -41,6 +41,7 @@ import { EditJobModal } from '@/components/employer/EditJobModal';
 import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
 import { PublicListingCard } from '@/components/employer/PublicListingCard';
 import { ApplicantDetailsIndicator } from '@/components/employer/ApplicantDetailsIndicator';
+import { JobAssigneeControl } from '@/components/employer/JobAssigneeControl';
 import {
     ApiError,
     deleteJob,
@@ -56,6 +57,8 @@ import type {
     Applicant, ApplicantFilters, ApplicationStatus, EmployerJobDetail,
 } from '@/lib/api/employer';
 import { classifyError, type ErrorKind } from '@/lib/api/errors';
+import { teamErrorMessageKey } from '@/lib/api/team';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { answerEntries } from '@/lib/format-application-answers';
 import type { WritableJobStatus } from '@/lib/status';
@@ -500,7 +503,13 @@ export default function JobDetailPage() {
 
     const handleJobUpdated = useCallback(
         (updated: EmployerJobDetail) => {
-            setData((prev) => ({ ...prev, job: updated }));
+            // The PATCH answer does not carry `employer_id` (Phase 3); keep
+            // the one the detail read gave, or the reassign control would
+            // lose the responsible person until the next read.
+            setData((prev) => ({
+                ...prev,
+                job: { ...updated, employer_id: updated.employer_id ?? prev.job.employer_id },
+            }));
             setEditOpen(false);
             setActionFeedback({ tone: 'success', message: tCommon('feedback.saved') });
         },
@@ -919,6 +928,17 @@ export default function JobDetailPage() {
                                     }
                                 />
 
+                                {/* Phase 3: the owner moves this job to another
+                                    member. Renders nothing (and asks for
+                                    nothing) for a foreman, a blocked login or
+                                    with the team flag off. */}
+                                <JobAssigneeControl
+                                    jobId={job.id}
+                                    assigneeUserId={job.employer_id ?? null}
+                                    onJobChanged={() => void refresh()}
+                                    returnUrl={returnUrl}
+                                />
+
                                 <div className="flex flex-wrap gap-2 border-t border-[var(--jale-divider)] px-5 py-4">
                                     {/* Pausing is the self-service way out of the
                                         active-job limit, so it has to be reachable from
@@ -1051,6 +1071,7 @@ export default function JobDetailPage() {
                                                 key={applicant.application_id}
                                                 applicant={applicant}
                                                 onDetailsRequested={markDetailsRequested}
+                                                onJobMoved={() => void refresh()}
                                                 match={
                                                     matches.get(applicant.application_id) ??
                                                     matches.get(applicant.worker_id)
@@ -1226,6 +1247,7 @@ function ApplicantRow({
     jobTitle,
     locale,
     onDetailsRequested,
+    onJobMoved,
     t,
     tShared,
     tMessages,
@@ -1238,6 +1260,8 @@ function ApplicantRow({
     locale: string;
     /** Moves this row's badges the moment the PATCH succeeds -- see the page. */
     onDetailsRequested: (applicationId: string, status: ApplicationStatus) => void;
+    /** Read the job and its applicants again: the job moved to someone else. */
+    onJobMoved: () => void;
     t: ReturnType<typeof useTranslations>;
     tShared: ReturnType<typeof useTranslations>;
     tMessages: ReturnType<typeof useTranslations>;
@@ -1248,6 +1272,7 @@ function ApplicantRow({
     const errorMessage = useErrorMessage();
     const tReq = useTranslations('job_requirements');
     const tCommon = useTranslations('common');
+    const tTeam = useTranslations('employer_team');
     const [starting, setStarting] = useState(false);
     const [messageError, setMessageError] = useState<string | null>(null);
     const [requesting, setRequesting] = useState(false);
@@ -1332,6 +1357,14 @@ function ApplicantRow({
             // sentence than any generic one; everything else is classified so a
             // raw backend code never reaches the screen.
             const code = err instanceof ApiError ? err.code : null;
+            if (code === 'job_move_conflict' && isTeamManagementEnabled()) {
+                // Phase 3: the owner moved this job while the conversation was
+                // being created. Re-read the job and its applicants, and say
+                // why nothing was sent.
+                setMessageError(tTeam(teamErrorMessageKey(err)));
+                onJobMoved();
+                return;
+            }
             setMessageError(
                 code === 'worker_whatsapp_unavailable'
                     ? tMessages('worker_whatsapp_unavailable')

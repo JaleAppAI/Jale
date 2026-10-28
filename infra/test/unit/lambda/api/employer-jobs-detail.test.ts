@@ -113,6 +113,7 @@ describe('employer-jobs-detail', () => {
       state: 'TX',
       latitude: 29.76,
       longitude: -95.37,
+      employer_id: 'employer-uuid-1',
     };
     let capturedSql = '';
     mockQuery.mockImplementation((sql: string) => {
@@ -135,12 +136,15 @@ describe('employer-jobs-detail', () => {
     for (const col of ['trade_category_other', 'expected_duration_bucket', 'work_days', 'shift_start', 'shift_end', 'certification_requirements']) {
       expect(capturedSql).toContain(col);
     }
+    // Phase 3: the responsible person, for the owner's reassign control.
+    expect(capturedSql).toMatch(/\bemployer_id,/);
     expect(body).toMatchObject({
       city_key: 'houston-tx',
       city: 'Houston',
       state: 'TX',
       latitude: 29.76,
       longitude: -95.37,
+      employer_id: 'employer-uuid-1',
     });
   });
 

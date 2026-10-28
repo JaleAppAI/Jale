@@ -270,6 +270,8 @@ export type EmployerJobDetail = Job & {
   public_code: string;
   /** The employer's opt-IN to a public job page. Default false (migration 057). */
   public_listing_enabled: boolean;
+  /** The job's responsible person (`jobs.employer_id`; Phase 3 reassign control). */
+  employer_id?: string;
 };
 
 /** One answered pre-application prompt, as an employer read publishes it. */
