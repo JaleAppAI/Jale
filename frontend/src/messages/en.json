@@ -438,7 +438,12 @@
         "already_member": "This account already belongs to a company on Jale, so it can't join another one.",
         "employer_required": "Sign in with a Jale employer account to accept this invite.",
         "busy": "We're handling other changes right now. Wait a moment and try again.",
-        "generic": "Something went wrong. Try again."
+        "generic": "Something went wrong. Try again.",
+        "join_signed_in_body": "You're signed in. Join {companyName} with this account?",
+        "join_submit": "Join {companyName}",
+        "use_another_account": "Use another account",
+        "used_signed_in": "This invite was already used.",
+        "account_disabled": "This account can't sign in yet. If your invite just arrived, wait a minute and try again; otherwise ask your company to resend it."
       },
       "account_disabled": "This account can't sign in. If your company removed you, ask the owner to invite you again."
     },
@@ -1014,6 +1019,7 @@
       "delete_body": "Delete “{name}”? Jobs already posted from it are not affected.",
       "delete_confirm": "Delete",
       "delete_error": "Could not delete the template",
+      "delete_forbidden": "You can only delete templates you created.",
       "updated": "Updated",
       "col_name": "Name",
       "col_details": "Details",
@@ -2021,6 +2027,8 @@
       "body_jobs": "Your plan allows {limit, plural, one {# active job posting} other {# active job postings}}, and you have {used} active right now.",
       "body_jobs_zero": "Your current plan doesn't include any active job postings. Upgrade to publish this job.",
       "body_templates": "Your plan allows {limit, plural, one {# saved template} other {# saved templates}}. Delete one, or upgrade to save this one.",
+      "body_templates_no_upgrade": "Your plan allows {limit, plural, one {# saved template} other {# saved templates}}. Delete one to save this one.",
+      "body_templates_foreman": "Your company's plan allows {limit, plural, one {# saved template} other {# saved templates}}. Delete one you created, or ask your owner to free a slot.",
       "body_templates_zero": "Your current plan doesn't include saved templates.",
       "blocking_heading": "{count, plural, one {Using your active slot right now} other {Using your active slots right now}}",
       "and_more": "and {count} more",
@@ -2032,6 +2040,7 @@
       "dismiss": "Not now",
       "body_jobs_preflight": "You can’t post a job right now. Your plan allows {limit, plural, one {# open job} other {# open jobs}} and you already have {used}. Pause, close or delete one to post another, or upgrade your plan.",
       "foreman_body": "Your company has reached its plan limit — ask your owner to upgrade.",
+      "foreman_body_pro": "Your company is using all of its active job slots. Pause or close one of your jobs, or ask your owner to free a slot.",
       "pro_owner_hint": "You're on the highest plan. Pause or close a job, or delete a template, to free a slot."
     },
     "limit_reached": {

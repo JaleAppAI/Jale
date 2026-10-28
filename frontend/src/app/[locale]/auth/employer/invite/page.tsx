@@ -165,25 +165,43 @@ function InviteScreen() {
 }
 
 /**
+ * Refusals that another press cannot change: the invite is spent, or this
+ * login is the wrong one for it. After one, Join goes away and only "use
+ * another account" is left. `busy` and anything unlisted (a transport
+ * failure, a 500) may pass on a retry, so Join stays.
+ */
+const FINAL_JOIN_REFUSALS: ReadonlySet<string> = new Set([
+    'invite_used',
+    'invite_revoked',
+    'invite_expired',
+    'already_member',
+    'invite_email_mismatch',
+]);
+
+/**
  * The invite for a signed-in employer: accept with the current session's id
  * token, with no sign-in and no `setTokens`. The session's email is not
- * known to be the invite's, so `invite_used` is the `used` copy here rather
- * than a redirect. A refusal (`invite_email_mismatch` for another account
- * above all) shows its copy; "use another account" shows the sign-in form,
- * whose sign-in replaces this session.
+ * known to be the invite's, so `invite_used` is a refusal here rather than a
+ * redirect. A refusal (`invite_email_mismatch` for another account above all)
+ * shows its copy; "use another account" shows the sign-in form, whose sign-in
+ * replaces this session. After a final refusal (`FINAL_JOIN_REFUSALS`) Join
+ * is gone, so the screen offers only the way out that can still work.
  *
- * Copy (no new strings): the heading and body are the rejoin ones; the join
- * button is `legal.accept_cta` ("Continue"), and "use another account" is
- * `auth.employer.signin_link` ("Sign in"), the closest existing keys.
+ * Copy: the heading is the invite's; the body (`invite.join_signed_in_body`),
+ * the join button (`invite.join_submit`) and "use another account"
+ * (`invite.use_another_account`) are this screen's own. The body names no
+ * email: the session's address is not known here, and the invite's may not be
+ * the session's. `invite_used` reads `invite.used_signed_in`, without the
+ * form's "Sign in instead." -- this session already is signed in.
  */
 function JoinWithSession({ invite, onUseAnotherAccount }: { invite: EmployerInvite; onUseAnotherAccount: () => void }) {
     const t = useTranslations('auth.employer');
-    const tLegal = useTranslations('legal');
     const tCommon = useTranslations('common');
     const { getValidIdTokenOrNull } = useAuth();
     const router = useRouter();
     const [joining, setJoining] = useState(false);
     const [refusal, setRefusal] = useState<string | null>(null);
+    const [finalRefusal, setFinalRefusal] = useState(false);
 
     const join = async () => {
         if (joining) return;
@@ -209,27 +227,30 @@ function JoinWithSession({ invite, onUseAnotherAccount }: { invite: EmployerInvi
                 router.replace('/legal/accept');
                 return;
             case 'refused':
-                setRefusal(outcome.key);
+                setRefusal(outcome.code === 'invite_used' ? 'invite.used_signed_in' : outcome.key);
+                setFinalRefusal(outcome.code !== null && FINAL_JOIN_REFUSALS.has(outcome.code));
                 setJoining(false);
         }
     };
 
-    const copy = { companyName: invite.companyName, email: invite.email };
+    const copy = { companyName: invite.companyName };
     return (
         <div className="flex w-full flex-col">
             <div className="anim-fade-in mb-8 flex flex-col gap-2">
                 <h1 className="text-[clamp(1.6rem,3vw,1.9rem)] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)]">
                     {t('invite.title', { companyName: invite.companyName })}
                 </h1>
-                <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{t('invite.rejoin_body', copy)}</p>
+                <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{t('invite.join_signed_in_body', copy)}</p>
             </div>
             <div className="anim-fade-in flex flex-col gap-4">
                 {refusal ? <InlineFeedback tone="danger">{t(refusal)}</InlineFeedback> : null}
-                <Button type="button" className="w-full" size="lg" onClick={join} loading={joining} loadingLabel={tCommon('loading')}>
-                    {tLegal('accept_cta')}
-                </Button>
+                {finalRefusal ? null : (
+                    <Button type="button" className="w-full" size="lg" onClick={join} loading={joining} loadingLabel={tCommon('loading')}>
+                        {t('invite.join_submit', copy)}
+                    </Button>
+                )}
                 <Button type="button" variant="outline" className="w-full" onClick={onUseAnotherAccount} disabled={joining}>
-                    {t('signin_link')}
+                    {t('invite.use_another_account')}
                 </Button>
             </div>
         </div>

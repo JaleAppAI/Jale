@@ -309,6 +309,30 @@ const PLAN_CASES: Case[] = [
         es: 'Su plan permite 1 plantilla guardada. Elimine una o mejore su plan para guardar esta.',
     },
     {
+        path: 'billing.limit_dialog.body_templates_no_upgrade',
+        values: { limit: 20, used: 20 },
+        en: 'Your plan allows 20 saved templates. Delete one to save this one.',
+        es: 'Su plan permite 20 plantillas guardadas. Elimine una para guardar esta.',
+    },
+    {
+        path: 'billing.limit_dialog.body_templates_foreman',
+        values: { limit: 20, used: 20 },
+        en: "Your company's plan allows 20 saved templates. Delete one you created, or ask your owner to free a slot.",
+        es: 'El plan de su empresa permite 20 plantillas guardadas. Elimine una que usted creó o pida al propietario que libere un espacio.',
+    },
+    {
+        path: 'billing.limit_dialog.body_templates_foreman',
+        values: { limit: 1, used: 1 },
+        en: "Your company's plan allows 1 saved template. Delete one you created, or ask your owner to free a slot.",
+        es: 'El plan de su empresa permite 1 plantilla guardada. Elimine una que usted creó o pida al propietario que libere un espacio.',
+    },
+    {
+        path: 'billing.limit_dialog.body_templates_no_upgrade',
+        values: { limit: 1, used: 1 },
+        en: 'Your plan allows 1 saved template. Delete one to save this one.',
+        es: 'Su plan permite 1 plantilla guardada. Elimine una para guardar esta.',
+    },
+    {
         path: 'billing.limit_dialog.blocking_heading',
         values: { count: 1 },
         en: 'Using your active slot right now',

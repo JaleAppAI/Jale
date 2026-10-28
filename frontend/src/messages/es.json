@@ -438,7 +438,12 @@
         "already_member": "Esta cuenta ya pertenece a una empresa en Jale, así que no puede unirse a otra.",
         "employer_required": "Inicie sesión con una cuenta de empleador de Jale para aceptar esta invitación.",
         "busy": "Estamos procesando otros cambios en este momento. Espere un momento e inténtelo de nuevo.",
-        "generic": "Algo salió mal. Inténtelo de nuevo."
+        "generic": "Algo salió mal. Inténtelo de nuevo.",
+        "join_signed_in_body": "Ya inició sesión. ¿Desea unirse a {companyName} con esta cuenta?",
+        "join_submit": "Unirse a {companyName}",
+        "use_another_account": "Usar otra cuenta",
+        "used_signed_in": "Esta invitación ya se usó.",
+        "account_disabled": "Esta cuenta todavía no puede iniciar sesión. Si su invitación acaba de llegar, espere un minuto e inténtelo de nuevo; si no, pida a su empresa que se la reenvíe."
       },
       "account_disabled": "Esta cuenta no puede iniciar sesión. Si su empresa lo quitó, pida al propietario que lo vuelva a invitar."
     },
@@ -1014,6 +1019,7 @@
       "delete_body": "¿Eliminar “{name}”? Los empleos ya publicados con ella no se ven afectados.",
       "delete_confirm": "Eliminar",
       "delete_error": "No se pudo eliminar la plantilla",
+      "delete_forbidden": "Solo puede eliminar las plantillas que usted creó.",
       "updated": "Actualizada",
       "col_name": "Nombre",
       "col_details": "Detalles",
@@ -2021,6 +2027,8 @@
       "body_jobs": "Su plan permite {limit, plural, one {# publicación de empleo activa} other {# publicaciones de empleo activas}}, y tiene {used, plural, one {# activa} other {# activas}} ahora mismo.",
       "body_jobs_zero": "Su plan actual no incluye publicaciones de empleo activas. Mejore su plan para publicar este empleo.",
       "body_templates": "Su plan permite {limit, plural, one {# plantilla guardada} other {# plantillas guardadas}}. Elimine una o mejore su plan para guardar esta.",
+      "body_templates_no_upgrade": "Su plan permite {limit, plural, one {# plantilla guardada} other {# plantillas guardadas}}. Elimine una para guardar esta.",
+      "body_templates_foreman": "El plan de su empresa permite {limit, plural, one {# plantilla guardada} other {# plantillas guardadas}}. Elimine una que usted creó o pida al propietario que libere un espacio.",
       "body_templates_zero": "Su plan actual no incluye plantillas guardadas.",
       "blocking_heading": "{count, plural, one {Ocupando su espacio activo ahora} other {Ocupando sus espacios activos ahora}}",
       "and_more": "y {count} más",
@@ -2032,6 +2040,7 @@
       "dismiss": "Ahora no",
       "body_jobs_preflight": "No puede publicar un trabajo ahora. Su plan permite {limit, plural, one {# trabajo abierto} other {# trabajos abiertos}} y ya tiene {used}. Pause, cierre o elimine uno para publicar otro, o mejore su plan.",
       "foreman_body": "Su empresa alcanzó el límite de su plan; pida al propietario que lo mejore.",
+      "foreman_body_pro": "Su empresa está usando todos sus espacios de empleos activos. Pause o cierre uno de sus empleos, o pida al propietario que libere un espacio.",
       "pro_owner_hint": "Ya tiene el plan más alto. Pause o cierre un empleo, o elimine una plantilla, para liberar un espacio."
     },
     "limit_reached": {

@@ -3,8 +3,9 @@ import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 
+import { createTranslator } from 'next-intl';
 import type { EmployerBilling, JobTemplate } from '@/lib/api/employer';
-import { message, renderIntl } from '@/components/employer/__tests__/render-intl';
+import { catalogues, message, renderIntl } from '@/components/employer/__tests__/render-intl';
 
 /*
  * Phase 3 (Task 14): the template limit is the company's, so the count held
@@ -58,7 +59,27 @@ vi.mock('@/components/ui/toast', () => ({
 }));
 
 import { PostJobProvider } from '@/contexts/PostJobContext';
+import { ApiError } from '@/lib/api/errors';
+import { planLimitModel } from '@/lib/plan-limit';
 import EmployerTemplatesPage from '../page';
+
+type CreateTranslatorOptions = Parameters<typeof createTranslator>[0];
+
+/** A `billing.*` key formatted as the page formats it (ICU plurals included). */
+function billingText(key: string, values?: Record<string, number>): string {
+    const t = createTranslator({
+        locale: 'en',
+        messages: catalogues.en,
+        namespace: 'billing',
+    } as unknown as CreateTranslatorOptions) as unknown as (k: string, v?: Record<string, number>) => string;
+    return t(key, values);
+}
+
+async function deleteFirst() {
+    fireEvent.click(screen.getAllByRole('button', { name: message('employer_dashboard.templates.delete_confirm') })[0]);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: message('employer_dashboard.templates.delete_confirm') }));
+}
 
 function template(id: string): JobTemplate {
     return {
@@ -134,24 +155,35 @@ describe('employer templates — the company count', () => {
         expect(newButton()).not.toBeDisabled();
     });
 
-    it('a foreman at the limit is told to ask the owner, with no Billing link', async () => {
-        listJobTemplates.mockResolvedValue([template('a')]);
-        getBilling.mockResolvedValue({ ...billing(1, 1), role: 'foreman', planCode: 'employer_free' });
+    it('a foreman at the limit reads the save dialog\'s own body, with no Billing link', async () => {
+        listJobTemplates.mockResolvedValue([template('a'), template('b')]);
+        getBilling.mockResolvedValue({ ...billing(2, 2), role: 'foreman', planCode: 'employer_free' });
 
         renderPage();
 
-        await waitFor(() => expect(screen.getByText(message('billing.limit_dialog.foreman_body'))).toBeInTheDocument());
+        // The key the save dialog's model hands this foreman for the same limit.
+        const modal = planLimitModel(
+            new ApiError(403, 'template_limit_reached', { template_limit: 2, plan_code: 'employer_free' }),
+            null,
+            { role: 'foreman', planCode: 'employer_free' },
+        );
+        expect(modal?.bodyKey).toBe('limit_dialog.body_templates_foreman');
+        const text = billingText(modal!.bodyKey, modal!.bodyParams);
+        expect(text).toBe("Your company's plan allows 2 saved templates. Delete one you created, or ask your owner to free a slot.");
+        await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument());
+        expect(screen.queryByText(message('billing.limit_dialog.foreman_body'))).toBeNull();
         expect(screen.queryByText(message('employer_dashboard.templates.limit_note'))).toBeNull();
         expect(document.querySelector('a[href="/employer/billing"]')).toBeNull();
     });
 
-    it('a Pro owner at the limit gets the Pro hint, with no Billing link', async () => {
+    it('a Pro owner at the limit is told a delete frees a slot (not "pause a job"), with no Billing link', async () => {
         listJobTemplates.mockResolvedValue([template('a')]);
         getBilling.mockResolvedValue({ ...billing(1, 1), role: 'owner', planCode: 'employer_pro' });
 
         renderPage();
 
-        await waitFor(() => expect(screen.getByText(message('billing.limit_dialog.pro_owner_hint'))).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByText(message('billing.limit_dialog.hint_templates'))).toBeInTheDocument());
+        expect(screen.queryByText(message('billing.limit_dialog.pro_owner_hint'))).toBeNull();
         expect(screen.queryByText(message('employer_dashboard.templates.limit_note'))).toBeNull();
         expect(document.querySelector('a[href="/employer/billing"]')).toBeNull();
     });
@@ -175,6 +207,47 @@ describe('employer templates — the company count', () => {
 
         await waitFor(() => expect(screen.getByText(message('employer_dashboard.templates.limit_note'))).toBeInTheDocument());
         expect(document.querySelector('a[href="/employer/billing"]')).not.toBeNull();
+    });
+
+    it('a delete refused 403 forbidden (a template someone else created) says so', async () => {
+        listJobTemplates.mockResolvedValue([template('a'), template('b')]);
+        getBilling.mockResolvedValue({ ...billing(3, 2), role: 'foreman', planCode: 'employer_free' });
+        deleteJobTemplate.mockRejectedValue(new ApiError(403, 'forbidden'));
+
+        renderPage();
+        await waitFor(() => expect(screen.getByText('2 saved · 3 allowed on your plan')).toBeInTheDocument());
+        await deleteFirst();
+
+        expect(await screen.findByText(message('employer_dashboard.templates.delete_forbidden'))).toBeInTheDocument();
+        expect(screen.queryByText(message('employer_dashboard.templates.delete_error'))).toBeNull();
+        expect(screen.getByText('2 saved · 3 allowed on your plan')).toBeInTheDocument();
+    });
+
+    it('any other delete failure keeps delete_error', async () => {
+        listJobTemplates.mockResolvedValue([template('a')]);
+        getBilling.mockResolvedValue(billing(3, 1));
+        deleteJobTemplate.mockRejectedValue(new ApiError(500, 'internal_error'));
+
+        renderPage();
+        await waitFor(() => expect(screen.getByText('1 saved · 3 allowed on your plan')).toBeInTheDocument());
+        await deleteFirst();
+
+        expect(await screen.findByText(message('employer_dashboard.templates.delete_error'))).toBeInTheDocument();
+        expect(screen.queryByText(message('employer_dashboard.templates.delete_forbidden'))).toBeNull();
+    });
+
+    it('flag off: a 403 forbidden delete keeps Phase 2\'s delete_error', async () => {
+        vi.stubEnv('NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED', 'false');
+        listJobTemplates.mockResolvedValue([template('a')]);
+        getBilling.mockResolvedValue(billing(3));
+        deleteJobTemplate.mockRejectedValue(new ApiError(403, 'forbidden'));
+
+        renderPage();
+        await waitFor(() => expect(screen.getByText('1 saved · 3 allowed on your plan')).toBeInTheDocument());
+        await deleteFirst();
+
+        expect(await screen.findByText(message('employer_dashboard.templates.delete_error'))).toBeInTheDocument();
+        expect(screen.queryByText(message('employer_dashboard.templates.delete_forbidden'))).toBeNull();
     });
 
     it('flag off: the list is the count, exactly Phase 2', async () => {

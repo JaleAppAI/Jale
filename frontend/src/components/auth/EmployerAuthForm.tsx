@@ -456,7 +456,11 @@ export default function EmployerAuthForm(props: EmployerAuthFormProps = {}) {
             // `authErrorKey` already turns the code into a translated sentence,
             // which is the only thing anyone needs from it.
             if (isTeamManagementEnabled() && isDisabledAccountError(err)) {
-                setError(t('account_disabled'));
+                // On the invite page a disabled login is most likely a removed
+                // member whose re-enable (done by the invite create/resend,
+                // after its COMMIT) has not landed yet, or an invite that was
+                // revoked: "wait, or ask for a resend", not "you were removed".
+                setError(t(invite ? 'invite.account_disabled' : 'account_disabled'));
                 return;
             }
             const key = authErrorKey(err);

@@ -120,6 +120,19 @@ const ADDED: readonly Row[] = [
     ["employer.profile.foreman_company_hint", "Only your company's owner can change these.", "Solo el propietario de su empresa puede cambiar estos datos."],
 ];
 
+/** The copy pass after Milestone C (Task 17b): strings the screens had borrowed. */
+const FOLLOW_UP: readonly Row[] = [
+    ["billing.limit_dialog.body_templates_no_upgrade", "Your plan allows {limit, plural, one {# saved template} other {# saved templates}}. Delete one to save this one.", "Su plan permite {limit, plural, one {# plantilla guardada} other {# plantillas guardadas}}. Elimine una para guardar esta."],
+    ["auth.employer.invite.join_signed_in_body", "You're signed in. Join {companyName} with this account?", "Ya inició sesión. ¿Desea unirse a {companyName} con esta cuenta?"],
+    ["auth.employer.invite.join_submit", "Join {companyName}", "Unirse a {companyName}"],
+    ["auth.employer.invite.use_another_account", "Use another account", "Usar otra cuenta"],
+    ["auth.employer.invite.used_signed_in", "This invite was already used.", "Esta invitación ya se usó."],
+    ["auth.employer.invite.account_disabled", "This account can't sign in yet. If your invite just arrived, wait a minute and try again; otherwise ask your company to resend it.", "Esta cuenta todavía no puede iniciar sesión. Si su invitación acaba de llegar, espere un minuto e inténtelo de nuevo; si no, pida a su empresa que se la reenvíe."],
+    ["billing.limit_dialog.body_templates_foreman", "Your company's plan allows {limit, plural, one {# saved template} other {# saved templates}}. Delete one you created, or ask your owner to free a slot.", "El plan de su empresa permite {limit, plural, one {# plantilla guardada} other {# plantillas guardadas}}. Elimine una que usted creó o pida al propietario que libere un espacio."],
+    ["billing.limit_dialog.foreman_body_pro", "Your company is using all of its active job slots. Pause or close one of your jobs, or ask your owner to free a slot.", "Su empresa está usando todos sus espacios de empleos activos. Pause o cierre uno de sus empleos, o pida al propietario que libere un espacio."],
+    ["employer_dashboard.templates.delete_forbidden", "You can only delete templates you created.", "Solo puede eliminar las plantillas que usted creó."],
+];
+
 type CreateTranslatorOptions = Parameters<typeof createTranslator>[0];
 type Values = Record<string, string | number>;
 
@@ -148,7 +161,12 @@ describe('Phase 3 i18n keys', () => {
         expect(resolve(es as MessageNode, path)).toBe(esText);
     });
 
-    it.each([...PINNED, ...ADDED])('%s formats without an ICU error in both locales', (path) => {
+    it.each(FOLLOW_UP)('%s (copy pass) is pinned in en and es', (path, enText, esText) => {
+        expect(resolve(en as MessageNode, path)).toBe(enText);
+        expect(resolve(es as MessageNode, path)).toBe(esText);
+    });
+
+    it.each([...PINNED, ...ADDED, ...FOLLOW_UP])('%s formats without an ICU error in both locales', (path) => {
         for (const locale of ['en', 'es'] as const) {
             const { text, errors } = format(locale, path, SAMPLE_VALUES);
             expect(errors).toEqual([]);

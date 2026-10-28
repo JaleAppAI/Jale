@@ -8,8 +8,11 @@ import type { EmployerMembership } from '@/lib/employer-membership-store';
 
 /*
  * Phase 3 (Task 14, fix round 1): a refused template save (403
- * template_limit_reached) speaks to who is saving. A foreman is told to ask
- * the owner and a Pro owner how to free a slot; neither is offered Upgrade.
+ * template_limit_reached) speaks to who is saving. Neither a foreman nor a
+ * Pro owner is offered Upgrade, and neither body says "upgrade" (Task 17b).
+ * A foreman reads `body_templates_foreman` (they may delete only templates
+ * they created); a Pro owner `body_templates_no_upgrade`, with the templates
+ * hint (pausing a job frees no template slot).
  * Same stubs as TemplateEditModal.test.tsx, plus a controllable membership.
  */
 
@@ -95,7 +98,7 @@ afterEach(() => {
 });
 
 describe('TemplateEditModal: the template limit by who is saving', () => {
-    it('a foreman is told to ask the owner, with no Upgrade', async () => {
+    it('a foreman reads "delete one you created, or ask your owner", with no Upgrade', async () => {
         state.membership = ready('foreman');
         saveJobTemplate.mockRejectedValue(limit403('employer_free'));
         renderIntl(<TemplateEditModal open template={withCity} onClose={vi.fn()} onSaved={vi.fn()} />);
@@ -103,18 +106,25 @@ describe('TemplateEditModal: the template limit by who is saving', () => {
         save();
 
         await waitFor(() =>
-            expect(screen.getByText(message('billing.limit_dialog.foreman_body'), { exact: false })).toBeInTheDocument());
+            expect(screen.getByText(
+                "Your company's plan allows 2 saved templates. Delete one you created, or ask your owner to free a slot.",
+                { exact: false },
+            )).toBeInTheDocument());
+        expect(screen.queryByText(/upgrade to save/i)).toBeNull();
         expect(upgradeLink()).toBeNull();
         expect(screen.getByRole('link', { name: message('billing.limit_dialog.cta_manage_templates') })).toBeInTheDocument();
     });
 
-    it('a Pro owner (plan read off the 403) gets the Pro hint, with no Upgrade', async () => {
+    it('a Pro owner (plan read off the 403) gets the upgrade-free body and the templates hint, with no Upgrade', async () => {
         saveJobTemplate.mockRejectedValue(limit403('employer_pro'));
         renderIntl(<TemplateEditModal open template={withCity} onClose={vi.fn()} onSaved={vi.fn()} />);
 
         save();
 
-        await waitFor(() => expect(screen.getByText(message('billing.limit_dialog.pro_owner_hint'))).toBeInTheDocument());
+        await waitFor(() =>
+            expect(screen.getByText('Your plan allows 2 saved templates. Delete one to save this one.', { exact: false })).toBeInTheDocument());
+        expect(screen.getByText(message('billing.limit_dialog.hint_templates'))).toBeInTheDocument();
+        expect(screen.queryByText(message('billing.limit_dialog.pro_owner_hint'))).toBeNull();
         expect(upgradeLink()).toBeNull();
     });
 
@@ -125,6 +135,7 @@ describe('TemplateEditModal: the template limit by who is saving', () => {
         save();
 
         await waitFor(() => expect(upgradeLink()).toBeInTheDocument());
+        expect(screen.getByText('Your plan allows 2 saved templates. Delete one, or upgrade to save this one.', { exact: false })).toBeInTheDocument();
     });
 
     it('flag off: Phase 2 copy, no membership hook', async () => {

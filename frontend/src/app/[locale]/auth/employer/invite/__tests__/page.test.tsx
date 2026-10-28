@@ -238,8 +238,9 @@ describe('an existing account', () => {
 });
 
 describe('an employer already signed in on this browser', () => {
-    const JOIN = () => screen.getByRole('button', { name: new RegExp(`^${message('legal.accept_cta')}`) });
-    const USE_ANOTHER = () => screen.getByRole('button', { name: message('auth.employer.signin_link') });
+    const JOIN_LABEL = () => interpolate(message('auth.employer.invite.join_submit'), { companyName: 'Acme Builders' });
+    const JOIN = () => screen.getByRole('button', { name: new RegExp(`^${JOIN_LABEL()}`) });
+    const USE_ANOTHER = () => screen.getByRole('button', { name: message('auth.employer.invite.use_another_account') });
 
     beforeEach(() => {
         session.isAuthenticated = true;
@@ -256,6 +257,10 @@ describe('an employer already signed in on this browser', () => {
         renderIntl(<EmployerInvitePage />);
 
         await screen.findByText(interpolate(message('auth.employer.invite.title'), { companyName: 'Acme Builders' }));
+        // Its own copy: the session is already signed in, so not "Sign in with … to rejoin".
+        expect(screen.getByText(interpolate(message('auth.employer.invite.join_signed_in_body'), { companyName: 'Acme Builders' }))).toBeInTheDocument();
+        expect(screen.queryByText(interpolate(message('auth.employer.invite.rejoin_body'), { companyName: 'Acme Builders', email: 'ana@example.com' }))).not.toBeInTheDocument();
+        expect(USE_ANOTHER()).toBeInTheDocument();
         // No password field: this is not the sign-in form.
         expect(screen.queryByPlaceholderText(message('auth.employer.password_label'))).not.toBeInTheDocument();
         await user.click(JOIN());
@@ -294,8 +299,63 @@ describe('an employer already signed in on this browser', () => {
         await screen.findByText(interpolate(message('auth.employer.invite.title'), { companyName: 'Acme Builders' }));
         await user.click(JOIN());
 
-        expect(await screen.findByText(message('auth.employer.invite.used'))).toBeInTheDocument();
+        // Not "…Sign in instead.": this session is already signed in.
+        expect(await screen.findByText(message('auth.employer.invite.used_signed_in'))).toBeInTheDocument();
+        expect(screen.queryByText(message('auth.employer.invite.used'))).not.toBeInTheDocument();
         expect(replace).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ['invite_used', 410, 'auth.employer.invite.used_signed_in'],
+        ['invite_revoked', 410, 'auth.employer.invite.revoked'],
+        ['invite_expired', 410, 'auth.employer.invite.expired'],
+        ['already_member', 409, 'auth.employer.invite.already_member'],
+        ['invite_email_mismatch', 403, 'auth.employer.invite.email_mismatch'],
+    ] as const)('a final refusal (%s) takes Join away and keeps "use another account"', async (code, status, key) => {
+        team.lookupInvite.mockResolvedValueOnce({ ...LOOKUP_NEW, existingAccount: true });
+        team.acceptInvite.mockRejectedValueOnce(new ApiError(status, code));
+        const user = userEvent.setup();
+        renderIntl(<EmployerInvitePage />);
+
+        await screen.findByText(interpolate(message('auth.employer.invite.title'), { companyName: 'Acme Builders' }));
+        await user.click(JOIN());
+
+        expect(await screen.findByText(message(key))).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: new RegExp(`^${JOIN_LABEL()}`) })).not.toBeInTheDocument();
+        expect(USE_ANOTHER()).toBeEnabled();
+        expect(team.acceptInvite).toHaveBeenCalledTimes(1);
+    });
+
+    it('busy keeps Join enabled, and a second press tries again', async () => {
+        team.lookupInvite.mockResolvedValueOnce({ ...LOOKUP_NEW, existingAccount: true });
+        team.acceptInvite
+            .mockRejectedValueOnce(new ApiError(503, 'busy'))
+            .mockResolvedValueOnce({ outcome: 'rejoined', organizationId: 'org-1' });
+        const user = userEvent.setup();
+        renderIntl(<EmployerInvitePage />);
+
+        await screen.findByText(interpolate(message('auth.employer.invite.title'), { companyName: 'Acme Builders' }));
+        await user.click(JOIN());
+
+        expect(await screen.findByText(message('auth.employer.invite.busy'))).toBeInTheDocument();
+        expect(JOIN()).toBeEnabled();
+        await user.click(JOIN());
+
+        await waitFor(() => expect(replace).toHaveBeenCalledWith('/employer/dashboard'));
+        expect(team.acceptInvite).toHaveBeenCalledTimes(2);
+    });
+
+    it('a transport failure (generic) keeps Join enabled', async () => {
+        team.lookupInvite.mockResolvedValueOnce({ ...LOOKUP_NEW, existingAccount: true });
+        team.acceptInvite.mockRejectedValueOnce(new Error('network down'));
+        const user = userEvent.setup();
+        renderIntl(<EmployerInvitePage />);
+
+        await screen.findByText(interpolate(message('auth.employer.invite.title'), { companyName: 'Acme Builders' }));
+        await user.click(JOIN());
+
+        expect(await screen.findByText(message('auth.employer.invite.generic'))).toBeInTheDocument();
+        expect(JOIN()).toBeEnabled();
     });
 
     it('a new-account invite still shows the sign-up form, signed in or not', async () => {
@@ -303,7 +363,7 @@ describe('an employer already signed in on this browser', () => {
         renderIntl(<EmployerInvitePage />);
 
         expect(await screen.findByRole('button', { name: new RegExp(`^${message('auth.employer.create_account')}`) })).toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: new RegExp(`^${message('legal.accept_cta')}`) })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: new RegExp(`^${JOIN_LABEL()}`) })).not.toBeInTheDocument();
     });
 });
 

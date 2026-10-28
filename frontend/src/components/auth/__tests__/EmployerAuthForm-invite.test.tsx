@@ -391,7 +391,7 @@ describe('a disabled account', () => {
         expect(screen.queryByText(message('auth.employer.errors.invalid_credentials'))).not.toBeInTheDocument();
     });
 
-    it('in invite mode too, without calling accept', async () => {
+    it('in invite mode: the invite\'s own copy (re-enabling may not have landed yet), without calling accept', async () => {
         const user = userEvent.setup();
         cognito.employerSignIn.mockRejectedValueOnce(disabled);
         renderIntl(<EmployerAuthForm mode="invite" invite={REJOIN_INVITE} />);
@@ -399,7 +399,8 @@ describe('a disabled account', () => {
         await user.type(screen.getByPlaceholderText(message('auth.employer.password_label')), 'S3cret!pass');
         await user.click(submit(message('auth.employer.invite.rejoin_submit')));
 
-        expect(await screen.findByText(message('auth.employer.account_disabled'))).toBeInTheDocument();
+        expect(await screen.findByText(message('auth.employer.invite.account_disabled'))).toBeInTheDocument();
+        expect(screen.queryByText(message('auth.employer.account_disabled'))).not.toBeInTheDocument();
         expect(team.acceptInvite).not.toHaveBeenCalled();
     });
 

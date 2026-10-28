@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { activeJobsPreflightModel, companyTemplateCount, planLimitModel, upgradeOffered } from '../plan-limit';
+import { activeJobsPreflightModel, companyTemplateCount, planLimitModel, templateLimitModel, upgradeOffered } from '../plan-limit';
 import { ApiError } from '../api/errors';
 import { EMPLOYER_PRO_PLAN_CODE } from '../api/employer';
 import type { EmployerBilling } from '../api/employer';
@@ -27,9 +27,37 @@ describe('planLimitModel(…, { role, planCode })', () => {
         // The self-service hint still holds: a foreman can pause their own job.
         expect(jobs?.hintKey).toBe('limit_dialog.hint_jobs');
 
+        // A foreman frees a template slot only by deleting one they created
+        // (Task 17b): the company count, "delete one you created, or ask your
+        // owner", on any plan. The hint stays the templates one.
         const templates = planLimitModel(templateLimit(), null, { role: 'foreman', planCode: EMPLOYER_PRO_PLAN_CODE });
-        expect(templates?.bodyKey).toBe('limit_dialog.foreman_body');
+        expect(templates?.bodyKey).toBe('limit_dialog.body_templates_foreman');
+        expect(templates?.hintKey).toBe('limit_dialog.hint_templates');
         expect(ctaKinds(templates)).toEqual(['manage_templates']);
+        expect(planLimitModel(templateLimit(), null, { role: 'foreman', planCode: 'employer_free' })?.bodyKey)
+            .toBe('limit_dialog.body_templates_foreman');
+        // Zero templates: there is nothing to delete, so "delete one you
+        // created" would not read; the plain "your plan doesn't include them".
+        const zeroTemplates = new ApiError(403, 'template_limit_reached', { template_limit: 0 });
+        expect(planLimitModel(zeroTemplates, null, { role: 'foreman' })?.bodyKey).toBe('limit_dialog.body_templates_zero');
+    });
+
+    it('a foreman on a Pro company is not told to ask for an upgrade', () => {
+        const pro = { role: 'foreman', planCode: EMPLOYER_PRO_PLAN_CODE } as const;
+        const proJobs = new ApiError(403, 'job_limit_reached', { active_job_limit: 10, active_jobs: 10, plan_code: EMPLOYER_PRO_PLAN_CODE });
+        expect(planLimitModel(proJobs, null, pro)?.bodyKey).toBe('limit_dialog.foreman_body_pro');
+        expect(ctaKinds(planLimitModel(proJobs, null, pro))).toEqual(['pause_job']);
+        // The plan read off the 403 when the caller does not know it.
+        expect(planLimitModel(proJobs, null, { role: 'foreman', planCode: null })?.bodyKey).toBe('limit_dialog.foreman_body_pro');
+        expect(activeJobsPreflightModel({ planCode: EMPLOYER_PRO_PLAN_CODE, activeJobLimit: 2 }, 2, null, pro)?.bodyKey)
+            .toBe('limit_dialog.foreman_body_pro');
+        // A Free company's foreman still asks the owner to upgrade.
+        expect(planLimitModel(jobLimit(), null, { role: 'foreman', planCode: 'employer_free' })?.bodyKey)
+            .toBe('limit_dialog.foreman_body');
+        for (const tree of [en, es]) {
+            expect(tree.billing.limit_dialog.foreman_body_pro.toLowerCase()).not.toMatch(/upgrade|mejore/);
+            expect(tree.billing.limit_dialog.body_templates_foreman.toLowerCase()).not.toMatch(/upgrade|mejore/);
+        }
     });
 
     it('Pro owner: no upgrade CTA and the pro hint', () => {
@@ -38,9 +66,14 @@ describe('planLimitModel(…, { role, planCode })', () => {
         expect(jobs?.bodyKey).toBe('limit_dialog.body_jobs');
         expect(ctaKinds(jobs)).toEqual(['pause_job']);
 
+        // Pausing a job frees no template slot: the templates hint, which
+        // never mentions upgrading.
         const templates = planLimitModel(templateLimit(), null, { role: 'owner', planCode: EMPLOYER_PRO_PLAN_CODE });
-        expect(templates?.hintKey).toBe('limit_dialog.pro_owner_hint');
+        expect(templates?.hintKey).toBe('limit_dialog.hint_templates');
         expect(ctaKinds(templates)).toEqual(['manage_templates']);
+        for (const tree of [en, es]) {
+            expect(tree.billing.limit_dialog.hint_templates.toLowerCase()).not.toMatch(/upgrade|mejore/);
+        }
 
         // An API without a role predates companies: that login is the owner.
         const noRole = planLimitModel(jobLimit(), null, { role: null, planCode: EMPLOYER_PRO_PLAN_CODE });
@@ -67,15 +100,26 @@ describe('planLimitModel(…, { role, planCode })', () => {
         expect(planLimitModel(zero, null, pro)?.bodyKey).toBe('limit_dialog.body_jobs');
         expect(activeJobsPreflightModel({ planCode: EMPLOYER_PRO_PLAN_CODE, activeJobLimit: 0 }, 0, null, pro)?.bodyKey)
             .toBe('limit_dialog.body_jobs');
-        // The bodies that are kept: zero templates never mentions upgrading;
-        // body_templates has no upgrade-free twin yet (needs a string).
+        // Zero templates never mentions upgrading, so it is kept; the counted
+        // template body becomes its upgrade-free twin.
         const zeroTemplates = new ApiError(403, 'template_limit_reached', { template_limit: 0 });
         expect(planLimitModel(zeroTemplates, null, pro)?.bodyKey).toBe('limit_dialog.body_templates_zero');
-        expect(planLimitModel(templateLimit(), null, pro)?.bodyKey).toBe('limit_dialog.body_templates');
+        expect(planLimitModel(templateLimit(), null, pro)?.bodyKey).toBe('limit_dialog.body_templates_no_upgrade');
         for (const tree of [en, es]) {
             expect(tree.billing.limit_dialog.body_jobs.toLowerCase()).not.toMatch(/upgrade|mejore/);
             expect(tree.billing.limit_dialog.body_templates_zero.toLowerCase()).not.toMatch(/upgrade|mejore/);
+            expect(tree.billing.limit_dialog.body_templates_no_upgrade.toLowerCase()).not.toMatch(/upgrade|mejore/);
         }
+    });
+
+    it('a Free owner, and no audience, keep body_templates with its upgrade', () => {
+        expect(planLimitModel(templateLimit(), null, { role: 'owner', planCode: 'employer_free' })?.bodyKey)
+            .toBe('limit_dialog.body_templates');
+        expect(planLimitModel(templateLimit(), null, { role: null, planCode: null })?.bodyKey)
+            .toBe('limit_dialog.body_templates');
+        expect(planLimitModel(templateLimit())?.bodyKey).toBe('limit_dialog.body_templates');
+        const proTemplates = new ApiError(403, 'template_limit_reached', { template_limit: 20, plan_code: EMPLOYER_PRO_PLAN_CODE });
+        expect(planLimitModel(proTemplates)?.bodyKey).toBe('limit_dialog.body_templates');
     });
 
     it('a Free owner keeps the preflight body with its upgrade', () => {
@@ -100,6 +144,9 @@ describe('planLimitModel(…, { role, planCode })', () => {
         for (const tree of [en, es]) {
             expect(typeof tree.billing.limit_dialog.foreman_body).toBe('string');
             expect(typeof tree.billing.limit_dialog.pro_owner_hint).toBe('string');
+            expect(typeof tree.billing.limit_dialog.body_templates_no_upgrade).toBe('string');
+            expect(typeof tree.billing.limit_dialog.body_templates_foreman).toBe('string');
+            expect(typeof tree.billing.limit_dialog.foreman_body_pro).toBe('string');
         }
     });
 });
@@ -134,6 +181,30 @@ describe('activeJobsPreflightModel and the audience', () => {
         const model = activeJobsPreflightModel(full({ role: 'owner', planCode: EMPLOYER_PRO_PLAN_CODE }), 1);
         expect(model?.hintKey).toBe('limit_dialog.hint_jobs');
         expect(ctaKinds(model)).toEqual(['pause_job', 'upgrade']);
+    });
+});
+
+describe('templateLimitModel (a limit known without a 403)', () => {
+    it('is the model a template 403 gives the same reader', () => {
+        const readers = [
+            undefined,
+            { role: 'owner', planCode: 'employer_free' },
+            { role: 'owner', planCode: EMPLOYER_PRO_PLAN_CODE },
+            { role: 'foreman', planCode: 'employer_free' },
+            { role: 'foreman', planCode: EMPLOYER_PRO_PLAN_CODE },
+        ] as const;
+        for (const reader of readers) {
+            for (const limit of [0, 3]) {
+                const fromErr = planLimitModel(
+                    new ApiError(403, 'template_limit_reached', { template_limit: limit, plan_code: reader?.planCode }),
+                    null,
+                    reader,
+                );
+                expect(templateLimitModel(limit, reader)).toEqual(fromErr);
+            }
+        }
+        expect(templateLimitModel(3, { role: 'foreman', planCode: 'employer_free' }).bodyKey)
+            .toBe('limit_dialog.body_templates_foreman');
     });
 });
 

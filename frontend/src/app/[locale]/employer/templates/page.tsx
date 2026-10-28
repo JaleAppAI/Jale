@@ -18,9 +18,9 @@ import { TemplateTableSkeleton } from '@/components/ui/page-skeletons';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TemplateEditModal } from '@/components/employer/TemplateEditModal';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
-import { deleteJobTemplate, getBilling, listJobTemplates, type JobTemplate } from '@/lib/api/employer';
+import { ApiError, deleteJobTemplate, getBilling, listJobTemplates, type JobTemplate } from '@/lib/api/employer';
 import { isTeamManagementEnabled } from '@/lib/feature-flags';
-import { companyTemplateCount, upgradeOffered } from '@/lib/plan-limit';
+import { companyTemplateCount, templateLimitModel, upgradeOffered } from '@/lib/plan-limit';
 import { templateRowSummary, TRADE_CATEGORIES } from '@/lib/job-form';
 import { formatLongDate } from '@/lib/date';
 
@@ -113,14 +113,17 @@ export default function EmployerTemplatesPage() {
   /*
    * The limit note, by who reads it (Phase 3; flag off, always Phase 2's).
    * "Upgrade for more" and its Billing link are only for an owner who can
-   * upgrade: a foreman is told to ask the owner, a Pro owner how to free a slot.
+   * upgrade. A foreman reads the save dialog's own body for this limit
+   * (`templateLimitModel`, the same decision: "delete one you created, or ask
+   * your owner"); a Pro owner its hint, "deleting a template frees a slot".
    */
   const offerUpgrade = upgradeOffered(limitAudience);
-  const limitNote = limitAudience?.role === 'foreman'
-    ? tBilling('limit_dialog.foreman_body')
-    : offerUpgrade
-      ? t('templates.limit_note')
-      : tBilling('limit_dialog.pro_owner_hint');
+  const limitModel = offerUpgrade || templateLimit === null ? null : templateLimitModel(templateLimit, limitAudience);
+  const limitNote = limitModel === null
+    ? t('templates.limit_note')
+    : limitAudience?.role === 'foreman'
+      ? tBilling(limitModel.bodyKey, limitModel.bodyParams)
+      : tBilling(limitModel.hintKey);
   /*
    * "{count} of {limit} templates" read as a fraction of a whole, and at zero
    * it stated a quantity of templates that does not exist ("0 of 3
@@ -151,8 +154,12 @@ export default function EmployerTemplatesPage() {
       await deleteJobTemplate(idToken, deleting.id);
       setTemplates((current) => current.filter((tpl) => tpl.id !== deleting.id));
       setDeleting(null);
-    } catch {
-      setDeleteError(t('templates.delete_error'));
+    } catch (err) {
+      // Phase 3: a foreman may delete only the templates they created; the
+      // list shows the company's, so any other answers 403 `forbidden`.
+      const notTheirs = isTeamManagementEnabled()
+        && err instanceof ApiError && err.status === 403 && err.code === 'forbidden';
+      setDeleteError(t(notTheirs ? 'templates.delete_forbidden' : 'templates.delete_error'));
     } finally {
       setDeleteBusy(false);
     }

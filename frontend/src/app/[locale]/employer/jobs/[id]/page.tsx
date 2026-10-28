@@ -9,6 +9,7 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { usePageData } from '@/hooks/usePageData';
 import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
+import { usePlanLimitAudience } from '@/hooks/usePlanLimitAudience';
 import { Link, useRouter } from '@/i18n/navigation';
 import { AppShell } from '@/components/layout/AppShell';
 import { PostJobButton } from '@/components/employer/PostJobButton';
@@ -403,6 +404,13 @@ export default function JobDetailPage() {
      * slots, which this page never loads, hence the best-effort fetch.
      */
     const [planLimit, setPlanLimit] = useState<PlanLimitModel | null>(null);
+    /*
+     * Who reads that dialog (Phase 3): a foreman is told to ask the owner and
+     * an owner on Pro how to free a slot, neither offered Upgrade. This page
+     * has no billing read, so the plan comes from the 403's own `plan_code`.
+     * `undefined` with the team flag off (no membership request): Phase 2.
+     */
+    const planLimitAudience = usePlanLimitAudience();
     const [planLimitLoading, setPlanLimitLoading] = useState(false);
     // Fences the jobs list against the dialog it is meant to fill in: without
     // it, a list that lands after the employer pressed "Not now" would set the
@@ -461,7 +469,7 @@ export default function JobDetailPage() {
                     // Inside the inner catch, NOT after it: `handleLegalWall`
                     // rethrows anything that is not a legal wall, so this is the
                     // only branch a plan-limit 403 ever reaches.
-                    const model = planLimitModel(err);
+                    const model = planLimitModel(err, null, planLimitAudience);
                     if (model) {
                         setPlanLimit(model);
                         if (model.kind === 'active_jobs' && model.blockingJobs.length === 0) {
@@ -480,7 +488,7 @@ export default function JobDetailPage() {
                                     // dismissed -- filling one in is not a reason
                                     // to put it back on screen.
                                     setPlanLimit((current) =>
-                                        current === null ? null : planLimitModel(err, jobs));
+                                        current === null ? null : planLimitModel(err, jobs, planLimitAudience));
                                 } catch {
                                     // The dialog is already reporting one failure;
                                     // it degrades to no job list, never to a
@@ -498,7 +506,7 @@ export default function JobDetailPage() {
                 setPendingStatus(null);
             }
         },
-        [errorMessage, handleLegalWall, idToken, job, pendingStatus, returnUrl, setData, t, tCommon],
+        [errorMessage, handleLegalWall, idToken, job, pendingStatus, planLimitAudience, returnUrl, setData, t, tCommon],
     );
 
     const handleJobUpdated = useCallback(
