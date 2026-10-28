@@ -136,8 +136,13 @@ export function DocumentSlot(props: {
     }
   }
 
+  // Hooks for a step-by-step guide (`data-guide`, see
+  // `components/tutorials/spotlight`): the slot, and its Upload/Replace and
+  // Delete buttons, named by document type so no two slots share a name.
+  const guide = `profile.doc.${props.doc_type}`;
+
   return (
-    <div className="p-4">
+    <div className="p-4" data-guide={guide}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-[var(--jale-ink)]">{t(`types.${props.doc_type}`)}</p>
@@ -207,6 +212,7 @@ export function DocumentSlot(props: {
               ref={uploadButtonRef}
               variant="outline"
               size="sm"
+              data-guide={`${guide}.upload`}
               onClick={() => fileRef.current?.click()}
               disabled={busy}
               // Not Button's `loading`: that prop stacks `Spinner + children` in a
@@ -225,6 +231,7 @@ export function DocumentSlot(props: {
                 ref={deleteButtonRef}
                 variant="outline"
                 size="sm"
+                data-guide={`${guide}.delete`}
                 onClick={askToDelete}
                 disabled={busy}
               >

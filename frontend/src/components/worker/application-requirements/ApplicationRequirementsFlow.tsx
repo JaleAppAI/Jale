@@ -25,6 +25,8 @@ import {
   requirementsTotals,
   isApplicationOverScreen,
   terminalScreen,
+  REQUIREMENT_STEP_IDS,
+  type RequirementStepId,
   type RequirementsFlowState,
 } from '@/lib/application-requirements-flow';
 import { buildCertClaimsPayload } from '@/lib/certification-claims';
@@ -71,7 +73,8 @@ import { RequirementsTerminalPanel } from './RequirementsTerminalPanel';
  *
  * SAVES ARE PARTIAL AND TOUCHED-ONLY (`answersBatch`), chunked at the door's
  * 20-key cap. Re-sending an untouched key would be this door overwriting what
- * the other one stored.
+ * the other one stored. The one addition: answers prefilled from the last
+ * application go out with the first save while the door has none of its own.
  */
 export function ApplicationRequirementsFlow({
   token,
@@ -86,6 +89,9 @@ export function ApplicationRequirementsFlow({
 
   const [flow, dispatch] = useReducer(requirementsFlowReducer, initialState, initRequirementsFlowState);
   const [vaultDocs, setVaultDocs] = useState<readonly WorkerVaultDoc[] | null>(null);
+  // `vaultDocs` is null both before the first answer and after a failure; the
+  // step-by-step guide needs to tell the two apart (`data-vault` below).
+  const [vaultAnswered, setVaultAnswered] = useState(false);
   const [inlineError, setInlineError] = useState<string | null>(null);
 
   const applicationId = flow.server.application.id;
@@ -105,6 +111,7 @@ export function ApplicationRequirementsFlow({
     } catch {
       setVaultDocs(null);
     }
+    setVaultAnswered(true);
   }, [token]);
 
   useEffect(() => { void fetchVaultDocs(); }, [fetchVaultDocs]);
@@ -303,6 +310,19 @@ export function ApplicationRequirementsFlow({
   );
 
   const errorText = flow.errorKind ? tCommon(errorMessageKey(flow.errorKind)) : null;
+
+  /*
+   * What the panel below shows, for the step-by-step guide
+   * (`components/tutorials/guides/worker-details.ts`): its steps ask which
+   * panel is up, so a step whose panel has gone is passed over.
+   */
+  const panel: RequirementsPanel =
+    terminal !== null && isApplicationOverScreen(terminal) ? 'terminal'
+      : flow.finished === 'complete' ? 'complete'
+        : terminal !== null ? 'terminal'
+          : outstandingPrompts.length > 0 ? 'topup'
+            : REQUIREMENT_STEP_IDS[flow.stepIndex] ?? 'review';
+
   /*
    * NOT `job.company_name` raw. That field is `employer_display_name()`, which
    * falls back to the "Empleador" placeholder (migration 031) -- a word, not a
@@ -336,7 +356,12 @@ export function ApplicationRequirementsFlow({
 
   return (
     <DashboardPanel>
-      <div className="space-y-5 p-5 md:p-6">
+      <div
+        className="space-y-5 p-5 md:p-6"
+        data-guide="details.flow"
+        data-panel={panel}
+        data-vault={!vaultAnswered ? 'pending' : vaultDocs === null ? 'failed' : 'ready'}
+      >
         {/* ORDER MATTERS, and it is not the obvious one. A worker who finishes
             HERE has, by definition, just set `details_completed_at` -- which
             makes `terminalScreen` return `already_complete`. Checking the
@@ -394,14 +419,16 @@ export function ApplicationRequirementsFlow({
               <InlineFeedback tone="info">{t('notice.other_door')}</InlineFeedback>
             ) : null}
 
-            <RequirementsProgress totals={totals} />
+            <div className="space-y-5" data-guide="details.overview">
+              <RequirementsProgress totals={totals} />
 
-            <RequirementsStepNav
-              stepIndex={flow.stepIndex}
-              onGoto={(index) => dispatch({ type: 'goto', index })}
-              canLeaveDetails={canLeaveDetails}
-              canLeaveDocuments={canLeaveDocuments}
-            />
+              <RequirementsStepNav
+                stepIndex={flow.stepIndex}
+                onGoto={(index) => dispatch({ type: 'goto', index })}
+                canLeaveDetails={canLeaveDetails}
+                canLeaveDocuments={canLeaveDocuments}
+              />
+            </div>
 
             {inlineError ? (
               <InlineFeedback tone="danger" onDismiss={() => setInlineError(null)}>
@@ -452,7 +479,7 @@ export function ApplicationRequirementsFlow({
                 totals={totals}
                 saving={flow.saving}
                 onFinish={() => void finish()}
-                onGotoDocuments={() => dispatch({ type: 'goto', index: 1 })}
+                onGotoStep={(index) => dispatch({ type: 'goto', index })}
               />
             )}
           </>
@@ -463,3 +490,6 @@ export function ApplicationRequirementsFlow({
 }
 
 export type { RequirementsFlowState };
+
+/** The panel the flow shows: a stepper step, the prompt top-up, the completion screen or a terminal panel. */
+export type RequirementsPanel = RequirementStepId | 'topup' | 'complete' | 'terminal';

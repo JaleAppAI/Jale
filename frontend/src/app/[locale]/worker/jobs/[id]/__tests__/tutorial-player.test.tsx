@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 
 import type { Application, ApplicationsPage, JobDetail } from '@/lib/api/worker';
 import { resetHarness, route, serveTutorials, signIn, watchDialogs } from '@/lib/tutorials/__tests__/harness';
@@ -10,16 +10,15 @@ import {
     preparePlayer,
     recordsPosted,
     settle,
-    walkToLast,
     workerProviders,
 } from '@/components/tutorials/content/__tests__/worker-player';
 
 /*
  * W2 with the real tutorial: the providers as the app layout mounts them and
- * the real player and content. "How applying works" opens on a worker's first
- * job page while they have no application (K1.5), never over a worker who
- * arrived with `?apply=1`, and never on top of the profile gate: there is
- * only ever one dialog. Its last button is the common "Got it".
+ * the real player and content. The slides ("How applying works") no longer
+ * open over the job page: the step-by-step guide plays inside the apply
+ * screen instead (`apply-guide.test.tsx`), and the slides stay in Help. So
+ * nothing opens here, on any arrival, and never on top of the profile gate.
  */
 
 const { getApplications, profile } = vi.hoisted(() => ({
@@ -162,30 +161,27 @@ beforeEach(() => {
 });
 
 describe('worker job page with the real W2 tutorial', () => {
-    it('opens "How applying works" for a worker with no application, alone, and ends on "Got it"', async () => {
+    it('opens nothing over the job page for a worker with no application: the guide waits for the apply screen', async () => {
         getApplications.mockResolvedValue(pageOf([]));
         const watch = watchDialogs();
         render(<WorkerJobDetailPage />, { wrapper: workerProviders() });
-
-        const dialog = await screen.findByRole('dialog', { name: 'How applying works' });
-        expect(within(dialog).getByRole('heading', { name: 'Applying takes a minute' })).toBeInTheDocument();
-        const gotIt = walkToLast(dialog, 'Next', 'Got it');
-        act(() => gotIt.click());
+        await settle();
         await settle();
         watch.stop();
 
-        expect(dialogCount()).toBe(0);
-        expect(watch.most()).toBe(1);
-        expect(recordsPosted()).toEqual([{ tutorial_id: 'worker_apply', outcome: 'completed' }]);
+        expect(tutorialDialog()).toBeNull();
+        expect(watch.most()).toBe(0);
+        expect(recordsPosted()).toEqual([]);
     });
 
-    it('says it in Spanish', async () => {
+    it('opens nothing over the Spanish job page either', async () => {
         getApplications.mockResolvedValue(pageOf([]));
         render(<WorkerJobDetailPage />, { wrapper: workerProviders('es') });
+        await settle();
+        await settle();
 
-        const dialog = await screen.findByRole('dialog', { name: 'Cómo postularte' });
-        expect(within(dialog).getByRole('heading', { name: 'Postularte toma un minuto' })).toBeInTheDocument();
-        expect(walkToLast(dialog, 'Siguiente', 'Entendido')).toBeInTheDocument();
+        expect(screen.queryByRole('dialog', { name: 'Cómo postularte' })).toBeNull();
+        expect(dialogCount()).toBe(0);
     });
 
     it('does not open for a worker who has applied before', async () => {

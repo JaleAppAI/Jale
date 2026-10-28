@@ -109,6 +109,7 @@ vi.mock('@/hooks/usePageData', () => ({
 }));
 
 import WorkerJobDetailPage from '../page';
+import { OverlayPresenceProvider, useOverlayRegistry, type OverlayRegistry } from '@/lib/tutorials/overlay';
 
 const COMPLETE_PROFILE = {
     full_name: 'Alex Rivera',
@@ -246,5 +247,49 @@ describe('worker job detail — ?apply=1 from the onboarding summary', () => {
         expect(await screen.findByRole('button', { name: message('worker_job_detail.apply') })).toBeInTheDocument();
         expect(screen.queryByTestId('apply-flow')).not.toBeInTheDocument();
         expect(apiFetch).not.toHaveBeenCalled();
+    });
+});
+
+/*
+ * An application in progress counts as an open overlay for the tutorial
+ * coordinator: the in-page flow is a view swap, not a Modal, so the page
+ * reports it itself. That is what keeps the worker app tour (and any
+ * auto-opening tutorial) off a worker who went straight from onboarding
+ * into applying.
+ */
+describe('worker job detail — an application in progress is an overlay', () => {
+    let registry: OverlayRegistry | null = null;
+    function Probe() {
+        registry = useOverlayRegistry();
+        return null;
+    }
+    const withRegistry = () => (
+        <OverlayPresenceProvider>
+            <Probe />
+            <WorkerJobDetailPage />
+        </OverlayPresenceProvider>
+    );
+
+    it('from the arrival with ?apply=1 until the worker backs out of the flow', async () => {
+        seed = job();
+        visit('?apply=1');
+
+        renderIntl(withRegistry());
+
+        await screen.findByTestId('apply-flow');
+        expect(registry?.isPresent()).toBe(true);
+
+        fireEvent.click(screen.getByRole('button', { name: 'back to details' }));
+        expect(screen.queryByTestId('apply-flow')).not.toBeInTheDocument();
+        expect(registry?.isPresent()).toBe(false);
+    });
+
+    it('not while the worker is only reading the job', async () => {
+        seed = job();
+
+        renderIntl(withRegistry());
+
+        expect(await screen.findByRole('button', { name: message('worker_job_detail.apply') })).toBeInTheDocument();
+        expect(registry?.isPresent()).toBe(false);
     });
 });

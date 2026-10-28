@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 import type { Application, ApplicationHire, ApplicationRequirementsState, ApplicationsPage } from '@/lib/api/worker';
+import { useTutorialProgress } from '@/lib/tutorials/progress';
 import { record, resetHarness, route, serveTutorials, signIn, watchDialogs } from '@/lib/tutorials/__tests__/harness';
 import {
   dialogCount,
@@ -16,10 +17,13 @@ import {
 
 /*
  * W3 with the real tutorial: the providers as the app layout mounts them and
- * the real player and content. "Details requested" opens over the details
- * stepper for a worker who has never completed a details request (K1.5),
- * alone, and its last button reads "Start". It never opens over the hired
- * card or a terminal panel. The harness is the sibling `tutorial.test.tsx`.
+ * the real player, guide and content. Over the details stepper, for a worker
+ * who has never completed a details request (K1.5), the step-by-step guide
+ * opens, alone, on its intro; Help's Play still shows the slides, whose last
+ * button reads "Start". Nothing opens over the hired card or a terminal
+ * panel. The flow is a stand-in carrying the guide's marks for its panel and
+ * its overview (the guide's own suite drives the real flow). The harness is
+ * the sibling `tutorial.test.tsx`.
  */
 
 const { getApplications } = vi.hoisted(() => ({ getApplications: vi.fn() }));
@@ -44,7 +48,11 @@ vi.mock('@/components/layout/AppShell', () => ({
   AppShell: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock('@/components/worker/application-requirements/ApplicationRequirementsFlow', () => ({
-  ApplicationRequirementsFlow: () => <div data-testid="requirements-flow" />,
+  ApplicationRequirementsFlow: () => (
+    <div data-testid="requirements-flow" data-guide="details.flow" data-panel="details" data-vault="ready">
+      <div data-guide="details.overview">Progress and steps</div>
+    </div>
+  ),
 }));
 vi.mock('@/components/worker/HiredCard', () => ({
   HiredCard: () => <div data-testid="hired-card" />,
@@ -121,7 +129,20 @@ function pageOf(applications: Partial<Application>[]): ApplicationsPage {
 let restorePlayer: () => void;
 beforeAll(async () => {
   restorePlayer = await preparePlayer();
+  await import('@/components/tutorials/GuideHost');
 });
+
+/** Help's Play: a replay with no renderer named, as `HelpCenter` asks for it. */
+function HelpPlay() {
+  const progress = useTutorialProgress();
+  return (
+    <button type="button" onClick={() => progress?.play({ id: 'worker_details', mode: 'replay', vars: progress.varsFor('worker_details') })}>
+      Play from Help
+    </button>
+  );
+}
+
+const callout = () => document.querySelector('[data-spotlight] [role="dialog"][data-step]');
 afterAll(() => restorePlayer());
 
 beforeEach(() => {
@@ -137,28 +158,45 @@ beforeEach(() => {
 });
 
 describe('details page with the real W3 tutorial', () => {
-  it('opens "Details requested" over the stepper, alone, and ends on "Start"', async () => {
+  it('opens the step-by-step guide over the stepper, alone, instead of the slides', async () => {
     const watch = watchDialogs();
     render(<WorkerApplicationDetailsPage />, { wrapper: workerProviders() });
 
-    const dialog = await screen.findByRole('dialog', { name: 'Details requested' });
+    const intro = await screen.findByRole('dialog', { name: 'Want a hand with your details?' });
     expect(screen.getByTestId('requirements-flow')).toBeInTheDocument();
-    expect(within(dialog).getByRole('heading', { name: 'An employer wants to hire you' })).toBeInTheDocument();
-    const start = walkToLast(dialog, 'Next', 'Start');
-    act(() => start.click());
+    expect(screen.queryByRole('dialog', { name: 'Details requested' })).not.toBeInTheDocument();
+
+    act(() => within(intro).getByRole('button', { name: 'Guide me' }).click());
+    await settle();
+    expect(callout()?.getAttribute('data-step')).toBe('overview');
+
+    act(() => within(callout() as HTMLElement).getByRole('button', { name: 'End guide' }).click());
     await settle();
     watch.stop();
 
     expect(dialogCount()).toBe(0);
     expect(watch.most()).toBe(1);
-    expect(recordsPosted()).toEqual([{ tutorial_id: 'worker_details', outcome: 'completed' }]);
+    expect(recordsPosted()).toEqual([{ tutorial_id: 'worker_details', outcome: 'skipped' }]);
   });
 
-  it('says it in Spanish, ending on "Empezar"', async () => {
+  it('says it in Spanish', async () => {
     render(<WorkerApplicationDetailsPage />, { wrapper: workerProviders('es') });
 
-    const dialog = await screen.findByRole('dialog', { name: 'Te pidieron tus datos' });
-    expect(walkToLast(dialog, 'Siguiente', 'Empezar')).toBeInTheDocument();
+    const intro = await screen.findByRole('dialog', { name: '¿Te ayudamos con tus datos?' });
+    expect(within(intro).getByRole('button', { name: 'Guíame' })).toBeInTheDocument();
+  });
+
+  it('keeps the slides for Help\'s Play, ending on "Start"', async () => {
+    serveTutorials([record('worker_details', 'skipped')]);
+    render(<><WorkerApplicationDetailsPage /><HelpPlay /></>, { wrapper: workerProviders() });
+    await settle();
+    expect(dialogCount()).toBe(0);
+
+    act(() => fireEvent.click(screen.getByRole('button', { name: 'Play from Help' })));
+    const dialog = await screen.findByRole('dialog', { name: 'Details requested' });
+    expect(within(dialog).getByRole('heading', { name: 'An employer wants to hire you' })).toBeInTheDocument();
+    expect(walkToLast(dialog, 'Next', 'Start')).toBeInTheDocument();
+    expect(callout()).toBeNull();
   });
 
   it('does not open for a worker who has completed a details request before', async () => {

@@ -45,12 +45,33 @@ const FOCUSABLE_SELECTOR = [
 /**
  * Focusable descendants in DOM order, skipping anything not actually rendered
  * (`display:none`, a collapsed section) — those would otherwise become dead
- * stops in the tab cycle.
+ * stops in the tab cycle. Shared with the spotlight walkthrough's callout, which
+ * keeps the same Tab cycle without being a `Modal`.
  */
-function focusableWithin(root: HTMLElement): HTMLElement[] {
+export function focusableWithin(root: HTMLElement): HTMLElement[] {
     return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
         (el) => el.getClientRects().length > 0 && el.getAttribute('aria-hidden') !== 'true',
     );
+}
+
+/**
+ * A control with an Escape of its own while its popup is open: an expanded
+ * combobox (`LocationPicker`, `CertificationsPicker`), or a button that owns
+ * an open menu or list (`aria-haspopup`). A disclosure (a plain
+ * `aria-expanded` button) has no Escape of its own and is not one.
+ */
+const OPEN_POPUP_OWNER = [
+    '[role="combobox"][aria-expanded="true"]',
+    '[aria-haspopup][aria-expanded="true"]:not([aria-haspopup="false"])',
+].join(', ');
+
+/**
+ * Whether `node` is, or sits in, a control with its popup open (see above).
+ * Shared with the step-by-step guides, which leave such an Escape to the
+ * control too (`components/tutorials/spotlight`).
+ */
+export function inOpenPopupOwner(node: EventTarget | Element | null): boolean {
+    return node instanceof Element && node.closest(OPEN_POPUP_OWNER) !== null;
 }
 
 export function Modal({
@@ -64,6 +85,8 @@ export function Modal({
     initialFocusRef,
     footer,
     children,
+    'data-guide': guide,
+    footerGuide,
 }: {
     open: boolean;
     onClose: () => void;
@@ -79,6 +102,10 @@ export function Modal({
     initialFocusRef?: React.RefObject<HTMLElement | null>;
     footer?: React.ReactNode;
     children: React.ReactNode;
+    /** A step-by-step guide's hook on the panel (`data-guide`, see `components/tutorials/spotlight`). */
+    'data-guide'?: string;
+    /** The same hook on the pinned footer, when there is one. */
+    footerGuide?: string;
 }) {
     const t = useTranslations('common');
     const generatedTitleId = useId();
@@ -139,6 +166,22 @@ export function Modal({
 
         function onKeyDown(event: KeyboardEvent) {
             if (event.key === 'Escape') {
+                // An Escape a step-by-step guide drawn inside this panel
+                // already handled is not the dialog's: the guide marks the one
+                // it leaves to a combobox closing its own list
+                // (`components/tutorials/spotlight/Spotlight.tsx`), and that
+                // must not also close the dialog and discard what was typed.
+                // Only the guide's: an Escape handled by any other layer is
+                // the dialog's as it always was.
+                if (event.defaultPrevented && panelRef.current?.querySelector('[data-spotlight]')) return;
+                // An Escape for an open list closes the list, not the dialog
+                // (and the form in it). This listener runs in the capture
+                // phase, ahead of the control's own handler and whatever it
+                // does to stop the key, so it has to ask: the key's target, or
+                // the focused element, is or sits in a control with its popup
+                // open. Once the list is closed, the next Escape is the
+                // dialog's.
+                if (inOpenPopupOwner(event.target) || inOpenPopupOwner(document.activeElement)) return;
                 if (!closeOnEscape) return;
                 event.preventDefault();
                 event.stopPropagation();
@@ -215,6 +258,7 @@ export function Modal({
                 aria-modal="true"
                 aria-labelledby={titleId}
                 tabIndex={-1}
+                data-guide={guide}
                 className={[
                     'anim-fade-in flex w-full flex-col overflow-hidden outline-none',
                     'max-h-[92vh] rounded-[var(--radius-card)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)]',
@@ -240,7 +284,10 @@ export function Modal({
                 <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
 
                 {footer ? (
-                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-[var(--jale-divider)] bg-[var(--jale-card)] px-5 py-3">
+                    <div
+                        data-guide={footerGuide}
+                        className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-[var(--jale-divider)] bg-[var(--jale-card)] px-5 py-3"
+                    >
                         {footer}
                     </div>
                 ) : null}

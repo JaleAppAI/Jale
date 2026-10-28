@@ -122,7 +122,13 @@ const CFN_MAX_RESOURCES = 500;
 // their CORS preflight, or one small feature. Crossing it is the signal to
 // SPLIT ApiStack (a nested stack, or a second RestApi for `/worker/*`), not
 // to raise this number.
-const CEILING = 470;
+//
+// TEMPORARY: raised from 470 to 480 on Ivan's decision of 2026-10-27, when
+// merging main's guide settings (#120) into Phase 3 measured 471. The
+// JaleApiStack split is planned as its own task and restores the headroom;
+// once it lands this goes back to 470 (or lower). AWS's hard limit is still
+// CFN_MAX_RESOURCES = 500.
+const CEILING = 480;
 // The number this composition ACTUALLY synthesizes to, measured with the
 // production CI context above. Asserted exactly, not just against the gate,
 // so that a route added without noticing shows up as a diff on this line
@@ -174,6 +180,10 @@ const CEILING = 470;
 // four Methods and two OPTIONS preflights, four Lambda::Permissions, and the
 // one function serving both (Function, execution Role, its default Policy and
 // log group): 16 resources, leaving 17 of headroom against the 470 gate.
+// → 457 once the K1-v2 guide settings (hotfix 2026-10-23) added PATCH on
+// `/employer/tutorials` and `/worker/tutorials`: two Methods and their two
+// Lambda::Permissions, on the existing Resources, preflights and function:
+// 4 resources, leaving 13 of headroom against the 470 gate.
 // → 467 once Phase 3's team, invites and membership routes (employer
 // organizations, JaleBillingStack's Lambdas) added the path-only `team` and
 // `invites` (one Resource each), `{action}` and `{token}` with their OPTIONS
@@ -183,7 +193,12 @@ const CEILING = 470;
 // GET, POST, two Permissions) measured 473, over the gate. Identical with the
 // team-management flag on and off. 3 of headroom left: the next route needs
 // the planned JaleApiStack split, not a bump of the gate.
-const MEASURED_RESOURCES = 467;
+// → 471 once main's guide settings (#120) were merged into Phase 3 (the 457
+// and 467 above were each measured from 453, on their own branches): the two
+// sides' 4 + 14 resources together, over the 470 gate, so the gate was
+// raised to 480 (temporary, see CEILING). Identical with the
+// team-management flag on and off. 9 of headroom left until the split.
+const MEASURED_RESOURCES = 471;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it
@@ -575,6 +590,9 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     ['POST', '/employer/tutorials', 'EmployerAuthorizer'],
     ['GET', '/worker/tutorials', 'WorkerAuthorizer'],
     ['POST', '/worker/tutorials', 'WorkerAuthorizer'],
+    // K1-v2 guide settings: PATCH on the same two routes and function.
+    ['PATCH', '/employer/tutorials', 'EmployerAuthorizer'],
+    ['PATCH', '/worker/tutorials', 'WorkerAuthorizer'],
     // Phase 3 team management (JaleBillingStack's Lambdas): every owner
     // operation and the caller's membership on one `{action}` node, and the
     // invite link's public read beside its signed-in accept.

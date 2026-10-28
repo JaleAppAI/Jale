@@ -22,6 +22,7 @@ export function CheckboxCard({
   invalid,
   errorId,
   focusRing,
+  "data-guide": guide,
 }: {
   checked: boolean;
   label: string;
@@ -31,11 +32,14 @@ export function CheckboxCard({
   invalid?: boolean;
   errorId?: string;
   focusRing?: boolean;
+  /** A step-by-step guide's hook (`data-guide`, see `components/tutorials/spotlight`). */
+  "data-guide"?: string;
 }) {
   const labelId = React.useId();
   const descriptionId = React.useId();
   return (
     <label
+      data-guide={guide}
       className={[
         "flex items-center gap-2 select-none",
         disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",

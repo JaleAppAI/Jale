@@ -130,14 +130,17 @@ export function ConversationDrawer() {
   const canFetch = open && isEmployer;
 
   /*
-   * The messages tutorial (E4) plays before the drawer opens, for an employer
-   * with no conversation yet (K1.5). Every way the drawer opens goes through
-   * `runBeforeHost`; closing it never does.
+   * The messages tutorial (E4), for an employer with no conversation yet
+   * (K1.5), is a step-by-step guide that plays once the drawer is open: every
+   * way the drawer opens goes through `runWithHost` (the drawer first, then
+   * the guide); closing it never does.
    */
   const messagesTutorial = useTutorial('employer_messages', {
     done: isEmployer
       ? messagesTutorialDone({ loading: inboxLoading, errorKind: inboxErrorKind, items })
       : undefined,
+    // E4 is a step-by-step guide over the drawer, once it is open.
+    walkthrough: true,
   });
 
   /*
@@ -152,7 +155,7 @@ export function ConversationDrawer() {
     setDescribedTargets((prev) => rememberDescribedTarget(prev, openRequest.target));
     setSelectedKey(openRequest.target.application_id);
     // Already open: the selection above is the whole request.
-    if (!open) messagesTutorial.runBeforeHost(() => setOpen(true));
+    if (!open) messagesTutorial.runWithHost(() => setOpen(true));
     // The applicant may have applied since the last poll, or been messaged
     // from another device; ask before deciding they are unreachable.
     void refresh();
@@ -385,9 +388,10 @@ export function ConversationDrawer() {
         type="button"
         onClick={() => {
           if (open) setOpen(false);
-          else messagesTutorial.runBeforeHost(() => setOpen(true));
+          else messagesTutorial.runWithHost(() => setOpen(true));
         }}
         aria-expanded={open}
+        data-guide="msg.launcher"
         className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-5 z-30 inline-flex cursor-pointer items-center gap-2 rounded-full bg-[var(--jale-blue-900)] px-4 py-3 text-sm font-bold text-white shadow-[var(--shadow-modal)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] lg:bottom-5"
       >
         {/*
@@ -413,10 +417,11 @@ export function ConversationDrawer() {
        * original 5rem/2rem pair.
        */}
       {open ? (
-        <div className="anim-fade-in fixed bottom-[calc(10rem+env(safe-area-inset-bottom))] right-5 z-30 flex h-[620px] max-h-[calc(100vh-12rem-env(safe-area-inset-bottom))] w-[min(760px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)] lg:bottom-20 lg:max-h-[calc(100vh-7rem)]">
+        <div data-guide="msg.drawer" className="anim-fade-in fixed bottom-[calc(10rem+env(safe-area-inset-bottom))] right-5 z-30 flex h-[620px] max-h-[calc(100vh-12rem-env(safe-area-inset-bottom))] w-[min(760px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)] lg:bottom-20 lg:max-h-[calc(100vh-7rem)]">
           {/* List pane. Below sm it owns the whole drawer until a thread is
               picked -- a 240px list and a transcript will not share 358px. */}
           <aside
+            data-guide="msg.list"
             className={[
               'min-w-0 flex-col border-[var(--jale-divider)] bg-[var(--jale-paper-2)] sm:flex sm:w-60 sm:shrink-0 sm:border-r',
               selectedKey ? 'hidden' : 'flex w-full',
@@ -475,7 +480,7 @@ export function ConversationDrawer() {
           >
             <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--jale-divider)] bg-[var(--jale-blue-900)] p-3 text-white sm:hidden">
               <p className="truncate text-sm font-bold">{t('title')}</p>
-              <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)} data-guide="msg.hide">
                 {t('hide')}
               </Button>
             </div>

@@ -41,12 +41,14 @@ interface ScheduleFieldsProps {
    * choice is marked).
    */
   fieldError?: { field: 'shift_start' | 'shift_end' | 'shift_periods'; message: string } | null;
+  /** A step-by-step guide's prefix: `<guide>.shifts` on the shift choices, `<guide>.times` on the two times. */
+  guide?: string;
 }
 
 export function ScheduleFields({
   workDays, shiftStart, shiftEnd, legacyShiftSchedule,
   onToggleDay, onShiftStartChange, onShiftEndChange,
-  shiftPeriods, onToggleShiftPeriod, disabled, fieldError,
+  shiftPeriods, onToggleShiftPeriod, disabled, fieldError, guide,
 }: ScheduleFieldsProps) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
@@ -99,6 +101,7 @@ export function ScheduleFields({
       </div>
 
       <fieldset
+        data-guide={guide ? `${guide}.shifts` : undefined}
         data-field="shift_periods"
         className="m-0 flex min-w-0 flex-col gap-1.5 border-0 p-0"
         aria-describedby={shiftsHintId}
@@ -127,6 +130,8 @@ export function ScheduleFields({
         )}
       </fieldset>
 
+      {/* The same grid and gap as the parent, so the hook adds no space. */}
+      <div className="grid gap-3" data-guide={guide ? `${guide}.times` : undefined}>
       <p className="-mb-1.5 text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
         {t('modal.shift_times_label')}
       </p>
@@ -167,6 +172,7 @@ export function ScheduleFields({
         <p id={timeErrorId} className="-mt-1.5 text-xs font-medium text-[var(--jale-danger-text)]">{timeError.message}</p>
       )}
       <p id={timesHintId} className="-mt-1.5 text-xs text-[var(--jale-ink-2)]">{t('modal.shift_times_hint')}</p>
+      </div>
 
       {showLegacyNote && (
         <p className="text-xs text-[var(--jale-ink-2)]">

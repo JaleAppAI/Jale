@@ -108,7 +108,7 @@ export function QuestionsStep({
         <InlineFeedback tone="danger">{tFlow('errors.invalid_batch')}</InlineFeedback>
       ) : null}
 
-      <Button className="w-full" size="lg" loading={saving} onClick={handleContinue}>
+      <Button className="w-full" size="lg" data-guide="details.questions.continue" loading={saving} onClick={handleContinue}>
         {tFlow('continue_button')}
       </Button>
     </div>

@@ -47,6 +47,7 @@ export function TermsStep({
             <StepFooter>
                 {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
                 <Button
+                    data-guide="onb.terms.accept"
                     className="w-full"
                     size="lg"
                     loading={saving}

@@ -219,7 +219,8 @@ export default function WorkerProfilePage() {
         phase === 'ready' && profile ? [profile.application_status] : null,
         inbox,
     );
-    const applicantsTutorial = useTutorial('employer_applicants', { done: applicantsDone });
+    // A step-by-step guide over this applicant's status, details and documents (E3's walkthrough).
+    const applicantsTutorial = useTutorial('employer_applicants', { done: applicantsDone, walkthrough: true });
     const applicantsAskedRef = useRef(false);
     useEffect(() => {
         if (applicantsAskedRef.current || applicantsDone === undefined) return;
@@ -724,7 +725,7 @@ export default function WorkerProfilePage() {
                                 </DashboardPanel>
                             </div>
 
-                            <DashboardPanel className="self-start">
+                            <DashboardPanel className="self-start" data-guide="apps.profile_docs">
                                 <PanelHeader
                                     title={t('documents')}
                                     action={
@@ -924,7 +925,7 @@ export default function WorkerProfilePage() {
                             </div>
 
                             <div className="flex min-w-0 flex-col gap-2 sm:items-end">
-                                <div className="flex flex-wrap items-end gap-2">
+                                <div className="flex flex-wrap items-end gap-2" data-guide="apps.profile_status" data-status={savedStatus}>
                                     <div className="w-full sm:w-56">
                                         <label
                                             htmlFor="applicant-status"
@@ -958,7 +959,7 @@ export default function WorkerProfilePage() {
                                             })}
                                         </Select>
                                         {hireHint ? (
-                                            <p className="mt-1.5 text-xs text-[var(--jale-ink-2)]">{hireHint}</p>
+                                            <p data-guide="apps.profile_hint" className="mt-1.5 text-xs text-[var(--jale-ink-2)]">{hireHint}</p>
                                         ) : null}
                                         {/* Which statuses reach the worker: both
                                             "Request details" and "Hired" send a
@@ -993,6 +994,7 @@ export default function WorkerProfilePage() {
                                             variant="outline"
                                             onClick={() => void handleRequestDetails()}
                                             disabled={saving}
+                                            data-guide="apps.profile_request"
                                             loading={requestingDetails}
                                             loadingLabel={tCommon('loading')}
                                         >

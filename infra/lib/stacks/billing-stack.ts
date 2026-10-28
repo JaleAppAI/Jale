@@ -437,7 +437,8 @@ export class BillingStack extends cdk.Stack {
     // The team dispatcher (lambda/api/employer-team.ts) serves every
     // /employer/team/{action} route, including the caller's membership
     // (GET/POST membership): one resource instead of three keeps JaleApiStack
-    // under its 470-resource gate. The invite, revoke and remove delegates
+    // under its resource gate (480, raised temporarily from 470 until the
+    // JaleApiStack split; see CEILING in api-stack-resource-ceiling.test.ts). The invite, revoke and remove delegates
     // call Cognito after COMMIT (member access), and invite/resend mail a link
     // built on the site's public origin.
     const employerTeamLambda = new JaleLambdaFunction(this, 'EmployerTeamLambda', {

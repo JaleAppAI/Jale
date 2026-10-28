@@ -22,6 +22,7 @@ export function OptionGrid<T extends string>({
     disabled = false,
     labelledBy,
     describedBy,
+    'data-guide': guide,
 }: {
     options: readonly OptionItem<T>[];
     value: T | null;
@@ -37,10 +38,13 @@ export function OptionGrid<T extends string>({
      * the sentence is read as focus enters the choices.
      */
     describedBy?: string;
+    /** A step-by-step guide's hook (`data-guide`, see `components/tutorials/spotlight`). */
+    'data-guide'?: string;
 }) {
     return (
         <div
             role="group"
+            data-guide={guide}
             aria-labelledby={labelledBy}
             aria-describedby={describedBy}
             className={variant === 'grid' ? 'grid grid-cols-2 gap-2' : 'flex flex-col gap-2'}

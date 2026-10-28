@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act } from '@testing-library/react';
+import { act, waitFor } from '@testing-library/react';
 
-import type { EmployerBilling, Job } from '@/lib/api/employer';
+import type { EmployerBilling, EmployerProfileData, Job } from '@/lib/api/employer';
 
 /*
  * E1 (sprint 29): the welcome tutorial auto-opens on the dashboard once the
@@ -70,6 +70,9 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
     getJobs: vi.fn(),
     getBilling: vi.fn(),
     listJobTemplates: vi.fn(),
+    // An empty board reads the account's creation date for the app tour; an
+    // account from before the tour's release gets E1 as it always did.
+    getEmployerProfile: vi.fn(async () => ({ id: 'e1', user_type: 'employer', created_at: '2026-08-01T00:00:00Z' }) as unknown as EmployerProfileData),
 }));
 
 vi.mock('@/contexts/UnreadMessagesContext', () => ({
@@ -169,7 +172,7 @@ beforeEach(() => {
 });
 
 describe('dashboard: the welcome tutorial', () => {
-    it('waits while the board loads, then asks once with the plan limit for an employer with no jobs', () => {
+    it('waits while the board loads, then asks once with the plan limit for an employer with no jobs', async () => {
         renderDashboard();
 
         expect(tutorial.ids.has('employer_welcome')).toBe(true);
@@ -179,7 +182,7 @@ describe('dashboard: the welcome tutorial', () => {
         act(() => page.set({ phase: 'ready', data: { jobs: [], billing: plan(7), templateCount: 0 } }));
 
         expect(tutorial.latestDone.employer_welcome).toBe(false);
-        expect(welcome().maybeAutoOpen).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(welcome().maybeAutoOpen).toHaveBeenCalledTimes(1));
         expect(welcome().maybeAutoOpen).toHaveBeenCalledWith({ activeJobLimit: 7 });
     });
 
@@ -190,19 +193,23 @@ describe('dashboard: the welcome tutorial', () => {
         expect(tutorial.latestDone.employer_welcome).toBe(true);
     });
 
-    it('asks with no plan values when the plan could not be read', () => {
+    it('asks with no plan values when the plan could not be read', async () => {
         renderDashboard();
         act(() => page.set({ phase: 'ready', data: { jobs: [], billing: null, templateCount: 0 } }));
 
-        expect(welcome().maybeAutoOpen).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(welcome().maybeAutoOpen).toHaveBeenCalledTimes(1));
         expect(welcome().maybeAutoOpen.mock.calls[0]).toEqual([]);
     });
 
-    it('asks once per page view, not on every reload of the board', () => {
+    it('asks once per page view, not on every reload of the board', async () => {
         renderDashboard();
         act(() => page.set({ phase: 'ready', data: { jobs: [], billing: plan(7), templateCount: 0 } }));
         act(() => page.set({ phase: 'ready', data: { jobs: [], billing: plan(9), templateCount: 1 } }));
 
+        await waitFor(() => expect(welcome().maybeAutoOpen).toHaveBeenCalledTimes(1));
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        });
         expect(welcome().maybeAutoOpen).toHaveBeenCalledTimes(1);
     });
 });

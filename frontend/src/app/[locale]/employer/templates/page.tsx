@@ -16,6 +16,7 @@ import { PanelHeader } from '@/components/ui/panel-header';
 import { TemplateTableSkeleton } from '@/components/ui/page-skeletons';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TemplateEditModal } from '@/components/employer/TemplateEditModal';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import { deleteJobTemplate, getBilling, listJobTemplates, type JobTemplate } from '@/lib/api/employer';
 import { templateRowSummary, TRADE_CATEGORIES } from '@/lib/job-form';
 import { formatLongDate } from '@/lib/date';
@@ -36,6 +37,12 @@ export default function EmployerTemplatesPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<JobTemplate | null>(null);
   const [creating, setCreating] = useState(false);
+  /*
+   * The template editor's part of the post-job guide (E2): it opens with the
+   * editor in the "every time" setting. Never as a first-time play
+   * (`done: true`): that one belongs to posting a job.
+   */
+  const editorGuide = useTutorial('employer_post_job', { done: true, walkthrough: true });
   const [deleting, setDeleting] = useState<JobTemplate | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   // A destructive dialog opens on its SAFE action (see DeleteJobDialog).
@@ -124,7 +131,7 @@ export default function EmployerTemplatesPage() {
           ) : (
             <p className="text-sm font-semibold text-[var(--jale-ink-2)]">{meter}</p>
           )}
-          <Button onClick={() => setCreating(true)} disabled={atLimit}>{t('templates.new')}</Button>
+          <Button onClick={() => editorGuide.runWithHost(() => setCreating(true))} disabled={atLimit}>{t('templates.new')}</Button>
         </div>
 
         {atLimit && (
@@ -151,7 +158,7 @@ export default function EmployerTemplatesPage() {
         ) : templates.length === 0 ? (
           <DashboardPanel className="p-8 text-center">
             <p className="mb-4 text-sm text-[var(--jale-ink-2)]">{t('templates.empty')}</p>
-            <Button onClick={() => setCreating(true)} disabled={atLimit}>{t('templates.new')}</Button>
+            <Button onClick={() => editorGuide.runWithHost(() => setCreating(true))} disabled={atLimit}>{t('templates.new')}</Button>
           </DashboardPanel>
         ) : (
           <DashboardPanel>
@@ -181,7 +188,7 @@ export default function EmployerTemplatesPage() {
                         reader's timezone (formatStartDate is date-only and pinned to UTC). */}
                     <p className="text-sm text-[var(--jale-ink-2)]">{formatLongDate(tpl.updated_at, locale) ?? '—'}</p>
                     <div className="flex gap-2">
-                      <Button variant="outline" size="sm" onClick={() => setEditing(tpl)}>{t('templates.edit')}</Button>
+                      <Button variant="outline" size="sm" onClick={() => editorGuide.runWithHost(() => setEditing(tpl))}>{t('templates.edit')}</Button>
                       <Button variant="outline" size="sm" onClick={() => { setDeleteError(null); setDeleting(tpl); }}>{t('templates.delete_confirm')}</Button>
                     </div>
                   </div>

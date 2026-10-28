@@ -120,7 +120,7 @@ export function DoneStep({
             <p className="mb-[18px] mt-3 text-[15px] font-light text-[var(--jale-ink-2)]">{t('subtitle')}</p>
 
             <div className="flex flex-1 flex-col gap-3">
-                <Panel title={t('profile_heading')}>
+                <Panel title={t('profile_heading')} guide="onb.done.profile">
                     {rows.map(([label, value]) => (
                         <div key={label} className="flex justify-between gap-3 border-b border-[var(--jale-divider)] py-2.5 text-sm last:border-b-0">
                             <span className="text-[var(--jale-ink-2)]">{label}</span>
@@ -256,9 +256,9 @@ function ApplyActions({ job, onFinish }: { job: ReferredJobSummary; onFinish: (a
     );
 }
 
-function Panel({ title, children }: { title: string; children: ReactNode }) {
+function Panel({ title, guide, children }: { title: string; guide?: string; children: ReactNode }) {
     return (
-        <section className="rounded-[14px] border border-[var(--jale-divider)] px-4 py-3.5">
+        <section data-guide={guide} className="rounded-[14px] border border-[var(--jale-divider)] px-4 py-3.5">
             <h2 className="mb-2 text-sm font-semibold text-[var(--jale-ink)]">{title}</h2>
             <div className="flex flex-col gap-2.5">{children}</div>
         </section>

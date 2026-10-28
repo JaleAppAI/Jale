@@ -26,10 +26,17 @@ export interface TutorialDefinition {
 
 /** What a host page gets from useTutorial(id, …). */
 export interface TutorialHandle {
-  /** Auto-open once if allowed (no record, not done, no other overlay). Call it from an effect when the page is ready. */
+  /** Auto-open if allowed (see the rule in `use-tutorial.ts`). Call it once per page view, from an effect when the page is ready. */
   maybeAutoOpen(vars?: TutorialSceneProps['vars']): void;
-  /** For tutorials that play before a host (E2, E4): auto-plays if allowed, then calls openHost on dismiss; otherwise calls openHost at once. */
+  /** For tutorials that play before a host (E4): auto-plays if allowed, then calls openHost on dismiss; otherwise calls openHost at once. */
   runBeforeHost(openHost: () => void, vars?: TutorialSceneProps['vars']): void;
+  /**
+   * For a task whose step-by-step guide plays INSIDE its host (E2, the
+   * post-job wizard): calls openHost at once, then queues the guide when it
+   * may auto-play (or always, with `replay`). The guide waits for its first
+   * control to show, so the host needs no head start.
+   */
+  runWithHost(openHost: () => void, vars?: TutorialSceneProps['vars'], options?: { replay?: boolean }): void;
   /** Replay from Help. Never records. */
   replay(vars?: TutorialSceneProps['vars']): void;
 }
@@ -37,4 +44,10 @@ export interface TutorialHandle {
 export interface UseTutorialOptions {
   /** K1.5 "has done the task": true = never auto-open; undefined = still loading (do not auto-open yet). */
   done: boolean | undefined;
+  /**
+   * The page's task has a step-by-step guide (`components/tutorials/guides`):
+   * `maybeAutoOpen` plays it instead of the slides. Help's Play still shows
+   * the slides. (`runWithHost` always plays the guide.)
+   */
+  walkthrough?: boolean;
 }

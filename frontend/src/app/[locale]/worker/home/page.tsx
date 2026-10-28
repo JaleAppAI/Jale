@@ -204,6 +204,9 @@ export default function WorkerHomePage() {
   const [savingCities, setSavingCities] = useState(false);
   const [cityVersion, setCityVersion] = useState(0);
   const [saveCitiesError, setSaveCitiesError] = useState<string | null>(null);
+  // Typed text in the city box that was never picked, and whether Done was refused for it.
+  const [citiesPending, setCitiesPending] = useState(false);
+  const [citiesRefused, setCitiesRefused] = useState(false);
   const [refreshNoticeDismissed, setRefreshNoticeDismissed] = useState(false);
   // Last list we know the server has. `preferredCities` is the draft the panel
   // edits in place; closing the panel without saving restores from here.
@@ -440,6 +443,15 @@ export default function WorkerHomePage() {
 
   async function saveCities() {
     if (!idToken) return;
+    // A city typed and never picked is not in the list: refuse Done rather
+    // than filter without it, and say why on the box. Focus stays where it
+    // is: back in the box, the suggestion list would reopen over Done, and a
+    // second tap there would pick a city nobody chose.
+    if (citiesPending) {
+      setCitiesRefused(true);
+      return;
+    }
+    setCitiesRefused(false);
     setSavingCities(true);
     setSaveCitiesError(null);
     try {
@@ -466,6 +478,7 @@ export default function WorkerHomePage() {
     // show the old chips while the server filters by the new list.
     if (savingCities) return;
     setSaveCitiesError(null);
+    setCitiesRefused(false);
     if (editingCities) {
       setPreferredCities(savedCitiesRef.current);
       setEditingCities(false);
@@ -642,7 +655,13 @@ export default function WorkerHomePage() {
           >
             {/* keyed so a save (or a cancel-then-reopen) remounts the field and
                 drops any typed-but-unpicked text — see CityMultiSelect docs */}
-            <CityMultiSelect key={cityVersion} value={preferredCities} onChange={setPreferredCities} />
+            <CityMultiSelect
+              key={cityVersion}
+              value={preferredCities}
+              onChange={setPreferredCities}
+              onPendingChange={setCitiesPending}
+              unpickedError={citiesRefused}
+            />
             <div className="flex items-center justify-end gap-3">
               {saveCitiesError && (
                 <p role="alert" className="text-xs font-medium text-[var(--jale-danger)]">

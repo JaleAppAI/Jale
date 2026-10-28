@@ -60,7 +60,9 @@ const WALKED_NAMESPACE_SIZES: Record<string, number> = {
     // WhatsApp instead.
     // 103 since sprint 28 (F19): the 22 `hired_card` keys of the hired
     // application's card (start details, Remind my employer, the message box).
-    worker_application_details: 103,
+    // 104 since the sprint 29 hotfix: `review.go_fix_details`, the "Go to
+    // Details" link Check & finish shows when a Details question is missing.
+    worker_application_details: 104,
     // 13 since sprint 29 (A7): `about_time` and the three `items.*` plurals,
     // so the banner can say what the employer asked for and how long it takes.
     'worker_applications.details_banner': 13,

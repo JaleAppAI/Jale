@@ -17,6 +17,7 @@ import type { HireDetails } from '@/lib/api/worker';
 import {
   HIRE_DETAILS_FIELDS,
   HIRE_DETAILS_LIMITS,
+  hasHireDetails,
   hireDetailsFormFrom,
   validateHireDetails,
   type HireDetailsField,
@@ -95,6 +96,8 @@ export function HireDetailsForm({
   const update = (field: HireDetailsField) => (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { value } = event.target;
     setForm((prev) => ({ ...prev, [field]: value }));
+    // "Fill in at least one box" is answered by filling one in.
+    if (value.trim() !== '') setFormError((current) => (current === t('error_empty') ? null : current));
     if (errors[field] !== undefined) {
       setErrors((prev) => {
         const next = { ...prev };
@@ -112,6 +115,16 @@ export function HireDetailsForm({
     if (!result.ok) {
       setFormError(null);
       showFieldErrors(result.errors);
+      return;
+    }
+    // Every box empty, with nothing saved before: the server would store
+    // nothing and the row would keep asking, so this is refused here and
+    // said, not reported as saved. Clearing details that WERE saved is a real
+    // change and still goes through.
+    if (!hasHireDetails(result.payload) && !hasHireDetails(initial)) {
+      setErrors({});
+      setFormError(t('error_empty'));
+      fieldRefs.current.start_date?.focus();
       return;
     }
     savingRef.current = true;

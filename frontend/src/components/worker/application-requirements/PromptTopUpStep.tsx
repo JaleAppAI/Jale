@@ -66,31 +66,38 @@ export function PromptTopUpStep({
         </p>
       </div>
 
-      {prompts.map((prompt) => {
-        const value = answers[prompt.id] ?? '';
-        return (
-          <PromptAnswerField
-            key={prompt.id}
-            question={prompt.text}
-            value={value}
-            touched={touched.has(prompt.id)}
-            disabled={saving}
-            onChange={(text) => set(prompt.id, text)}
-            labels={{
-              placeholder: tApply('placeholder'),
-              chars: tApply('chars', { count: value.trim().length, max: MAX_PROMPT_ANSWER_CHARS }),
-              tooLong: tApply('too_long', { max: MAX_PROMPT_ANSWER_CHARS }),
-              blankHint: tApply('blank_hint'),
-            }}
-          />
-        );
-      })}
+      {/* One box per question. The step-by-step guide points at each one in
+          turn (`details.prompt.<n>`): ten boxes together would not fit a
+          phone screen. */}
+      <div className="grid gap-5" data-guide="details.prompts">
+        {prompts.map((prompt, index) => {
+          const value = answers[prompt.id] ?? '';
+          return (
+            <div key={prompt.id} data-guide={`details.prompt.${index + 1}`}>
+              <PromptAnswerField
+                question={prompt.text}
+                value={value}
+                touched={touched.has(prompt.id)}
+                disabled={saving}
+                onChange={(text) => set(prompt.id, text)}
+                labels={{
+                  placeholder: tApply('placeholder'),
+                  chars: tApply('chars', { count: value.trim().length, max: MAX_PROMPT_ANSWER_CHARS }),
+                  tooLong: tApply('too_long', { max: MAX_PROMPT_ANSWER_CHARS }),
+                  blankHint: tApply('blank_hint'),
+                }}
+              />
+            </div>
+          );
+        })}
+      </div>
 
       {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
 
       <Button
         className="w-full"
         size="lg"
+        data-guide="details.prompts.save"
         disabled={!canSubmit}
         loading={saving}
         loadingLabel={tCommon('loading')}

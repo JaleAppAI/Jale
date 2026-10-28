@@ -24,7 +24,8 @@ import { handler as reassign } from './employer-team-job-reassign';
  *   POST /employer/team/membership   start my own company (a login with no company)
  *
  * One resource instead of one per route keeps JaleApiStack under its
- * 470-resource gate (`lambda/lib/path-dispatch.ts`). Membership was folded in
+ * resource gate (`lambda/lib/path-dispatch.ts`; 480 since 2026-10-27, raised
+ * temporarily from 470 until the JaleApiStack split). Membership was folded in
  * here for the same reason (467 of 470 with it; 473 as its own resource).
  *
  * The feature flag is checked FIRST: with TEAM_MANAGEMENT_ENABLED anything but

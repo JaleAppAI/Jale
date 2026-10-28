@@ -659,7 +659,8 @@ describe('BillingStack', () => {
     });
 
     // Membership is served by the team dispatcher (/employer/team/membership),
-    // not by a resource of its own: JaleApiStack's 470-resource gate.
+    // not by a resource of its own: JaleApiStack's resource gate (CEILING in
+    // api-stack-resource-ceiling.test.ts).
     const membership = Object.values(apiTemplate.findResources('AWS::ApiGateway::Resource'))
       .filter((resource: any) => resource.Properties.PathPart === 'membership');
     expect(membership).toEqual([]);
