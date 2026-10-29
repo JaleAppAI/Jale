@@ -20,9 +20,9 @@
  *   - templates are a company asset: B sees A's template but cannot edit or
  *     delete it; the owner can;
  *   - a stranger company is refused every one of foreman A's resources;
- *   - a suspended or removed foreman is answered 403 membership_inactive on
- *     every route, their own resources included, while the owner still lists
- *     and reads their jobs.
+ *   - a suspended or removed foreman is answered 403 membership_inactive
+ *     (with their membershipStatus since Phase 3) on every route, their own
+ *     resources included, while the owner still lists and reads their jobs.
  *
  * Every case builds the rows it touches, and every assertion on stored state
  * reads through the superuser, before and after, inside the case. Twilio is
@@ -109,9 +109,9 @@ function refused(res: ParsedResponse, error: Refusal): void {
   expect({ statusCode: res.statusCode, error: res.body?.error }).toEqual({ statusCode: REFUSAL_STATUS[error], error });
 }
 
-/** The wall resolveEmployerActor puts in front of every route for a member who is not active. */
-function membershipInactive(res: ParsedResponse): void {
-  expect(res).toEqual({ statusCode: 403, body: { error: 'membership_inactive' } });
+/** The wall resolveEmployerActor puts in front of every route for a member who is not active, with their status. */
+function membershipInactive(res: ParsedResponse, membershipStatus: 'suspended' | 'removed'): void {
+  expect(res).toEqual({ statusCode: 403, body: { error: 'membership_inactive', membershipStatus } });
 }
 
 function ids(res: ParsedResponse): string[] {
@@ -409,19 +409,19 @@ describeInProfiles(['standard', 'request'], 'one company, two foremen, through t
       const conversationBefore = await conversationRow(t.conversationId);
       const templateBefore = await templateRow(template);
 
-      membershipInactive(await call(listJobs, member, {}));
-      membershipInactive(await call(jobDetail, member, { pathParameters: { jobId: t.job.id } }));
-      membershipInactive(await call(jobUpdate, member, { httpMethod: 'PATCH', pathParameters: { jobId: t.job.id }, body: { status: 'closed' } }));
-      membershipInactive(await call(jobUpdate, member, { httpMethod: 'PATCH', pathParameters: { jobId: t.job.id }, body: jobEdit('Inactive edit') }));
+      membershipInactive(await call(listJobs, member, {}), memberStatus);
+      membershipInactive(await call(jobDetail, member, { pathParameters: { jobId: t.job.id } }), memberStatus);
+      membershipInactive(await call(jobUpdate, member, { httpMethod: 'PATCH', pathParameters: { jobId: t.job.id }, body: { status: 'closed' } }), memberStatus);
+      membershipInactive(await call(jobUpdate, member, { httpMethod: 'PATCH', pathParameters: { jobId: t.job.id }, body: jobEdit('Inactive edit') }), memberStatus);
       membershipInactive(await call(statusUpdate, member, {
         httpMethod: 'PATCH', pathParameters: { jobId: t.job.id, workerId: t.worker.id }, body: { status: 'contacted' },
-      }));
+      }), memberStatus);
       membershipInactive(await call(convSend, member, {
         httpMethod: 'POST', pathParameters: { conversationId: t.conversationId }, body: { body: 'from an inactive member' },
-      }));
+      }), memberStatus);
       membershipInactive(await call(saveTemplate, member, {
         httpMethod: 'POST', body: { id: template, name: 'Inactive rename', payload: TEMPLATE_PAYLOAD },
-      }));
+      }), memberStatus);
 
       expect(await jobRow(t.job.id)).toEqual(jobBefore);
       expect(await applicationRow(t.applicationId)).toEqual(applicationBefore);

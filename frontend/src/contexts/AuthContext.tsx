@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { usePathname } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { getAuthBridge, registerAuthBridge, type RefreshOutcome } from '@/lib/auth-bridge';
+import { clearPendingInvite } from '@/lib/employer-profile-flush';
 import { buildLoginUrl } from '@/lib/login-url';
 import { clearReportBuffers } from '@/lib/report/context';
 import {
@@ -333,6 +334,9 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         // (the other tab removed it, which is how this fired), and going
         // through here is what announces it and drops this role's chip cache.
         clearSession(role);
+        // This tab's stored invite token goes with the employer's sign-out
+        // (see `logout`).
+        if (role === 'employer') clearPendingInvite();
         setSettledFor(role);
         setIsLoading(false);
         const { pathname, search } = window.location;
@@ -358,6 +362,15 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
             body: JSON.stringify({ accessToken, refreshToken, userType }),
         }).catch(() => {});
         clearSession(userType ?? undefined);
+        // Phase 3 (M5): a stored invite token is a live bearer credential; on
+        // a shared device it must not outlast an employer's sign-out. Only on
+        // a SIGN-OUT (here and another tab's, above), not in `clearSession`:
+        // a refused or expired token also ends up there, and on the invite
+        // page that would drop the token its legal-wall return (and a reload)
+        // reads back, after the address bar already lost it. A worker
+        // sign-out leaves it: an employer invite is not the worker's.
+        // `clearPendingInvite` swallows a storage that is out of reach.
+        if (userType !== 'worker') clearPendingInvite();
         window.location.href = `/${locale}/`;
     };
 

@@ -21,6 +21,7 @@
 import { ApiError, BLOCKING_JOBS_LIMIT } from './api/errors';
 import { EMPLOYER_PRO_PLAN_CODE } from './api/employer';
 import type { EmployerBilling, Job } from './api/employer';
+import { isTeamManagementEnabled } from './feature-flags';
 
 /** Re-exported so callers read the display cap off the model's own module. */
 export { BLOCKING_JOBS_LIMIT };
@@ -44,7 +45,15 @@ export type PlanLimitModel = {
     | 'limit_dialog.body_jobs_preflight'
     | 'limit_dialog.body_jobs_zero'
     | 'limit_dialog.body_templates'
-    | 'limit_dialog.body_templates_zero';
+    // Phase 3: `body_templates` without "or upgrade", for a Pro owner.
+    | 'limit_dialog.body_templates_no_upgrade'
+    // Phase 3: a foreman deletes only templates they created; the count is the company's.
+    | 'limit_dialog.body_templates_foreman'
+    | 'limit_dialog.body_templates_zero'
+    // Phase 3: a foreman cannot change the plan, so they are told who can.
+    | 'limit_dialog.foreman_body'
+    // Phase 3: the same on a Pro company, where there is nothing to upgrade to.
+    | 'limit_dialog.foreman_body_pro';
   bodyParams: { limit: number; used: number };
   /**
    * null when the backend named a plan the catalog copy does not cover.
@@ -58,8 +67,22 @@ export type PlanLimitModel = {
   /** At most BLOCKING_JOBS_LIMIT, oldest first. `[]` is legitimate. */
   blockingJobs: readonly BlockingJob[];
   overflowCount: number;
-  hintKey: 'limit_dialog.hint_jobs' | 'limit_dialog.hint_templates';
+  hintKey:
+    | 'limit_dialog.hint_jobs'
+    | 'limit_dialog.hint_templates'
+    // Phase 3: an owner already on the highest plan is pointed at freeing a slot.
+    | 'limit_dialog.pro_owner_hint';
   ctas: readonly PlanLimitCta[];
+};
+
+/**
+ * Who is reading the dialog (Phase 3). `role` null or absent is the owner, as
+ * for an API from before companies; `planCode` is the company's current plan.
+ * Leaving the whole audience out keeps the Phase 2 model exactly.
+ */
+export type PlanLimitAudience = {
+  role?: 'owner' | 'foreman' | null;
+  planCode?: string | null;
 };
 
 const EMPLOYER_FREE_PLAN_CODE = 'employer_free';
@@ -86,6 +109,66 @@ const MANAGE_TEMPLATES_CTA: PlanLimitCta = {
 // job they were posting can pause an old one without reaching for a card.
 const JOBS_CTAS: readonly PlanLimitCta[] = [PAUSE_JOB_CTA, UPGRADE_CTA];
 const TEMPLATES_CTAS: readonly PlanLimitCta[] = [MANAGE_TEMPLATES_CTA, UPGRADE_CTA];
+
+/**
+ * The model as its reader may act on it. "Upgrade plan" is a dead end for two
+ * readers: a foreman (only the owner pays; the API answers 403 owner_required)
+ * and an owner already on Pro (there is no higher plan). Both lose the CTA.
+ * Every other reader, and a call without an audience, gets the model unchanged.
+ *
+ * The bodies:
+ * - A foreman, active jobs: on a Free company, `foreman_body` ("ask your owner
+ *   to upgrade" -- the owner can); on a Pro company, `foreman_body_pro`
+ *   ("pause or close one of your jobs, or ask your owner to free a slot").
+ * - A foreman, templates: `body_templates_foreman`. A foreman can delete only
+ *   the templates they created (employer-templates-delete.ts answers 403
+ *   `forbidden` for any other), while the limit counts the company's: "delete
+ *   one you created, or ask your owner". With a zero limit there is nothing to
+ *   delete, so `body_templates_zero` ("your plan doesn't include them") stays.
+ * - A Pro owner: no body says "upgrade". Every active-jobs body becomes
+ *   `body_jobs` (the preflight and zero-limit ones both end in an upgrade),
+ *   `body_templates` becomes `body_templates_no_upgrade`, and
+ *   `body_templates_zero` stays (it never mentions upgrading).
+ *
+ * The hint: a Pro owner's active-jobs hint is `pro_owner_hint`; a template
+ * limit keeps `hint_templates`, since pausing a job frees no template slot.
+ * A foreman keeps the kind's own hint.
+ */
+function forAudience(model: PlanLimitModel, audience: PlanLimitAudience | undefined): PlanLimitModel {
+  if (!audience || upgradeOffered(audience)) return model;
+  const withoutUpgrade = model.ctas.filter((cta) => cta.kind !== 'upgrade');
+  if (audience.role === 'foreman') {
+    const bodyKey: PlanLimitModel['bodyKey'] = model.kind === 'templates'
+      ? (model.bodyKey === 'limit_dialog.body_templates' ? 'limit_dialog.body_templates_foreman' : model.bodyKey)
+      : (isProPlan(audience.planCode) ? 'limit_dialog.foreman_body_pro' : 'limit_dialog.foreman_body');
+    return { ...model, bodyKey, ctas: withoutUpgrade };
+  }
+  if (model.kind === 'templates') {
+    return {
+      ...model,
+      bodyKey: model.bodyKey === 'limit_dialog.body_templates' ? 'limit_dialog.body_templates_no_upgrade' : model.bodyKey,
+      ctas: withoutUpgrade,
+    };
+  }
+  return { ...model, bodyKey: 'limit_dialog.body_jobs', hintKey: 'limit_dialog.pro_owner_hint', ctas: withoutUpgrade };
+}
+
+function isProPlan(planCode: unknown): boolean {
+  return planCode === EMPLOYER_PRO_PLAN_CODE;
+}
+
+/**
+ * Whether "upgrade" is something this reader can act on: not for a foreman
+ * (only the owner pays) nor for an owner already on Pro (there is no higher
+ * plan). No audience -- the team flag off -- is Phase 2: always offered. Every
+ * upgrade link outside the dialog (the templates page's note, the posted
+ * panel, the dashboard meter) follows the same rule.
+ */
+export function upgradeOffered(audience: PlanLimitAudience | undefined): boolean {
+  if (!audience) return true;
+  if (audience.role === 'foreman') return false;
+  return !isProPlan(audience.planCode);
+}
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -144,6 +227,32 @@ export function blockingJobsFrom(
     .map((row) => ({ id: row.id, title: row.title }));
 }
 
+/** A reached saved-template limit, before `forAudience`. */
+function templatesModel(limit: number, planNameKey: PlanLimitModel['planNameKey']): PlanLimitModel {
+  return {
+    kind: 'templates',
+    // The cap is reached by definition, so "used" is the cap itself -- the
+    // backend does not send a separate count (employer-templates-save.ts:175).
+    bodyKey: limit === 0 ? 'limit_dialog.body_templates_zero' : 'limit_dialog.body_templates',
+    bodyParams: { limit, used: limit },
+    planNameKey,
+    blockingJobs: [],
+    // No jobs are named for a template limit, so there is nothing to overflow.
+    overflowCount: 0,
+    hintKey: 'limit_dialog.hint_templates',
+    ctas: TEMPLATES_CTAS,
+  };
+}
+
+/**
+ * The template-limit model for a page that knows the limit is reached without
+ * a 403 (the templates page's at-limit note), so the note and the save
+ * dialog's body come from the same decision. `audience.planCode` is the plan.
+ */
+export function templateLimitModel(limit: number, audience?: PlanLimitAudience): PlanLimitModel {
+  return forAudience(templatesModel(limit, planNameKeyFor(audience?.planCode)), audience);
+}
+
 /**
  * The dialog model for a reached plan limit, or null for anything else.
  *
@@ -152,32 +261,26 @@ export function blockingJobsFrom(
  * `blocking_jobs` list wins over the derived one when the backend starts
  * sending it -- the server knows the authoritative set, the client is guessing
  * from whatever page data it happens to hold.
+ *
+ * `audience` (Phase 3) is the reader's role and the company's plan; see
+ * `forAudience`. Callers pass it only with the team flag on.
  */
 export function planLimitModel(
   err: unknown,
   jobs?: ReadonlyArray<Pick<Job, 'id' | 'title' | 'status' | 'created_at'>> | null,
+  audience?: PlanLimitAudience,
 ): PlanLimitModel | null {
   if (!(err instanceof ApiError)) return null;
   if (err.code !== 'job_limit_reached' && err.code !== 'template_limit_reached') return null;
 
   const payload = err.payload ?? {};
   const planNameKey = planNameKeyFor(payload.plan_code);
+  // A caller that does not know the plan (its billing read failed) still gets
+  // the Pro reading from the plan the 403 itself names.
+  const reader = audience && { ...audience, planCode: audience.planCode ?? payload.plan_code ?? null };
 
   if (err.code === 'template_limit_reached') {
-    const limit = payload.template_limit ?? 0;
-    return {
-      kind: 'templates',
-      // The cap is reached by definition, so "used" is the cap itself -- the
-      // backend does not send a separate count (employer-templates-save.ts:175).
-      bodyKey: limit === 0 ? 'limit_dialog.body_templates_zero' : 'limit_dialog.body_templates',
-      bodyParams: { limit, used: limit },
-      planNameKey,
-      blockingJobs: [],
-      // No jobs are named for a template limit, so there is nothing to overflow.
-      overflowCount: 0,
-      hintKey: 'limit_dialog.hint_templates',
-      ctas: TEMPLATES_CTAS,
-    };
+    return forAudience(templatesModel(payload.template_limit ?? 0, planNameKey), reader);
   }
 
   const limit = payload.active_job_limit ?? 0;
@@ -187,7 +290,7 @@ export function planLimitModel(
     ? fromPayload.slice(0, BLOCKING_JOBS_LIMIT).map((row) => ({ id: row.id, title: row.title }))
     : blockingJobsFrom(jobs);
 
-  return {
+  return forAudience({
     kind: 'active_jobs',
     bodyKey: limit === 0 ? 'limit_dialog.body_jobs_zero' : 'limit_dialog.body_jobs',
     bodyParams: { limit, used },
@@ -198,7 +301,7 @@ export function planLimitModel(
     overflowCount: Math.max(0, used - blockingJobs.length),
     hintKey: 'limit_dialog.hint_jobs',
     ctas: JOBS_CTAS,
-  };
+  }, reader);
 }
 
 /**
@@ -215,6 +318,29 @@ export function companyActiveJobCount(
 ): number {
   const others = billing?.otherMembersActiveJobs;
   return activeCount + (typeof others === 'number' && Number.isInteger(others) && others > 0 ? others : 0);
+}
+
+/**
+ * The company's saved templates, as counted against `templateLimit` (Phase 3:
+ * `billing.templateUsage`, company-wide), kept live against the page's list.
+ *
+ * `templateUsage` is read once, with the page; the list is what a save or a
+ * delete updates. So the count is the list now plus the templates billing
+ * counted that the list did not hold when billing was read
+ * (`listedWhenBillingRead`, by default the list now): a delete frees its slot
+ * at once, as it did when the list was the whole count. A missing, negative or
+ * non-integer `templateUsage` (an API from before Phase 2) gives the list
+ * count, and with no list either, null.
+ */
+export function companyTemplateCount(
+  billing: Pick<EmployerBilling, 'templateUsage'> | null | undefined,
+  listed: number | null,
+  listedWhenBillingRead: number | null = listed,
+): number | null {
+  const usage = billing?.templateUsage;
+  if (typeof usage !== 'number' || !Number.isInteger(usage) || usage < 0) return listed;
+  if (listed === null || listedWhenBillingRead === null) return usage;
+  return listed + Math.max(0, usage - listedWhenBillingRead);
 }
 
 /**
@@ -247,11 +373,17 @@ export function companyActiveJobCount(
  * derives from the live jobs list, which is also the number `PlanUsageMeter`
  * shows the employer in the same panel. Since Phase 2 both add
  * `billing.otherMembersActiveJobs`, the company's active jobs that list cannot show.
+ *
+ * `audience` (Phase 3) defaults, with the team flag on, to the one `billing`
+ * itself names (`role`, `planCode`), so a caller that only hands over billing
+ * still tells a foreman to ask the owner. With the flag off there is no
+ * default and the model is Phase 2's.
  */
 export function activeJobsPreflightModel(
-  billing: Pick<EmployerBilling, 'planCode' | 'activeJobLimit' | 'otherMembersActiveJobs'> | null | undefined,
+  billing: Pick<EmployerBilling, 'planCode' | 'activeJobLimit' | 'otherMembersActiveJobs' | 'role'> | null | undefined,
   activeCount: number,
   jobs?: ReadonlyArray<Pick<Job, 'id' | 'title' | 'status' | 'created_at'>> | null,
+  audience?: PlanLimitAudience,
 ): PlanLimitModel | null {
   if (!billing) return null;
   const limit = billing.activeJobLimit;
@@ -265,7 +397,7 @@ export function activeJobsPreflightModel(
 
   const blockingJobs = blockingJobsFrom(jobs);
 
-  return {
+  return forAudience({
     kind: 'active_jobs',
     // A plan with no postings at all is not "you have used them up" -- it is
     // "this plan does not include the thing", which is `body_jobs_zero`'s job
@@ -277,7 +409,7 @@ export function activeJobsPreflightModel(
     overflowCount: Math.max(0, used - blockingJobs.length),
     hintKey: 'limit_dialog.hint_jobs',
     ctas: JOBS_CTAS,
-  };
+  }, audience ?? (isTeamManagementEnabled() ? { role: billing.role ?? null, planCode: billing.planCode } : undefined));
 }
 
 // ---------------------------------------------------------------------------

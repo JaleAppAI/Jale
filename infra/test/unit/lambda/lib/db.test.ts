@@ -177,6 +177,37 @@ describe('DB Utility', () => {
       expect(pool).toBeDefined();
     });
 
+    it('sets no session timeouts unless the Lambda asks for them', async () => {
+      mockSend.mockResolvedValue({ SecretString: JSON.stringify(mockSecret) });
+
+      await db.getDbPool();
+      const config = (Pool as unknown as jest.Mock).mock.calls[0][0];
+      expect(config).not.toHaveProperty('statement_timeout');
+      expect(config).not.toHaveProperty('lock_timeout');
+    });
+
+    it('passes DB_STATEMENT_TIMEOUT_MS and DB_LOCK_TIMEOUT_MS to the pool as session settings', async () => {
+      mockSend.mockResolvedValue({ SecretString: JSON.stringify(mockSecret) });
+      process.env.DB_STATEMENT_TIMEOUT_MS = '5000';
+      process.env.DB_LOCK_TIMEOUT_MS = '3000';
+
+      await db.getDbPool();
+      expect(Pool).toHaveBeenCalledWith(expect.objectContaining({
+        statement_timeout: 5000,
+        lock_timeout: 3000,
+      }));
+    });
+
+    it.each(['0', '-1', '1.5', 'abc', '60001', ' '])(
+      'refuses a session timeout of %p before reading any secret',
+      async (value) => {
+        process.env.DB_LOCK_TIMEOUT_MS = value;
+        await expect(db.getDbPool()).rejects.toThrow('DB_TIMEOUT_INVALID: DB_LOCK_TIMEOUT_MS');
+        expect(mockSend).not.toHaveBeenCalled();
+        expect(Pool).not.toHaveBeenCalled();
+      },
+    );
+
     it('should return the exact same pool instance on subsequent calls', async () => {
       mockSend.mockResolvedValue({ SecretString: JSON.stringify(mockSecret) });
 

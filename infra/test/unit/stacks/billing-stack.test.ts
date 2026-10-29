@@ -6,8 +6,71 @@ import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
 import { AiStack } from '../../../lib/stacks/ai-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
-import { BillingStack, validateBillingEmailConfiguration } from '../../../lib/stacks/billing-stack';
+import { BillingStack, resolveInviteSiteBaseUrl, validateBillingEmailConfiguration } from '../../../lib/stacks/billing-stack';
 import { dbLoginSecretName } from '../../../lib/constructs/db-login-secrets';
+
+// Phase 3's team Lambdas (Task 11), by description.
+const TEAM_DESCRIPTION = "Employer team: owner operations and the caller's membership";
+const LOOKUP_DESCRIPTION = 'Public employer invite lookup by token';
+const ACCEPT_DESCRIPTION = 'Accepts an employer invite for the signed-in login';
+const TEAM_LAMBDA_DESCRIPTIONS = [TEAM_DESCRIPTION, LOOKUP_DESCRIPTION, ACCEPT_DESCRIPTION];
+
+/**
+ * Every Cognito grant in a BillingStack template. Exactly four roles: the
+ * processor and the sync (billing suspend/restore, catch-up), and the team
+ * dispatcher and the accept (invite, revoke, remove, rejoin). The public
+ * invite lookup gets none. Run against a flag-off AND a flag-on synth: the
+ * processor and the sync are not gated on teamManagementEnabled, because a
+ * rollback (flag off) relies on them still converging Cognito.
+ */
+function expectExactlyTheFourCognitoGrants(template: Template): void {
+  const grants: { roles: string; statement: any }[] = [];
+  for (const policy of Object.values(template.findResources('AWS::IAM::Policy')) as any[]) {
+    for (const statement of policy.Properties.PolicyDocument.Statement) {
+      if (JSON.stringify(statement.Action).includes('cognito-idp:')) {
+        grants.push({ roles: JSON.stringify(policy.Properties.Roles), statement });
+      }
+    }
+  }
+  expect(grants).toHaveLength(4);
+  expect(grants.map((g) => g.roles).sort()).toEqual([
+    expect.stringMatching(/"Ref":"BillingProcessorLambda/),
+    expect.stringMatching(/"Ref":"EmployerInviteAcceptLambda/),
+    expect.stringMatching(/"Ref":"EmployerTeamLambda/),
+    expect.stringMatching(/"Ref":"MemberAccessSyncLambda/),
+  ]);
+  for (const { statement } of grants) {
+    expect(statement.Effect).toBe('Allow');
+    expect([...statement.Action].sort()).toEqual([
+      'cognito-idp:AdminDisableUser',
+      'cognito-idp:AdminEnableUser',
+      'cognito-idp:AdminGetUser',
+      'cognito-idp:AdminUserGlobalSignOut',
+    ]);
+    // One resource: the employer pool's ARN, imported from the auth stack.
+    expect(Array.isArray(statement.Resource)).toBe(false);
+    const resource = JSON.stringify(statement.Resource);
+    expect(resource).toMatch(/Fn::ImportValue/);
+    expect(resource).toMatch(/EmployerPoolUserPool[0-9A-F]+Arn/);
+    expect(resource).not.toMatch(/WorkerPool/);
+    expect(resource).not.toContain('*');
+  }
+}
+
+describe('invite site base URL', () => {
+  test('is the https origin without a trailing slash', () => {
+    expect(resolveInviteSiteBaseUrl('https://jaleapp.ai')).toBe('https://jaleapp.ai');
+    expect(resolveInviteSiteBaseUrl('https://jaleapp.ai//')).toBe('https://jaleapp.ai');
+    expect(resolveInviteSiteBaseUrl(' https://staging.jaleapp.ai ')).toBe('https://staging.jaleapp.ai');
+  });
+
+  test.each(['', '   ', 'http://jaleapp.ai', 'jaleapp.ai', 'ftp://jaleapp.ai', 'not a url'])(
+    'fails the synth for %p: invite links must be https',
+    (value) => {
+      expect(() => resolveInviteSiteBaseUrl(value)).toThrow(/BillingStack requires an https publicSiteBaseUrl/);
+    },
+  );
+});
 
 describe('billing email configuration', () => {
   test('requires both sender values and rejects missing or partial configuration', () => {
@@ -29,6 +92,7 @@ describe('billing email configuration', () => {
 describe('BillingStack', () => {
   let template: Template;
   let dbTemplate: Template;
+  let apiTemplate: Template;
 
   beforeAll(() => {
     const app = new cdk.App({
@@ -79,9 +143,14 @@ describe('BillingStack', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+      employerUserPoolId: auth.employerPool.userPool.userPoolId,
+      employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
+      teamManagementEnabled: false,
+      publicSiteBaseUrl: 'https://jaleapp.ai',
     });
     template = Template.fromStack(app.node.findChild('TestBillingStack') as cdk.Stack);
     dbTemplate = Template.fromStack(database);
+    apiTemplate = Template.fromStack(api);
   });
 
   /**
@@ -261,16 +330,20 @@ describe('BillingStack', () => {
       });
     }
 
-    for (const [alarmName, functionIdPrefix] of [
-      ['BillingWebhookLambdaErrors', 'BillingWebhookLambda'],
-      ['BillingProcessorLambdaErrors', 'BillingProcessorLambda'],
-    ]) {
+    for (const [alarmName, functionIdPrefix, period] of [
+      ['BillingWebhookLambdaErrors', 'BillingWebhookLambda', 300],
+      ['BillingProcessorLambdaErrors', 'BillingProcessorLambda', 300],
+      // The sync runs every 15 minutes: a 30-minute period always holds at
+      // least one run, so a persistent failure stays in ALARM instead of
+      // flapping ALARM -> OK (and paging) between runs.
+      ['MemberAccessSyncLambdaErrors', 'MemberAccessSyncLambda', 1800],
+    ] as const) {
       template.hasResourceProperties('AWS::CloudWatch::Alarm', {
         AlarmName: alarmName,
         Namespace: 'AWS/Lambda',
         MetricName: 'Errors',
         Statistic: 'Sum',
-        Period: 300,
+        Period: period,
         Threshold: 1,
         EvaluationPeriods: 1,
         ComparisonOperator: 'GreaterThanOrEqualToThreshold',
@@ -407,6 +480,326 @@ describe('BillingStack', () => {
     expect(getBillingArn).not.toEqual(processorArn);
     expect(checkoutArn).not.toEqual(processorArn);
     expect(portalArn).not.toEqual(processorArn);
+  });
+
+  // ── Phase 3: Cognito follows billing; the member-access sync ────────────
+
+  const PROCESSOR_DESCRIPTION = 'Processes verified Stripe webhook events from SQS';
+  const SYNC_DESCRIPTION = 'Converges employer Cognito sign-in with team membership every 15 minutes';
+
+  function lambdaByDescription(description: string): { id: string; props: any } {
+    const fns = Object.entries(template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: description },
+    }));
+    expect(fns).toHaveLength(1);
+    return { id: fns[0][0], props: (fns[0][1] as any).Properties };
+  }
+
+  // One test for every Cognito grant in the stack. Exactly four roles:
+  // the processor and the sync (billing suspend/restore, catch-up), and the
+  // team dispatcher and the accept (invite, revoke, remove, rejoin). The
+  // invite lookup is public and gets none. The processor and the sync are
+  // NOT gated on teamManagementEnabled: this harness has the flag off, and a
+  // rollback (flag off) relies on them still converging Cognito.
+  test('only the team and accept Lambdas get the Cognito admin actions, scoped to the employer pool ARN (with the processor and the sync; flag off here)', () => {
+    expectExactlyTheFourCognitoGrants(template);
+  });
+
+  test('the sync runs every 15 minutes', () => {
+    const sync = lambdaByDescription(SYNC_DESCRIPTION);
+    const rules = Object.values(template.findResources('AWS::Events::Rule', {
+      Properties: { ScheduleExpression: 'rate(15 minutes)' },
+    })) as any[];
+    expect(rules).toHaveLength(1);
+    expect(rules[0].Properties.Targets).toEqual([
+      expect.objectContaining({
+        Arn: { 'Fn::GetAtt': [sync.id, 'Arn'] },
+        // The next run is the retry: EventBridge does not retry the target...
+        RetryPolicy: { MaximumRetryAttempts: 0 },
+      }),
+    ]);
+    expect(sync.id).toMatch(/^MemberAccessSyncLambda/);
+    // ...and Lambda does not retry the async invocation.
+    template.hasResourceProperties('AWS::Lambda::EventInvokeConfig', {
+      FunctionName: { Ref: sync.id },
+      MaximumRetryAttempts: 0,
+    });
+  });
+
+  test('the sync runs in the VPC with the billing security group, like the processor', () => {
+    const sync = lambdaByDescription(SYNC_DESCRIPTION).props.VpcConfig;
+    const processor = lambdaByDescription(PROCESSOR_DESCRIPTION).props.VpcConfig;
+    expect(sync.SecurityGroupIds).toHaveLength(1);
+    expect(JSON.stringify(sync.SecurityGroupIds)).toMatch(/BillingLambdaSg/);
+    expect(sync.SecurityGroupIds).toEqual(processor.SecurityGroupIds);
+    expect(sync.SubnetIds).toEqual(processor.SubnetIds);
+  });
+
+  test('the sync role can read the jale/billing/db secret', () => {
+    const billingSecretIds = Object.keys(dbTemplate.findResources('AWS::SecretsManager::Secret', {
+      Properties: { Name: 'jale/billing/db' },
+    }));
+    expect(billingSecretIds).toHaveLength(1);
+    const syncPolicies = (Object.values(template.findResources('AWS::IAM::Policy')) as any[])
+      .filter((policy) => JSON.stringify(policy.Properties.Roles).includes('"Ref":"MemberAccessSyncLambda'));
+    const readsSecret = syncPolicies
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement)
+      .some((statement: any) => JSON.stringify(statement.Action).includes('secretsmanager:GetSecretValue')
+        && JSON.stringify(statement.Resource).includes(billingSecretIds[0]));
+    expect(readsSecret).toBe(true);
+  });
+
+  test('the employer pool being unusable from the sync alarms to the ops topic, with recovery', () => {
+    const filters = Object.values(template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: '?"member_access_pool_unavailable" ?"member_access_pool_missing"' },
+    })) as any[];
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties.LogGroupName).toEqual({ Ref: expect.stringMatching(/^MemberAccessSyncLambda/) });
+    expect(filters[0].Properties.MetricTransformations).toEqual([expect.objectContaining({
+      MetricNamespace: 'Jale/Billing', MetricName: 'MemberAccessPoolUnavailable', MetricValue: '1',
+    })]);
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'MemberAccessPoolUnavailable',
+      Namespace: 'Jale/Billing',
+      MetricName: 'MemberAccessPoolUnavailable',
+      Statistic: 'Sum',
+      // Two 15-minute sync runs per period: a broken pool stays in ALARM.
+      Period: 1800,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: Match.anyValue(),
+      OKActions: Match.anyValue(),
+    });
+  });
+
+  test('a saturated sync publishes a metric on the sync log group and has no alarm', () => {
+    const filters = Object.values(template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: '"member_access_sync_saturated"' },
+    })) as any[];
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties.LogGroupName).toEqual({ Ref: expect.stringMatching(/^MemberAccessSyncLambda/) });
+    expect(filters[0].Properties.MetricTransformations).toEqual([expect.objectContaining({
+      MetricNamespace: 'Jale/Billing', MetricName: 'MemberAccessSyncSaturated', MetricValue: '1',
+    })]);
+    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm')) as any[];
+    expect(alarms.filter((alarm) => alarm.Properties.MetricName === 'MemberAccessSyncSaturated')).toEqual([]);
+  });
+
+  test('both get EMPLOYER_USER_POOL_ID', () => {
+    for (const description of [PROCESSOR_DESCRIPTION, SYNC_DESCRIPTION]) {
+      const poolId = JSON.stringify(lambdaByDescription(description).props.Environment.Variables.EMPLOYER_USER_POOL_ID);
+      expect(poolId).toMatch(/Fn::ImportValue/);
+      expect(poolId).toMatch(/EmployerPoolUserPool[0-9A-F]+/);
+      expect(poolId).not.toMatch(/WorkerPool/);
+    }
+  });
+
+  test('the sync connects as the billing service login, as the processor does, with no Stripe key', () => {
+    const sync = lambdaByDescription(SYNC_DESCRIPTION);
+    expect(sync.props.Environment.Variables.DB_EXPECTED_LOGIN).toBe('jale_billing');
+    expect(dbSecretArnFor(SYNC_DESCRIPTION)).toEqual(dbSecretArnFor(PROCESSOR_DESCRIPTION));
+    expect(sync.props.Environment.Variables).not.toHaveProperty('STRIPE_SECRET_ARN');
+  });
+
+  // ── Phase 3 team routes (Task 11) ─────────────────────────────────────────
+
+  /** Logical id of the ApiStack resource `pathPart` under `parent` ('ROOT' for the API root). */
+  function apiChild(parent: string, pathPart: string): string {
+    const matches = Object.entries(apiTemplate.findResources('AWS::ApiGateway::Resource'))
+      .filter(([, resource]: [string, any]) => {
+        const parentId = resource.Properties.ParentId;
+        const parentMatches = parent === 'ROOT' ? parentId['Fn::GetAtt'] !== undefined : parentId.Ref === parent;
+        return parentMatches && resource.Properties.PathPart === pathPart;
+      });
+    expect(matches).toHaveLength(1);
+    return matches[0][0];
+  }
+
+  /** Method -> { auth, lambda } for every method on one ApiStack resource. */
+  function methodsOn(resourceId: string): Record<string, { auth: string; target: string }> {
+    const methods: Record<string, { auth: string; target: string }> = {};
+    for (const method of Object.values(apiTemplate.findResources('AWS::ApiGateway::Method')) as any[]) {
+      if (method.Properties.ResourceId?.Ref !== resourceId) continue;
+      const auth = method.Properties.AuthorizationType === 'COGNITO_USER_POOLS'
+        ? `COGNITO:${method.Properties.AuthorizerId.Ref.replace(/[0-9A-F]{8}$/, '')}`
+        : method.Properties.AuthorizationType;
+      const uri = JSON.stringify(method.Properties.Integration?.Uri ?? '');
+      const target = /EmployerTeamLambda/.test(uri) ? 'team'
+        : /EmployerInviteLookupLambda/.test(uri) ? 'lookup'
+          : /EmployerInviteAcceptLambda/.test(uri) ? 'accept'
+            : method.Properties.Integration?.Type;
+      methods[method.Properties.HttpMethod] = { auth, target };
+    }
+    return methods;
+  }
+
+  test('creates the four resources with the methods and authorization in the table', () => {
+    const employer = apiChild('ROOT', 'employer');
+    const team = apiChild(employer, 'team');
+    const teamAction = apiChild(team, '{action}');
+    const invites = apiChild(employer, 'invites');
+    const inviteToken = apiChild(invites, '{token}');
+
+    // Path-only: no method, not even a CORS preflight.
+    expect(methodsOn(team)).toEqual({});
+    expect(methodsOn(invites)).toEqual({});
+
+    expect(methodsOn(teamAction)).toEqual({
+      GET: { auth: 'COGNITO:EmployerAuthorizer', target: 'team' },
+      POST: { auth: 'COGNITO:EmployerAuthorizer', target: 'team' },
+      OPTIONS: { auth: 'NONE', target: 'MOCK' },
+    });
+    expect(methodsOn(inviteToken)).toEqual({
+      // The invite page reads the invite before the person has an account.
+      GET: { auth: 'NONE', target: 'lookup' },
+      POST: { auth: 'COGNITO:EmployerAuthorizer', target: 'accept' },
+      OPTIONS: { auth: 'NONE', target: 'MOCK' },
+    });
+
+    // Membership is served by the team dispatcher (/employer/team/membership),
+    // not by a resource of its own: JaleApiStack's resource gate (CEILING in
+    // api-stack-resource-ceiling.test.ts).
+    const membership = Object.values(apiTemplate.findResources('AWS::ApiGateway::Resource'))
+      .filter((resource: any) => resource.Properties.PathPart === 'membership');
+    expect(membership).toEqual([]);
+  });
+
+  test('the three team Lambdas run in the VPC with the billing security group, like the processor', () => {
+    const processor = lambdaByDescription(PROCESSOR_DESCRIPTION).props.VpcConfig;
+    for (const description of TEAM_LAMBDA_DESCRIPTIONS) {
+      const vpcConfig = lambdaByDescription(description).props.VpcConfig;
+      expect(vpcConfig.SecurityGroupIds).toEqual(processor.SecurityGroupIds);
+      expect(JSON.stringify(vpcConfig.SecurityGroupIds)).toMatch(/BillingLambdaSg/);
+      // The private subnets with NAT egress: the billing SG's HTTPS rule
+      // reaches Cognito through the NAT gateway (no cognito-idp endpoint).
+      expect(vpcConfig.SubnetIds).toEqual(processor.SubnetIds);
+    }
+  });
+
+  test('each team Lambda stays under API Gateway\'s 29 s integration cap', () => {
+    // 25 s: a remove that moves ~1,000 jobs (statements up to 10 s) still
+    // leaves room for the ~10 s Cognito deadline after COMMIT.
+    expect(lambdaByDescription(TEAM_DESCRIPTION).props.Timeout).toBe(25);
+    expect(lambdaByDescription(ACCEPT_DESCRIPTION).props.Timeout).toBe(20);
+    expect(lambdaByDescription(LOOKUP_DESCRIPTION).props.Timeout).toBe(10);
+  });
+
+  test('the public lookup has reserved concurrency: a hard cap on its jale_api_public connections', () => {
+    // jale_api_public has no connection limit, and the stage throttle is the
+    // only other brake on this unauthenticated route.
+    expect(lambdaByDescription(LOOKUP_DESCRIPTION).props.ReservedConcurrentExecutions).toBe(10);
+    expect(lambdaByDescription(TEAM_DESCRIPTION).props).not.toHaveProperty('ReservedConcurrentExecutions');
+    expect(lambdaByDescription(ACCEPT_DESCRIPTION).props).not.toHaveProperty('ReservedConcurrentExecutions');
+  });
+
+  // The handlers catch their errors and answer 500, so a Lambda Errors alarm
+  // would never move: these filters on each Lambda's own log group are the
+  // signal. Terms must match the handlers (metric-filter-patterns.test.ts).
+  test.each([
+    ['EmployerInviteLookupLambda', '?"invite_lookup_misconfigured" ?"invite_lookup_failed"', 'InviteLookupFailed'],
+    ['EmployerInviteAcceptLambda', '"invite_accept_failed"', 'InviteAcceptFailed'],
+    ['EmployerTeamLambda', '?"member_access_failed" ?"member_access_deadline"', 'TeamMemberAccessFailed'],
+  ])('%s failures alarm to the ops topic, with recovery', (logGroupPrefix, pattern, metricName) => {
+    const filters = Object.values(template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: pattern },
+    })) as any[];
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties.LogGroupName).toEqual({ Ref: expect.stringMatching(new RegExp(`^${logGroupPrefix}LogGroup`)) });
+    expect(filters[0].Properties.MetricTransformations).toEqual([expect.objectContaining({
+      MetricNamespace: 'Jale/Billing', MetricName: metricName, MetricValue: '1',
+    })]);
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: metricName,
+      Namespace: 'Jale/Billing',
+      MetricName: metricName,
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: Match.anyValue(),
+      OKActions: Match.anyValue(),
+    });
+  });
+
+  test('the team dispatcher env: request login, invite base URL, employer pool, flag, DB timeouts', () => {
+    expect(lambdaByDescription(TEAM_DESCRIPTION).props.Environment.Variables).toEqual({
+      DB_SECRET_ARN: dbLoginSecretName('jale_api'),
+      DB_EXPECTED_LOGIN: 'jale_api',
+      // 10 s, not 5: a remove moves every job of the member in one UPDATE.
+      DB_STATEMENT_TIMEOUT_MS: '10000',
+      DB_LOCK_TIMEOUT_MS: '3000',
+      REQUIRED_TOS_VERSION: '1.0',
+      ALLOWED_ORIGIN: 'https://jaleapp.ai',
+      TEAM_MANAGEMENT_ENABLED: 'false',
+      PUBLIC_SITE_BASE_URL: 'https://jaleapp.ai',
+      EMPLOYER_USER_POOL_ID: expect.objectContaining({ 'Fn::ImportValue': expect.stringMatching(/EmployerPoolUserPool/) }),
+    });
+  });
+
+  test('the accept env: request login, employer pool, flag, DB timeouts, no site URL', () => {
+    expect(lambdaByDescription(ACCEPT_DESCRIPTION).props.Environment.Variables).toEqual({
+      DB_SECRET_ARN: dbLoginSecretName('jale_api'),
+      DB_EXPECTED_LOGIN: 'jale_api',
+      DB_STATEMENT_TIMEOUT_MS: '5000',
+      DB_LOCK_TIMEOUT_MS: '3000',
+      REQUIRED_TOS_VERSION: '1.0',
+      ALLOWED_ORIGIN: 'https://jaleapp.ai',
+      TEAM_MANAGEMENT_ENABLED: 'false',
+      EMPLOYER_USER_POOL_ID: expect.objectContaining({ 'Fn::ImportValue': expect.stringMatching(/EmployerPoolUserPool/) }),
+    });
+  });
+
+  test('the lookup Lambda uses the jale_api_public login', () => {
+    expect(lambdaByDescription(LOOKUP_DESCRIPTION).props.Environment.Variables).toEqual({
+      DB_SECRET_ARN: dbLoginSecretName('jale_api_public'),
+      DB_EXPECTED_LOGIN: 'jale_api_public',
+      // One read-only function call: a statement bound, no lock wait to bound,
+      // and no ToS check (the caller is signed out).
+      DB_STATEMENT_TIMEOUT_MS: '5000',
+      ALLOWED_ORIGIN: 'https://jaleapp.ai',
+      TEAM_MANAGEMENT_ENABLED: 'false',
+    });
+
+    // Its role reads the public login's secret and no other database secret.
+    const lookup = lambdaByDescription(LOOKUP_DESCRIPTION);
+    const roleRef = lookup.props.Role['Fn::GetAtt'][0];
+    const statements = (Object.values(template.findResources('AWS::IAM::Policy')) as any[])
+      .filter((policy) => JSON.stringify(policy.Properties.Roles).includes(`"Ref":"${roleRef}"`))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const secretResources = JSON.stringify(statements
+      .filter((statement: any) => JSON.stringify(statement.Action).includes('secretsmanager:GetSecretValue'))
+      .map((statement: any) => statement.Resource));
+    expect(secretResources).toContain('secret:jale/api-public/db');
+    expect(secretResources).not.toContain('secret:jale/api/db');
+    expect(secretResources).not.toContain('billing');
+  });
+
+  test('the team and accept roles read the request login secret', () => {
+    for (const description of [TEAM_DESCRIPTION, ACCEPT_DESCRIPTION]) {
+      const roleRef = lambdaByDescription(description).props.Role['Fn::GetAtt'][0];
+      const statements = (Object.values(template.findResources('AWS::IAM::Policy')) as any[])
+        .filter((policy) => JSON.stringify(policy.Properties.Roles).includes(`"Ref":"${roleRef}"`))
+        .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+      const secretResources = JSON.stringify(statements
+        .filter((statement: any) => JSON.stringify(statement.Action).includes('secretsmanager:GetSecretValue'))
+        .map((statement: any) => statement.Resource));
+      expect(secretResources).toContain('secret:jale/api/db');
+      expect(secretResources).not.toContain('api-public');
+    }
+  });
+
+  test('TEAM_MANAGEMENT_ENABLED is false on the three team Lambdas when the flag is off', () => {
+    for (const description of TEAM_LAMBDA_DESCRIPTIONS) {
+      expect(lambdaByDescription(description).props.Environment.Variables.TEAM_MANAGEMENT_ENABLED).toBe('false');
+    }
+    // The processor and the sync carry no flag at all: they run either way.
+    for (const description of [PROCESSOR_DESCRIPTION, SYNC_DESCRIPTION]) {
+      expect(lambdaByDescription(description).props.Environment.Variables).not.toHaveProperty('TEAM_MANAGEMENT_ENABLED');
+    }
   });
 
   test('get-billing, checkout, and portal Lambda roles have NO IAM grant on the jale/billing/db secret', () => {
@@ -756,6 +1149,10 @@ describe('BillingStack — alarm email subscription', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+      employerUserPoolId: auth.employerPool.userPool.userPoolId,
+      employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
+      teamManagementEnabled: false,
+      publicSiteBaseUrl: 'https://jaleapp.ai',
     });
     template = Template.fromStack(app.node.findChild('TestBillingStackEmail') as cdk.Stack);
   });
@@ -820,6 +1217,10 @@ describe('BillingStack — imported alarm topic', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+      employerUserPoolId: auth.employerPool.userPool.userPoolId,
+      employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
+      teamManagementEnabled: false,
+      publicSiteBaseUrl: 'https://jaleapp.ai',
     });
     template = Template.fromStack(
       app.node.findChild('TestBillingStackImportedTopic') as cdk.Stack,
@@ -903,9 +1304,34 @@ describe('BillingStack — SES configuration set threaded in', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+      employerUserPoolId: auth.employerPool.userPool.userPoolId,
+      employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
+      // The flag on, here only: the main harness keeps it off.
+      teamManagementEnabled: true,
+      publicSiteBaseUrl: 'https://jaleapp.ai/',
       emailConfigurationSetName: CONFIGURATION_SET,
     });
     template = Template.fromStack(app.node.findChild('TestBillingStackConfigSet') as cdk.Stack);
+  });
+
+  test('with teamManagementEnabled, the three team Lambdas get TEAM_MANAGEMENT_ENABLED=true', () => {
+    for (const description of TEAM_LAMBDA_DESCRIPTIONS) {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: description,
+        Environment: { Variables: Match.objectLike({ TEAM_MANAGEMENT_ENABLED: 'true' }) },
+      });
+    }
+  });
+
+  test('with the flag on, the same four roles hold the Cognito grant', () => {
+    expectExactlyTheFourCognitoGrants(template);
+  });
+
+  test('a trailing slash on the public site base URL is dropped', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: TEAM_DESCRIPTION,
+      Environment: { Variables: Match.objectLike({ PUBLIC_SITE_BASE_URL: 'https://jaleapp.ai' }) },
+    });
   });
 
   test('gives the sweeper the configuration-set name so every message is tagged for bounce routing', () => {

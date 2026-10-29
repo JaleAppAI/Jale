@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { usePathname } from '@/i18n/navigation';
+import { isMembershipBlockedError } from '@/lib/api';
 import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import { useRequireAuth } from './useRequireAuth';
 import { initialPageState, pageDataReducer, type PagePhase } from './pageDataReducer';
@@ -184,16 +185,18 @@ export function usePageData<T>(options: UsePageDataOptions<T>): UsePageDataResul
 
             const { kind } = classifyError(err);
 
-            if (kind === 'legal_wall') {
+            if (kind === 'legal_wall' || isMembershipBlockedError(err)) {
                 // Deliberately dispatches nothing: the phase holds where it is
                 // (skeleton for a load, rendered page for a refresh) while the
-                // redirect to /legal/accept takes over. Showing an error here
-                // would be a screen the user cannot act on.
+                // redirect takes over -- to /legal/accept, or (Phase 3, team
+                // flag on) to /employer/access for a removed, suspended or
+                // orgless employer. Showing an error here would be a screen the
+                // user cannot act on.
                 try {
                     legalWallRef.current(err, returnUrlRef.current);
                 } catch {
-                    // handleLegalWall rethrows anything that is not a legal
-                    // wall; classifyError says this one is, so this is
+                    // handleLegalWall rethrows anything it does not route;
+                    // both checks above match its own, so this is
                     // unreachable in practice. Swallowing beats an unhandled
                     // rejection if the two ever disagree.
                 }

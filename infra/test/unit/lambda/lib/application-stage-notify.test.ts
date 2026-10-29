@@ -3,6 +3,7 @@ import {
   buildApplicationStageMessage,
   enqueueApplicationStageNotification,
 } from '../../../../lambda/lib/application-stage-notify';
+import { buildApplicationStagePayloadMessage } from '../../../../lambda/whatsapp/lib/onboarding-renderers';
 
 const APPLICATION_ID = '33333333-3333-4333-8333-333333333333';
 const WORKER_ID = '22222222-2222-4222-8222-222222222222';
@@ -231,6 +232,27 @@ describe('enqueueApplicationStageNotification', () => {
       companyName: 'Fixture Builders',
       frontendBaseUrl: 'https://jaleapp.ai/',
     });
+  });
+
+  it("puts the responsible person's label in '2' and stores it in the payload, so a deferred intent re-renders with it", async () => {
+    const { client, calls } = stageClient({ language: 'es' });
+
+    await enqueueApplicationStageNotification(
+      client,
+      notifyInput({ kind: 'hired', companyName: 'Fer Gómez (Acme)' }),
+    );
+
+    const message = JSON.parse(claimCall(calls).params[4] as string);
+    expect(message.content_template).toBe('application_hired_es');
+    expect(message.content_variables['2']).toBe('Fer Gómez (Acme)');
+    expect(message.content_variables.__fallback_body).toContain('Fer Gómez (Acme) te selecciono');
+
+    // The deferred path: the stored payload is all the release renderer has.
+    const payload = JSON.parse(claimCall(calls).params[3] as string);
+    expect(payload.companyName).toBe('Fer Gómez (Acme)');
+    const rendered = buildApplicationStagePayloadMessage('es', payload);
+    expect(rendered?.contentTemplate).toBe('application_hired_es');
+    expect(rendered?.contentVariables?.['2']).toBe('Fer Gómez (Acme)');
   });
 
   it("pre-renders the content template in the recipient's language, with a normalized url", async () => {

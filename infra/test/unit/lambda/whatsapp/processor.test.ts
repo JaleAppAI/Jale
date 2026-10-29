@@ -1915,7 +1915,8 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1', worker_thread_number: 1, job_title: 'Plomero', company: 'ACME' }] }) // open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'msg-1', body: 'Employer says hello' }] }) // waiting employer messages
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'msg-1', body: 'Employer says hello', sender_user_id: 'employer-1' }] }) // waiting employer messages
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ contact: null, company: 'ACME' }] }) // the writer's label (once per writer)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT job outbox
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE employer message queued
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // reset WhatsApp conversation to idle
@@ -2010,7 +2011,8 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1', worker_thread_number: 1, job_title: 'Plomero', company: 'ACME' }] }) // latest open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'msg-1', body: 'Employer says hello' }] }) // waiting employer messages
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'msg-1', body: 'Employer says hello', sender_user_id: 'employer-1' }] }) // waiting employer messages
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ contact: null, company: 'ACME' }] }) // the writer's label (once per writer)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT job outbox
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE employer message queued
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // reset WhatsApp conversation to idle

@@ -606,7 +606,10 @@ function conversationAccessRow(overrides: any = {}) {
     id: CONV_A, job_id: 'job-1', employer_id: EMPLOYER, worker_id: WORKER,
     application_id: 'app-a', status: 'open',
     worker_phone: '+15125551234',
-    company_name: 'ACME', job_title: 'Plomero',
+    job_title: 'Plomero',
+    // The acting user's two names (jale_cap.employer_contact_name($3),
+    // employer_display_name($3)); no contact, so the label is the company.
+    sender_contact: null, sender_company: 'ACME',
     last_worker_message_at: null,  // window CLOSED -> template branch
     ...overrides,
   };
@@ -665,7 +668,7 @@ function employerClient(script: EmployerScript = {}) {
       const access = script.access === undefined
         ? {
           job_id: 'job-1', employer_id: EMPLOYER, worker_id: WORKER, application_id: 'app-a',
-          worker_phone: '+15125551234', company_name: 'ACME', job_title: 'Plomero',
+          worker_phone: '+15125551234', job_title: 'Plomero',
         }
         : script.access;
       return { rows: access ? [access] : [], rowCount: access ? 1 : 0 };
@@ -834,7 +837,7 @@ describe('createApplicantConversation', () => {
     const noPhone = employerClient({
       access: {
         job_id: 'job-1', employer_id: EMPLOYER, worker_id: WORKER, application_id: 'app-a',
-        worker_phone: null, company_name: 'ACME', job_title: 'Plomero',
+        worker_phone: null, job_title: 'Plomero',
       },
     });
     await expect(createApplicantConversation(noPhone.client, ACTOR, 'job-1', WORKER, 'hola'))
@@ -853,14 +856,16 @@ describe('employer conversations act for the caller scope (employer organization
     const { client: c, calls } = employerClient({
       access: {
         job_id: 'job-1', employer_id: FOREMAN, worker_id: WORKER, application_id: 'app-a',
-        worker_phone: '+15125551234', company_name: 'ACME', job_title: 'Plomero',
+        worker_phone: '+15125551234', job_title: 'Plomero',
       },
       conversation: conversationAccessRow({ employer_id: FOREMAN }),
     });
     await createApplicantConversation(c, OWNER_ACTOR, 'job-1', WORKER, 'hola');
 
     const access = calls.find((call) => /FROM jobs j JOIN job_applications ja/.test(call.sql.replace(/\s+/g, ' ')))!;
-    expect(access.sql).toMatch(/LEFT JOIN users employer ON employer\.id = j\.employer_id/);
+    // No employer row is read: the caller may not read another member's
+    // users row, and the worker-facing name is the caller's label.
+    expect(access.sql).not.toMatch(/users employer|employer_profiles|company_name/);
     expect(access.sql).toMatch(/j\.employer_id = ANY\(\$2::uuid\[\]\)/);
     expect(access.params).toEqual(['job-1', [OWNER, FOREMAN], WORKER]);
     const open = calls.find((call) => /jc\.job_id = \$1/.test(call.sql) && /jc\.status = 'open'/.test(call.sql))!;
@@ -879,9 +884,10 @@ describe('employer conversations act for the caller scope (employer organization
     const { client: c, calls } = employerClient({ conversation: conversationAccessRow({ employer_id: FOREMAN }) });
     await queueConversationMessageFromEmployer(c, CONV_A, OWNER_ACTOR, 'hola');
     const load = calls.find((call) => /FROM job_conversations jc\s+JOIN jobs j/.test(call.sql) && /jc\.id = \$1/.test(call.sql))!;
-    expect(load.sql).toMatch(/LEFT JOIN users employer ON employer\.id = jc\.employer_id/);
+    expect(load.sql).not.toMatch(/users employer|employer_profiles/);
     expect(load.sql).toMatch(/jc\.employer_id = ANY\(\$2::uuid\[\]\)/);
-    expect(load.params).toEqual([CONV_A, [OWNER, FOREMAN]]);
+    // $3 is the acting user, whose label the worker sees.
+    expect(load.params).toEqual([CONV_A, [OWNER, FOREMAN], OWNER]);
     const message = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql))!;
     expect(message.sql).not.toMatch(/sender_user_id/);
     expect(message.params).toHaveLength(3);
@@ -1115,5 +1121,255 @@ describe('employer conversation list/detail — job city and state', () => {
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     await getEmployerConversationDetail(client, 'conv-1', [EMPLOYER]);
     expect(mockQuery.mock.calls[1][0]).toMatch(/j\.city AS job_city/);
+  });
+});
+
+import { openWorkerConversationFromButton } from '../../../../lambda/lib/job-messaging';
+
+// Phase 4: a WhatsApp message names the person who wrote it,
+// "{contact} ({company})" (lib/employer-contact-label.ts).
+describe('the relay names the person writing (employer organizations, Phase 4)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const FOREMAN_ROW = { sender_contact: 'Fer Gómez', sender_company: 'Acme' };
+
+  it("loads the acting user's two names in the conversation read, with the company from employer_display_name", async () => {
+    const { client: c, calls } = employerClient({ conversation: conversationAccessRow(FOREMAN_ROW) });
+    await queueConversationMessageFromEmployer(c, CONV_A, { ...ACTOR, userId: FOREMAN, scopeUserIds: [FOREMAN] }, 'hola');
+    const load = calls.find((call) => /FROM job_conversations jc\s+JOIN jobs j/.test(call.sql) && /jc\.id = \$1/.test(call.sql))!;
+    const text = load.sql.replace(/\s+/g, ' ');
+    // Only the acting user's names: the conversation employer's company is not read.
+    expect(text).not.toContain('employer_display_name(jc.employer_id)');
+    expect(text).not.toMatch(/AS company_name/);
+    expect(text).toContain('jale_cap.employer_contact_name($3) AS sender_contact');
+    expect(text).toContain('employer_display_name($3) AS sender_company');
+    expect(text).not.toMatch(/'Jale'|ep\.company_name|full_name/);
+    expect(load.params).toEqual([CONV_A, [FOREMAN], FOREMAN]);
+  });
+
+  it("a foreman's message outside the reply window: the template's {{1}} and the fallback carry the foreman's label", async () => {
+    const { client: c, calls } = employerClient({
+      whatsappLanguage: 'en',
+      conversation: conversationAccessRow(FOREMAN_ROW),
+    });
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hello');
+    const [template] = outboxInserts(calls);
+    const variables = JSON.parse(template.params[4] as string);
+    expect(variables['1']).toBe('Fer Gómez (Acme)');
+    expect(variables.__fallback_body.startsWith('Fer Gómez (Acme) sent you')).toBe(true);
+  });
+
+  it("a foreman's message inside the reply window: the header names the foreman", async () => {
+    const { client: c, calls } = employerClient({
+      conversation: conversationAccessRow({ ...FOREMAN_ROW, worker_thread_number: 2, last_worker_message_at: new Date() }),
+    });
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'Hola');
+    const [freeform] = outboxInserts(calls);
+    expect(freeform.params[3]).toBe('🏢 Fer Gómez (Acme) — Plomero (#2)\nHola');
+  });
+
+  it("the owner replying on the foreman's job: the worker sees the owner's label, not the foreman's", async () => {
+    const { client: c, calls } = employerClient({
+      whatsappLanguage: 'en',
+      conversation: conversationAccessRow({
+        employer_id: FOREMAN, sender_contact: 'Olga', sender_company: 'Acme',
+      }),
+    });
+    await queueConversationMessageFromEmployer(c, CONV_A, OWNER_ACTOR, 'hello');
+    const variables = JSON.parse(outboxInserts(calls)[0].params[4] as string);
+    expect(variables['1']).toBe('Olga (Acme)');
+    expect(variables.__fallback_body).toBe('Olga (Acme) sent you a message about Plomero. Reply here to open the conversation.');
+  });
+
+  it('a foreman with no contact name is the company alone, in the template and in the header', async () => {
+    const noContact = { sender_contact: null, sender_company: 'Acme' };
+    const closed = employerClient({ whatsappLanguage: 'en', conversation: conversationAccessRow(noContact) });
+    await queueConversationMessageFromEmployer(closed.client, CONV_A, ACTOR, 'hello');
+    const variables = JSON.parse(outboxInserts(closed.calls)[0].params[4] as string);
+    expect(variables['1']).toBe('Acme');
+    expect(variables.__fallback_body).toBe('Acme sent you a message about Plomero. Reply here to open the conversation.');
+
+    const open = employerClient({
+      conversation: conversationAccessRow({ ...noContact, worker_thread_number: 2, last_worker_message_at: new Date() }),
+    });
+    await queueConversationMessageFromEmployer(open.client, CONV_A, ACTOR, 'Hola');
+    expect(outboxInserts(open.calls)[0].params[3]).toBe('🏢 Acme — Plomero (#2)\nHola');
+  });
+
+  it("an empty job title reads 'Trabajo' in the header, as in the picker", async () => {
+    const { client: c, calls } = employerClient({
+      conversation: conversationAccessRow({ ...FOREMAN_ROW, job_title: ' \n', worker_thread_number: 1, last_worker_message_at: new Date() }),
+    });
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'Hola');
+    expect(outboxInserts(calls)[0].params[3]).toBe('🏢 Fer Gómez (Acme) — Trabajo (#1)\nHola');
+  });
+
+  it("an owner who never set a company name is named by their contact alone, never 'Juan (Empleador)'", async () => {
+    const { client: c, calls } = employerClient({
+      conversation: conversationAccessRow({
+        sender_contact: 'Juan', sender_company: 'Empleador',
+        worker_thread_number: 1, last_worker_message_at: new Date(),
+      }),
+    });
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'Hola');
+    expect(outboxInserts(calls)[0].params[3]).toMatch(/^🏢 Juan — Plomero \(#1\)\n/);
+  });
+
+  it('a long label is not clipped again: its closing parenthesis stays, and an emoji in the job title is not split', async () => {
+    const contact = 'a'.repeat(30);
+    const company = 'c'.repeat(40);
+    const title = `${'t'.repeat(49)}🏗x`;
+    const { client: c, calls } = employerClient({
+      conversation: conversationAccessRow({
+        sender_contact: contact, sender_company: company, job_title: title,
+        worker_thread_number: null, last_worker_message_at: new Date(),
+      }),
+    });
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'Hola');
+    expect(outboxInserts(calls)[0].params[3]).toBe(`🏢 ${contact} (${company}) — ${'t'.repeat(49)}🏗\nHola`);
+  });
+
+  it("an onboarding worker's deferred intent carries the sender's label in companyName (payload shape unchanged)", async () => {
+    const { client: c, calls } = employerClient({
+      lifecycle: 'onboarding', workflowLanguage: 'en', conversation: conversationAccessRow(FOREMAN_ROW),
+    });
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
+    const claim = calls.find((call) => /employer_claim_worker_intent/.test(call.sql))!;
+    expect(JSON.parse(claim.params[3] as string)).toEqual({
+      conversationId: CONV_A, companyName: 'Fer Gómez (Acme)', jobTitle: 'Plomero',
+    });
+    expect(JSON.parse(claim.params[4] as string).body).toBe(
+      'Fer Gómez (Acme) wants to chat with you about the Plomero job. Reply CHATS to open the chat.',
+    );
+  });
+});
+
+describe('the flush heads each waiting message with its own writer (Phase 4)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const F = 'cccccccc-0000-0000-0000-0000000000f9';
+  const O = 'cccccccc-0000-0000-0000-0000000000a9';
+  const NAMES: Record<string, { contact: string | null; company: string }> = {
+    [F]: { contact: 'Fer Gómez', company: 'Acme' },
+    [O]: { contact: 'Olga', company: 'Acme' },
+  };
+
+  function flushClient(thread: Record<string, unknown>, pending: Array<{ id: string; body: string; sender_user_id: string }>) {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const query = jest.fn(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      const text = sql.replace(/\s+/g, ' ');
+      if (/AS contact, employer_display_name\(\$1\) AS company/.test(text)) {
+        const names = NAMES[params[0] as string];
+        return { rows: [{ contact: names?.contact ?? null, company: names?.company ?? 'Empleador' }], rowCount: 1 };
+      }
+      if (/waiting_worker_reply/.test(text) && /^\s*SELECT/i.test(text)) {
+        return { rows: pending, rowCount: pending.length };
+      }
+      if (/FROM job_conversations jc JOIN jobs j/.test(text) && /jc\.status = 'open'/.test(text)) {
+        return { rows: [thread], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+    return { client: { query } as any, calls };
+  }
+
+  const THREAD = {
+    id: CONV_A, application_id: 'app-a', job_title: 'Plomero', contact_name: 'Fer Gómez', company: 'Acme', worker_thread_number: 2,
+  };
+  const PENDING = [
+    { id: 'em-1', body: 'uno', sender_user_id: F },
+    { id: 'em-2', body: 'dos', sender_user_id: O },
+    { id: 'em-3', body: 'tres', sender_user_id: F },
+  ];
+
+  function headers(calls: Array<{ sql: string; params: unknown[] }>) {
+    return calls
+      .filter((call) => /INSERT INTO job_message_outbox/.test(call.sql))
+      .map((call) => [call.params[1], call.params[3]]);
+  }
+
+  it('on a worker reply: messages from F, O, F are headed F, O, F; each label is loaded once', async () => {
+    const { client: c, calls } = flushClient(THREAD, PENDING);
+    await recordWorkerConversationReply(c, WORKER, 'hola', 'whatsapp:+1512', 'SM20', CONV_A);
+    expect(headers(calls)).toEqual([
+      ['em-1', '🏢 Fer Gómez (Acme) — Plomero (#2)\nuno'],
+      ['em-2', '🏢 Olga (Acme) — Plomero (#2)\ndos'],
+      ['em-3', '🏢 Fer Gómez (Acme) — Plomero (#2)\ntres'],
+    ]);
+    const loads = calls.filter((call) => /jale_cap\.employer_contact_name\(\$1\) AS contact/.test(call.sql));
+    expect(loads.map((call) => call.params)).toEqual([[F], [O]]);
+  });
+
+  it('stamps each flushed row with clock_timestamp(), so rows written in one transaction keep their order', async () => {
+    const { client: c, calls } = flushClient(THREAD, PENDING);
+    await recordWorkerConversationReply(c, WORKER, 'hola', 'whatsapp:+1512', 'SM23', CONV_A);
+    const inserts = calls.filter((call) => /INSERT INTO job_message_outbox/.test(call.sql));
+    expect(inserts).toHaveLength(3);
+    for (const insert of inserts) {
+      const text = insert.sql.replace(/\s+/g, ' ');
+      expect(text).toContain('(conversation_id, message_id, whatsapp_number, send_kind, body, created_at)');
+      expect(text).toContain("VALUES ($1, $2, $3, 'freeform', $4, clock_timestamp())");
+    }
+  });
+
+  it('on the Open button: the same per-writer headers', async () => {
+    const { client: c, calls } = flushClient(THREAD, PENDING.slice(0, 2));
+    const result = await openWorkerConversationFromButton(c, WORKER, CONV_A, 'whatsapp:+1512');
+    expect(result).toEqual({ found: true, queuedMessages: 2, conversationId: CONV_A });
+    expect(headers(calls)).toEqual([
+      ['em-1', '🏢 Fer Gómez (Acme) — Plomero (#2)\nuno'],
+      ['em-2', '🏢 Olga (Acme) — Plomero (#2)\ndos'],
+    ]);
+  });
+
+  it("selects each message's writer, falling back to the conversation's employer for rows from before 118", async () => {
+    const { client: c, calls } = flushClient(THREAD, []);
+    await recordWorkerConversationReply(c, WORKER, 'hola', 'whatsapp:+1512', 'SM21', CONV_A);
+    const pendingSql = calls.find((call) => /waiting_worker_reply/.test(call.sql) && /^\s*SELECT/i.test(call.sql))!;
+    const text = pendingSql.sql.replace(/\s+/g, ' ');
+    expect(text).toContain('COALESCE(m.sender_user_id, jc.employer_id) AS sender_user_id');
+    expect(text).toContain("m.sender_type = 'employer'");
+    expect(text).toContain('ORDER BY m.created_at ASC');
+    expect(pendingSql.params).toEqual([CONV_A]);
+  });
+});
+
+describe('the reply picker names each responsible person (Phase 4)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('builds each label from its row, in one query', async () => {
+    mockQuery.mockResolvedValueOnce(openThreadsResult([
+      { id: CONV_A, application_id: 'app-a', job_title: 'Plomero', contact_name: 'Fer Gómez', company: 'Acme', worker_thread_number: 1 },
+      { id: CONV_B, application_id: 'app-b', job_title: 'Techador', contact_name: null, company: 'A-1 Roofing', worker_thread_number: 2 },
+    ]));
+    const result = await recordWorkerConversationReply(client, WORKER, 'hola', 'whatsapp:+1512', 'SM22', undefined);
+    expect(result).toEqual({
+      status: 'ambiguous',
+      threads: [
+        { conversationId: CONV_A, jobTitle: 'Plomero', companyName: 'Fer Gómez (Acme)', threadNumber: 1 },
+        { conversationId: CONV_B, jobTitle: 'Techador', companyName: 'A-1 Roofing', threadNumber: 2 },
+      ],
+    });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const text = String(mockQuery.mock.calls[0][0]).replace(/\s+/g, ' ');
+    expect(text).toContain('jale_cap.employer_contact_name(jc.employer_id) AS contact_name');
+    expect(text).toContain('employer_display_name(jc.employer_id) AS company');
+  });
+});
+
+describe('employer previews skip system rows (Phase 4)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('the list and the detail preview the newest non-system message', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await listEmployerConversations(client, [EMPLOYER]);
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await getEmployerConversationDetail(client, 'conv-1', [EMPLOYER]);
+    for (const [sql] of mockQuery.mock.calls.slice(0, 2)) {
+      const text = String(sql).replace(/\s+/g, ' ');
+      const lateral = text.slice(text.indexOf('LEFT JOIN LATERAL'), text.indexOf(') last_msg'));
+      expect(lateral).toContain("jcm.sender_type <> 'system'");
+    }
   });
 });

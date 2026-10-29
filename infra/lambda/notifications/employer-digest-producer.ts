@@ -70,9 +70,18 @@ import { mintUnsubscribeToken } from '../lib/unsubscribe-token';
  *
  * ── Observability ────────────────────────────────────────────────
  * Every due employer ends in exactly one of five states, and the returned
- * summary counts all five: queued, quiet, skipped (unusable address), or failed
- * (anything thrown, including the watermark check). due === queued + quiet +
- * skipped + failed is an invariant a test asserts.
+ * summary counts all five: queued, quiet, skipped (unusable address, or not an
+ * active member of a company), or failed (anything thrown, including the
+ * watermark check). Employers the run stopped before, to stay inside its time
+ * budget, are counted as deferred (logged once as digest_run_deadline).
+ * due === queued + quiet + skipped + failed + deferred is an invariant a test
+ * asserts.
+ *
+ * ── Companies (Phase 3) ──────────────────────────────────────────
+ * An active owner's digest covers every member's active jobs
+ * (jale_internal.org_owner_scope; 135 gives this login the owner policies);
+ * a foreman's covers their own. A suspended or removed member gets none and
+ * logs digest_skipped_inactive_member (info: an expected state, not an alarm).
  *
  * Both silent states emit a structured single-string log line that
  * NotificationsStack turns into a CloudWatch metric, because both return
@@ -108,7 +117,20 @@ export interface DigestRunSummary {
   quiet: number;
   skipped: number;
   failed: number;
+  /**
+   * Not reached: the run stopped before them to stay inside the function's
+   * time budget. Their watermark is untouched, so a later sweep inside their
+   * send hour picks them up; past it, the next day's digest covers the window.
+   */
+  deferred: number;
 }
+
+/**
+ * No employer is started with less than this left: an owner's digest ranks
+ * up to the company's whole active-job limit, and a run cut off by the Lambda
+ * timeout would lose the nudge sweep and the run summary as well.
+ */
+const DIGEST_MIN_REMAINING_MS = 15_000;
 
 function toEpochMs(value: string | Date | null | undefined): number | null {
   if (value === null || value === undefined) return null;
@@ -295,7 +317,7 @@ export const handler = async (_event?: unknown, context?: RemainingTime): Promis
 
   const pool = await getDbPool();
   const client = await pool.connect();
-  const summary: DigestRunSummary = { due: 0, queued: 0, quiet: 0, skipped: 0, failed: 0 };
+  const summary: DigestRunSummary = { due: 0, queued: 0, quiet: 0, skipped: 0, failed: 0, deferred: 0 };
 
   try {
     const due = await client.query<DueEmployerRow>(
@@ -303,7 +325,15 @@ export const handler = async (_event?: unknown, context?: RemainingTime): Promis
     );
     summary.due = due.rows.length;
 
-    for (const row of due.rows) {
+    for (const [index, row] of due.rows.entries()) {
+      // The time budget, checked between employers (never inside one's
+      // transaction). The rest stay due and unwatermarked; one log line.
+      if (remainingMs() < DIGEST_MIN_REMAINING_MS) {
+        summary.deferred = due.rows.length - index;
+        console.warn(JSON.stringify({ metric: 'digest_run_deadline', deferred: summary.deferred }));
+        break;
+      }
+
       // Minted BEFORE this employer's transaction opens. Minting reads the
       // signing secret, and once the cache above is older than its TTL that is
       // a Secrets Manager round trip -- which must never run inside an open
@@ -326,6 +356,28 @@ export const handler = async (_event?: unknown, context?: RemainingTime): Promis
         // users.id. Both are transaction-local and reset at COMMIT.
         await setRlsContext(client, row.cognito_sub);
         await setInternalUserRlsContext(client, row.employer_id);
+
+        // ── Only an active member gets a digest (Phase 3) ────────
+        // A billing-suspended or removed foreman keeps their digest settings
+        // and their jobs' RLS reach (135 did not close their own-row
+        // policies), but must not be mailed about jobs they can no longer
+        // open. org_member_scope is '{}' for anyone who is not an active
+        // member of a company. Skipped like an unusable address: committed,
+        // counted, and NO watermark advance -- if they are restored, the
+        // backlog is still owed.
+        const membership = await client.query<{ active: boolean }>(
+          'SELECT cardinality(jale_internal.org_member_scope($1::text)) > 0 AS active',
+          [row.employer_id],
+        );
+        if (membership.rows[0]?.active !== true) {
+          console.info(JSON.stringify({
+            metric: 'digest_skipped_inactive_member',
+            employerId: row.employer_id,
+          }));
+          await client.query('COMMIT');
+          summary.skipped += 1;
+          continue;
+        }
 
         // ── One clock, and it is the DATABASE's ──────────────────
         // Both values this employer's window is measured against --
@@ -374,9 +426,21 @@ export const handler = async (_event?: unknown, context?: RemainingTime): Promis
 
         const language = digestLanguage(row.language);
 
-        const activeJobs = await client.query<ActiveJobRow>(
-          "SELECT id, title FROM jobs WHERE employer_id = $1 AND status = 'active'",
+        // Whose jobs this digest covers: an active owner's is every member's
+        // (any status, as the owner's screens list them; 135's digest
+        // policies give the reach), anyone else's is their own. The company's
+        // active-job limit bounds the owner's list, so the per-job ranking
+        // below stays within what one Phase 2 employer could already hold.
+        const scopeRes = await client.query<{ scope: string[] | null }>(
+          'SELECT jale_internal.org_owner_scope($1::text, false) AS scope',
           [row.employer_id],
+        );
+        const ownerScope = scopeRes.rows[0]?.scope ?? [];
+        const scopeUserIds = ownerScope.length > 0 ? ownerScope : [row.employer_id];
+
+        const activeJobs = await client.query<ActiveJobRow>(
+          "SELECT id, title FROM jobs WHERE employer_id = ANY($1::uuid[]) AND status = 'active'",
+          [scopeUserIds],
         );
 
         const watermarkMs = toEpochMs(row.last_sent_at);
@@ -402,6 +466,15 @@ export const handler = async (_event?: unknown, context?: RemainingTime): Promis
           // ordering identical to what the employer sees on the candidates
           // screen. Fixing it properly needs an applied_at-windowed query of
           // its own, which is a change to the ranking lib (out of scope here).
+          //
+          // KNOWN LIMITATION (Phase 3): the watermark is per PERSON, not per
+          // job. When a job moves between members (reassign, or remove with
+          // reassign), its applicants are measured against the new holder's
+          // watermark: one who applied between the two people's last sends can
+          // be missed by both (up to about a day's window) or mailed to both.
+          // The owner's company digest sees every member's job either way. A
+          // real fix needs a per-job watermark; out of scope here.
+          // Accepted in Phase 4: the owner's company digest covers every member's job (Open decision 7).
           const ranked = await listEmployerCandidates(client, job.id, { limit: 100, includeContact: true });
           // shouldEnqueueRerank / sourceHash intentionally unused -- see the
           // module header.

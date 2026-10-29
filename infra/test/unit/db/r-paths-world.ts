@@ -92,7 +92,21 @@ export class World {
     return this.userIds;
   }
 
-  async employer(opts: { companyName?: string; fullName?: string } = {}): Promise<UserFixture> {
+  /**
+   * Adopts a users row or a job that a handler created (a sign-up through
+   * post-confirmation, a job posted through employer-jobs-create), so
+   * cleanup() removes it like a fixture of its own.
+   */
+  track(kind: 'user' | 'job', id: string): void {
+    (kind === 'user' ? this.userIds : this.jobIds).push(id);
+  }
+
+  /**
+   * An employer who is the active owner of a one-person company. With
+   * companyName or contactName it also gets an employer_profiles row holding
+   * them (contactName is the person workers see, 138); without either, none.
+   */
+  async employer(opts: { companyName?: string; fullName?: string; contactName?: string } = {}): Promise<UserFixture> {
     const id = randomUUID();
     const sub = `fixture-employer-${randomUUID()}`;
     await this.su.query(
@@ -101,10 +115,10 @@ export class World {
       [id, sub, opts.fullName ?? 'Fixture Employer', `${id}@fixture.invalid`, FIXTURE_TOS_VERSION],
     );
     this.userIds.push(id);
-    if (opts.companyName !== undefined) {
+    if (opts.companyName !== undefined || opts.contactName !== undefined) {
       await this.su.query(
-        `INSERT INTO employer_profiles (user_id, company_name) VALUES ($1, $2)`,
-        [id, opts.companyName],
+        `INSERT INTO employer_profiles (user_id, company_name, contact_name) VALUES ($1, $2, $3)`,
+        [id, opts.companyName ?? null, opts.contactName ?? null],
       );
     }
     // Like a real sign-up (post-confirmation -> employer_ensure_organization):
@@ -133,12 +147,15 @@ export class World {
    * A foreman in ownerId's company (the owner's World.employer() company).
    * Same users row shape as employer(); it creates no company. The owner's
    * company cleanup deletes every member, and the users row goes after it.
+   * With contactName it also gets an employer_profiles row holding only that
+   * (as an invite sign-up saves it); without it, none.
    */
   async foreman(ownerId: string, opts: {
     status?: 'active' | 'suspended' | 'removed';
     billingSuspended?: boolean;
     fullName?: string;
     email?: string;
+    contactName?: string;
   } = {}): Promise<UserFixture> {
     const owner = await this.su.query<{ organization_id: string }>(
       `SELECT organization_id FROM organization_members WHERE user_id = $1 AND role = 'owner'`,
@@ -158,6 +175,12 @@ export class World {
        VALUES ($1, $2, 'foreman', $3, CASE WHEN $4::boolean THEN now() END)`,
       [id, owner.rows[0].organization_id, opts.status ?? 'active', opts.billingSuspended ?? false],
     );
+    if (opts.contactName !== undefined) {
+      await this.su.query(
+        `INSERT INTO employer_profiles (user_id, contact_name) VALUES ($1, $2)`,
+        [id, opts.contactName],
+      );
+    }
     return { id, sub };
   }
 

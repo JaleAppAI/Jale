@@ -6,11 +6,15 @@ import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
+import { useEmployerMembership, type EmployerMembership } from '@/hooks/useEmployerMembership';
+import { MEMBERSHIP_DISABLED } from '@/lib/employer-membership-store';
+import { planLimitAudienceFor, type AudienceBilling } from '@/hooks/usePlanLimitAudience';
 import {
   ApiError, createJob, getBilling, listJobTemplates, saveJobTemplate, withTemplateId,
   type Job, type JobCreatedOutcome, type JobTemplate,
 } from '@/lib/api/employer';
-import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
+import { planLimitModel, upgradeOffered, type PlanLimitModel } from '@/lib/plan-limit';
 import {
   LANGUAGE_OPTIONS,
   type JobForm, type JobFormFieldProblem, type WorkDay,
@@ -95,7 +99,19 @@ const STEP_KEYS: Record<Step, 'basics' | 'details' | 'documents'> = {
  * a job and only then admitting the template was dropped is a worse trade than
  * asking first.
  */
-export function PostJobModal({ open, onClose, onJobCreated }: Props) {
+export function PostJobModal(props: Props) {
+  // Team flag off: Phase 2's modal, without the membership hook at all (no
+  // request). On: the same modal, told who is reading its plan-limit copy. A
+  // component choice on a build-time flag, not a conditional hook call.
+  return isTeamManagementEnabled() ? <TeamAwarePostJobModal {...props} /> : <PostJobModalView {...props} membership={MEMBERSHIP_DISABLED} />;
+}
+
+function TeamAwarePostJobModal(props: Props) {
+  const membership = useEmployerMembership();
+  return <PostJobModalView {...props} membership={membership} />;
+}
+
+function PostJobModalView({ open, onClose, onJobCreated, membership }: Props & { membership: EmployerMembership }) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
   const tReq = useTranslations('job_requirements');
@@ -145,6 +161,13 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const [templateName, setTemplateName] = useState('');
   const [templateNotice, setTemplateNotice] = useState<'' | 'limit' | 'name_taken'>('');
   const [templateLimit, setTemplateLimit] = useState<number | null>(null);
+  /*
+   * Phase 3: who reads the plan-limit copy (`planLimitAudienceFor`), from the
+   * membership plus the plan and role the billing read below names. Undefined
+   * with the team flag off, which keeps every model exactly Phase 2's.
+   */
+  const [billingPlan, setBillingPlan] = useState<AudienceBilling>(null);
+  const limitAudience = useMemo(() => planLimitAudienceFor(membership, billingPlan), [membership, billingPlan]);
   /*
    * The field a refused Next or Post is about (sprint 29): named in the
    * banner, marked `aria-invalid` with its sentence under it, and focused.
@@ -227,7 +250,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     // read that fails costs the pre-check, never the post.
     getBilling(idToken)
       .then((billing) => {
-        if (!cancelled) setTemplateLimit(billing.templateLimit);
+        if (cancelled) return;
+        setTemplateLimit(billing.templateLimit);
+        setBillingPlan({ planCode: billing.planCode, role: billing.role });
       })
       .catch(() => {
         // No cap known; the server 403 remains the backstop.
@@ -272,9 +297,11 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       templateNotice === 'limit'
         ? planLimitModel(
             new ApiError(403, 'template_limit_reached', { template_limit: templateLimit ?? 0 }),
+            null,
+            limitAudience,
           )
         : null,
-    [templateNotice, templateLimit],
+    [templateNotice, templateLimit, limitAudience],
   );
 
   const clearFieldProblem = (field: JobFormFieldProblem['field']) => {
@@ -559,7 +586,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       // classified into the app's shared, bilingual failure sentences —
       // `modal.error` stays as the override for the genuinely unclassifiable.
       if (err instanceof ApiError && err.code === 'job_limit_reached') {
-        setJobLimit(planLimitModel(err));
+        setJobLimit(planLimitModel(err, null, limitAudience));
       } else if (err instanceof ApiError && err.code === 'city_required') {
         setError(tReq('errors.city_required'));
       } else if (err instanceof ApiError && err.code === 'requirements_tier_overlap') {
@@ -671,6 +698,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         <JobPostedPanel
           job={posted.job}
           templateNotSaved={posted.templateNotSaved}
+          offerUpgrade={upgradeOffered(limitAudience)}
           onNavigate={handleClose}
         />
       ) : (

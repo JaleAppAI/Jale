@@ -372,8 +372,8 @@ describe('least-privilege database wiring (real bin/jale-app.ts composition)', (
     const counts: Record<string, number> = {};
     for (const login of Object.values(EXPECTED_DB_LOGIN)) counts[login] = (counts[login] ?? 0) + 1;
     expect(counts).toEqual({
-      jale_api: 49,
-      jale_api_public: 3,
+      jale_api: 52,
+      jale_api_public: 4,
       jale_api_public_reports: 1,
       jale_job_report_cleanup: 1,
       jale_job_email_sender: 1,
@@ -386,7 +386,7 @@ describe('least-privilege database wiring (real bin/jale-app.ts composition)', (
       jale_whatsapp: 12,
       jale_ai: 4,
       jale_public_jobs: 5,
-      jale_billing: 1,
+      jale_billing: 2,
       jale_matching: 1,
       jale_admin_console: 1,
     });

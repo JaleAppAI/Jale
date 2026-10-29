@@ -3,7 +3,11 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
+import { useEmployerMembership, type EmployerMembership } from '@/hooks/useEmployerMembership';
+import { MEMBERSHIP_DISABLED } from '@/lib/employer-membership-store';
+import { planLimitAudienceFor } from '@/hooks/usePlanLimitAudience';
 import { ApiError, saveJobTemplate, type JobTemplate } from '@/lib/api/employer';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
 import {
   type JobForm, initialForm, jobFormFromTemplatePayload, jobFormToCreatePayload,
   validateFullJobForm, validateStepBasics, applyLocationToJobForm,
@@ -33,7 +37,17 @@ interface Props {
   onSaved: (saved: JobTemplate) => void;
 }
 
-export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
+export function TemplateEditModal(props: Props) {
+  // Same split as PostJobModal: flag off, no membership hook and Phase 2's copy.
+  return isTeamManagementEnabled() ? <TeamAwareTemplateEditModal {...props} /> : <TemplateEditModalView {...props} membership={MEMBERSHIP_DISABLED} />;
+}
+
+function TeamAwareTemplateEditModal(props: Props) {
+  const membership = useEmployerMembership();
+  return <TemplateEditModalView {...props} membership={membership} />;
+}
+
+function TemplateEditModalView({ open, template, onClose, onSaved, membership }: Props & { membership: EmployerMembership }) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
   const tReq = useTranslations('job_requirements');
@@ -157,7 +171,8 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
       if (err instanceof ApiError && err.code === 'template_name_taken') {
         setNameError(t('modal.template_name_taken'));
       } else if (err instanceof ApiError && err.code === 'template_limit_reached') {
-        setLimitModel(planLimitModel(err));
+        // Phase 3: who reads it. No billing here; the 403 names the plan.
+        setLimitModel(planLimitModel(err, null, planLimitAudienceFor(membership)));
       } else if (err instanceof ApiError && err.code === 'city_required') {
         // Same requirements-picker-adjacent 400 PostJobModal/EditJobModal
         // classify -- a template's payload goes through the identical

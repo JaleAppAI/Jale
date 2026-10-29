@@ -53,7 +53,7 @@ describe('billing get handler', () => {
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query, release }) });
     mockCheckCompliance.mockResolvedValue({ userExists: true, compliant: true, currentVersion: 'v1' });
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20, foremanSeatLimit: 3 });
-    mockReadCompanyUsage.mockResolvedValue({ organizationId: ORG, activeJobs: 3, templates: 4, activeForemen: 1, suspendedForemen: 1 });
+    mockReadCompanyUsage.mockResolvedValue({ organizationId: ORG, activeJobs: 3, templates: 4, activeForemen: 1, suspendedForemen: 1, pendingInvites: 0 });
     mockResolveEmployerActor.mockResolvedValue(actor('owner', OWNER, [OWNER, FOREMAN]));
     answer(3);
   });
@@ -75,7 +75,7 @@ describe('billing get handler', () => {
       templateUsage: 4,
       otherMembersActiveJobs: 0,
       role: 'owner',
-      seats: { used: 1, limit: 3, suspended: 1 },
+      seats: { used: 1, pending: 0, limit: 3, suspended: 1 },
       subscription: { plan_code: 'employer_pro', status: 'active' },
       display_price_minor: 2000,
       currency: 'usd',
@@ -101,6 +101,33 @@ describe('billing get handler', () => {
     const visible = query.mock.calls.find(([sql]) => String(sql).includes('AS active_jobs'));
     expect(String(visible![0])).toMatch(/employer_id = ANY\(\$1::uuid\[\]\)/);
     expect(visible![1]).toEqual([[FOREMAN]]);
+  });
+
+  // Phase 3: a live invite holds a seat. `used` stays the active foremen; the
+  // frontend shows used + pending against the limit.
+  it('owner seats carry pending from usage', async () => {
+    mockReadCompanyUsage.mockResolvedValue({
+      organizationId: ORG, activeJobs: 3, templates: 7, activeForemen: 1, suspendedForemen: 0, pendingInvites: 2,
+    });
+
+    const body = JSON.parse((await handler(event())).body);
+
+    expect(body.seats).toEqual({ used: 1, pending: 2, limit: 3, suspended: 0 });
+    // The template meter is company-wide: every member's templates.
+    expect(body.templateUsage).toBe(7);
+  });
+
+  it('foreman seats stay null', async () => {
+    mockResolveEmployerActor.mockResolvedValue(actor('foreman', FOREMAN, [FOREMAN]));
+    mockReadCompanyUsage.mockResolvedValue({
+      organizationId: ORG, activeJobs: 3, templates: 7, activeForemen: 1, suspendedForemen: 0, pendingInvites: 2,
+    });
+    answer(1);
+
+    const body = JSON.parse((await handler(event())).body);
+
+    expect(body.seats).toBeNull();
+    expect(body.templateUsage).toBe(7);
   });
 
   it('answers 403 employer_required for a non-employer, and the actor failure for an inactive member', async () => {

@@ -27,6 +27,8 @@ import {
 import { EmptyThreadComposer } from '@/components/employer/EmptyThreadComposer';
 import { isLegalWallError } from '@/lib/api';
 import { ApiError } from '@/lib/api/errors';
+import { teamErrorMessageKey } from '@/lib/api/team';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
 import { formatTimeOfDay } from '@/lib/date';
 import { messagesTutorialDone } from '@/lib/employer-tutorial-done';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
@@ -76,6 +78,7 @@ export default function EmployerConversationsPage() {
   const router = useRouter();
   const t = useTranslations('employer_messages');
   const tCommon = useTranslations('common');
+  const tTeam = useTranslations('employer_team');
   const translateError = useErrorMessage();
   const toast = useToast();
 
@@ -368,6 +371,13 @@ export default function EmployerConversationsPage() {
         } else if (code === 'applicant_not_found') {
           setComposerError(t('candidate_unavailable'));
           void refreshInbox();
+        } else if (code === 'job_move_conflict' && isTeamManagementEnabled()) {
+          // Phase 3: the owner moved this job while the conversation was
+          // being created. Nothing was sent; re-read the inbox so the row
+          // follows the job, and say why.
+          setComposerError(tTeam(teamErrorMessageKey(err)));
+          void refreshInbox();
+          void refreshPolledInbox();
         } else {
           setComposerError(translateError(err));
         }

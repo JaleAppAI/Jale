@@ -151,6 +151,10 @@ interface DbFixture {
   /** F19: what the hire-details nudge claim hands back. */
   nudges?: Array<Record<string, unknown>>;
   nudgeClaimError?: Error;
+  /** Phase 3: employers with no active membership (org_member_scope is '{}'). */
+  inactive?: string[];
+  /** Phase 3: org_owner_scope per employer; absent means '{}' (not an active owner). */
+  ownerScope?: Record<string, string[]>;
 }
 
 function configureDb(fixture: DbFixture): Date {
@@ -185,10 +189,23 @@ function configureDb(fixture: DbFixture): Date {
         rowCount: 1,
       });
     }
+    // Phase 3: is the due employer an active member, and whose jobs does
+    // their digest cover (an owner's company; '{}' for anyone else).
+    if (text.includes('org_member_scope')) {
+      sequence.push('member');
+      const employerId = String((params ?? [])[0]);
+      return Promise.resolve({ rows: [{ active: !(fixture.inactive ?? []).includes(employerId) }], rowCount: 1 });
+    }
+    if (text.includes('org_owner_scope')) {
+      sequence.push('scope');
+      const employerId = String((params ?? [])[0]);
+      return Promise.resolve({ rows: [{ scope: fixture.ownerScope?.[employerId] ?? [] }], rowCount: 1 });
+    }
     if (/FROM jobs\b/.test(text)) {
       sequence.push('jobs');
-      const employerId = String((params ?? [])[0]);
-      const rows = fixture.jobs[employerId] ?? [];
+      const first = (params ?? [])[0];
+      const employerIds = Array.isArray(first) ? first.map(String) : [String(first)];
+      const rows = employerIds.flatMap((employerId) => fixture.jobs[employerId] ?? []);
       return Promise.resolve({ rows, rowCount: rows.length });
     }
     if (text.includes('claim_hire_details_nudges')) {
@@ -460,7 +477,143 @@ describe('employer-digest-producer', () => {
     await handler();
     const jobsCall = mockQuery.mock.calls.find((c) => /FROM jobs\b/.test(String(c[0])));
     expect(String(jobsCall![0])).toContain("status = 'active'");
-    expect(jobsCall![1]).toEqual([EMPLOYER_A]);
+    expect(String(jobsCall![0])).toContain('employer_id = ANY($1::uuid[])');
+    expect(jobsCall![1]).toEqual([[EMPLOYER_A]]);
+  });
+
+  // ── Phase 3: the owner's digest covers the company ────────────────────────
+
+  describe('company digest', () => {
+    const FOREMAN = '55555555-6666-4777-8888-999999999999';
+    const OWNER_JOB = JOB_1;
+    const FOREMAN_JOB = JOB_2;
+
+    function companyFixture(overrides: Partial<DbFixture> = {}): DbFixture {
+      return {
+        due: [dueRow()],
+        jobs: {
+          [EMPLOYER_A]: [{ id: OWNER_JOB, title: 'Electrician' }],
+          [FOREMAN]: [{ id: FOREMAN_JOB, title: 'Plumber' }],
+        },
+        ownerScope: { [EMPLOYER_A]: [EMPLOYER_A, FOREMAN] },
+        ...overrides,
+      };
+    }
+
+    it('an owner\'s digest lists every member\'s active jobs', async () => {
+      configureDb(companyFixture());
+      mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+
+      const result = await handler();
+
+      expect(result).toMatchObject({ due: 1, queued: 1 });
+      const scopeCall = mockQuery.mock.calls.find((c) => String(c[0]).includes('org_owner_scope'));
+      expect(String(scopeCall![0])).toBe('SELECT jale_internal.org_owner_scope($1::text, false) AS scope');
+      expect(scopeCall![1]).toEqual([EMPLOYER_A]);
+      const jobsCall = mockQuery.mock.calls.find((c) => /FROM jobs\b/.test(String(c[0])));
+      expect(jobsCall![1]).toEqual([[EMPLOYER_A, FOREMAN]]);
+      expect(mockListEmployerCandidates.mock.calls.map(([, jobId]) => jobId)).toEqual([OWNER_JOB, FOREMAN_JOB]);
+      const [, input] = mockQueueEmail.mock.calls[0];
+      expect(input.bodyText).toContain('Electrician');
+      expect(input.bodyText).toContain('Plumber');
+      // Still one digest, to the owner's address, keyed on the owner.
+      expect(mockQueueEmail).toHaveBeenCalledTimes(1);
+      expect(input.recipientEmail).toBe('a@example.com');
+      expect(input.idempotencyKey).toMatch(new RegExp(`^employer-digest:${EMPLOYER_A}:`));
+    });
+
+    it('a foreman\'s digest lists only their own', async () => {
+      configureDb(companyFixture({
+        due: [dueRow({ employer_id: FOREMAN, cognito_sub: 'sub-f', email: 'f@example.com' })],
+      }));
+      mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+
+      const result = await handler();
+
+      expect(result).toMatchObject({ due: 1, queued: 1 });
+      const jobsCall = mockQuery.mock.calls.find((c) => /FROM jobs\b/.test(String(c[0])));
+      expect(jobsCall![1]).toEqual([[FOREMAN]]);
+      // Membership first (right after the GUCs), then the scope, then the jobs.
+      expect(digestSequence().filter((s) => ['BEGIN', 'setInternalUserRlsContext:' + FOREMAN, 'member', 'clock', 'scope', 'jobs'].includes(s)))
+        .toEqual(['BEGIN', `setInternalUserRlsContext:${FOREMAN}`, 'member', 'clock', 'scope', 'jobs']);
+      expect(mockListEmployerCandidates.mock.calls.map(([, jobId]) => jobId)).toEqual([FOREMAN_JOB]);
+      const [, input] = mockQueueEmail.mock.calls[0];
+      expect(input.bodyText).toContain('Plumber');
+      expect(input.bodyText).not.toContain('Electrician');
+    });
+
+    it('an inactive member is skipped with digest_skipped_inactive_member and no watermark advance', async () => {
+      configureDb(companyFixture({
+        due: [
+          dueRow({ employer_id: FOREMAN, cognito_sub: 'sub-f', email: 'f@example.com' }),
+          dueRow(),
+        ],
+        inactive: [FOREMAN],
+      }));
+      mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+      const info = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+
+      const result = await handler();
+
+      expect(result).toMatchObject({ due: 2, queued: 1, quiet: 0, skipped: 1, failed: 0 });
+      expect(result.queued + result.quiet + result.skipped + result.failed + result.deferred).toBe(result.due);
+      const memberCall = mockQuery.mock.calls.find((c) => String(c[0]).includes('org_member_scope'));
+      expect(String(memberCall![0])).toBe('SELECT cardinality(jale_internal.org_member_scope($1::text)) > 0 AS active');
+      expect(memberCall![1]).toEqual([FOREMAN]);
+      // The foreman's transaction: GUCs, the membership read, COMMIT -- no
+      // jobs read, no mail, no watermark.
+      const firstCommit = digestSequence().indexOf('COMMIT');
+      expect(digestSequence().slice(0, firstCommit + 1)).toEqual([
+        'getUnsubscribeSecret', 'due', 'mint', 'BEGIN',
+        'setRlsContext:sub-f', `setInternalUserRlsContext:${FOREMAN}`, 'member', 'COMMIT',
+      ]);
+      expect(digestSequence().filter((s) => s === 'watermark')).toHaveLength(1);
+      const watermarkCalls = mockQuery.mock.calls.filter((c) => String(c[0]).includes('UPDATE employer_digest_settings'));
+      expect(watermarkCalls.map((c) => c[1]![0])).toEqual([EMPLOYER_A]);
+      expect(mockQueueEmail.mock.calls.map(([, input]) => input.recipientEmail)).toEqual(['a@example.com']);
+      const lines = info.mock.calls.map(([line]) => String(line));
+      expect(lines).toContain(JSON.stringify({ metric: 'digest_skipped_inactive_member', employerId: FOREMAN }));
+      info.mockRestore();
+    });
+
+    it('stops before an employer once the time budget is short: the rest are deferred, untouched, logged once', async () => {
+      const EMPLOYER_C = '33333333-4444-4555-8666-777777777777';
+      configureDb(companyFixture({
+        due: [
+          dueRow(),
+          dueRow({ employer_id: EMPLOYER_B, cognito_sub: 'sub-b' }),
+          dueRow({ employer_id: EMPLOYER_C, cognito_sub: 'sub-c' }),
+        ],
+        jobs: { [EMPLOYER_A]: [{ id: OWNER_JOB, title: 'Electrician' }] },
+      }));
+      // The first employer's ranking uses up the budget.
+      let remaining = 40_000;
+      mockListEmployerCandidates.mockImplementation(() => { remaining = 14_999; return Promise.resolve(rankingResult([candidate()])); });
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      const result = await handler(undefined, { getRemainingTimeInMillis: () => remaining });
+      const deadlines = warn.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('digest_run_deadline'));
+      warn.mockRestore();
+
+      expect(result).toEqual({ due: 3, queued: 1, quiet: 0, skipped: 0, failed: 0, deferred: 2 });
+      expect(result.queued + result.quiet + result.skipped + result.failed + result.deferred).toBe(result.due);
+      expect(deadlines).toEqual([JSON.stringify({ metric: 'digest_run_deadline', deferred: 2 })]);
+      // B and C: no mint, no transaction, no watermark.
+      expect(mockMintUnsubscribeToken).toHaveBeenCalledTimes(1);
+      expect(sequence.filter((s) => s === 'BEGIN')).toHaveLength(1);
+      expect(sequence).not.toContain('setRlsContext:sub-b');
+      expect(sequence.filter((s) => s === 'watermark')).toHaveLength(1);
+    });
+
+    it('an owner whose scope comes back empty still gets their own jobs', async () => {
+      configureDb(companyFixture({ ownerScope: {} }));
+      mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+
+      await handler();
+
+      const jobsCall = mockQuery.mock.calls.find((c) => /FROM jobs\b/.test(String(c[0])));
+      expect(jobsCall![1]).toEqual([[EMPLOYER_A]]);
+    });
   });
 
   // ── Quiet day ─────────────────────────────────────────────────────────────
@@ -687,7 +840,7 @@ describe('employer-digest-producer', () => {
     const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const result = await handler();
     expect(result).toMatchObject({ due: 4, queued: 1, quiet: 1, skipped: 1, failed: 1 });
-    expect(result.queued + result.quiet + result.skipped + result.failed).toBe(result.due);
+    expect(result.queued + result.quiet + result.skipped + result.failed + result.deferred).toBe(result.due);
     warn.mockRestore();
     errorLog.mockRestore();
   });
@@ -920,7 +1073,7 @@ describe('employer-digest-producer', () => {
 
       const result = await handler();
 
-      expect(result).toEqual({ due: 0, queued: 0, quiet: 0, skipped: 0, failed: 0 });
+      expect(result).toEqual({ due: 0, queued: 0, quiet: 0, skipped: 0, failed: 0, deferred: 0 });
       const claim = mockQuery.mock.calls.find(([sql]) => String(sql).includes('claim_hire_details_nudges'));
       expect(claim?.[1]).toEqual([25]);
       expect(sweep()).toEqual([
@@ -936,8 +1089,8 @@ describe('employer-digest-producer', () => {
       ]);
       const [, first] = nudgeCalls()[0];
       expect(first.subject).toBe('Add start details for Ana · Agregue los detalles de inicio para Ana');
-      expect(first.bodyText).toContain('Ana is hired for Glazier. Add a start date and where to report.');
-      expect(first.bodyText).toContain('Contrató a Ana para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.');
+      expect(first.bodyText).toContain('Ana was hired for Glazier. Add a start date and where to report.');
+      expect(first.bodyText).toContain('Se contrató a Ana para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.');
       expect(first.bodyText).toContain(`${BASE_URL}/en/employer/applicants`);
       expect(first.bodyText).toContain(`${BASE_URL}/es/employer/applicants`);
       expect(nudgeCalls()[1][1].bodyText).toContain('Ana asked for their start details for Glazier.');
@@ -1015,7 +1168,7 @@ describe('employer-digest-producer', () => {
     it('a failing claim rolls the sweep back and never fails the digest run', async () => {
       const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
       configureDb({ due: [], jobs: {}, nudgeClaimError: new Error('claim down') });
-      await expect(handler()).resolves.toEqual({ due: 0, queued: 0, quiet: 0, skipped: 0, failed: 0 });
+      await expect(handler()).resolves.toEqual({ due: 0, queued: 0, quiet: 0, skipped: 0, failed: 0, deferred: 0 });
       expect(sweep()).toEqual(['BEGIN', 'claim nudges', 'ROLLBACK']);
       expect(error.mock.calls.map(([line]) => String(line)).some((line) => line.includes('hire_details_nudge_run_failed'))).toBe(true);
       error.mockRestore();

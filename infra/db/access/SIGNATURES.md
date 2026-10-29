@@ -303,6 +303,62 @@ proves each signature, owner and grant on a real database.
   read through `organization_invites_by_org_email (organization_id, email)`,
   which 134 adds.
 
+## Worker-facing naming (owner `jale_cap_org_team`, migration 138)
+
+| Function | Caller | Returns |
+|---|---|---|
+| `employer_contact_name(p_user_id uuid)` | `jale_api`, `jale_whatsapp` (and its owner) | `text` |
+| `org_job_moved(p_job_ids uuid[], p_from uuid, p_to uuid, p_removed boolean)` | `jale_api` | `integer` |
+
+- **employer_contact_name** returns the employer login's
+  `NULLIF(btrim(employer_profiles.contact_name), '')`, NULL without a
+  profile (one row at most: the table is keyed by `user_id`). No caller
+  check: it is the name every worker-facing message of that employer shows,
+  and nothing else of the profile is returned. Callers build the label
+  ("{contact} ({company})") themselves. It is `STABLE`: the chat picker and
+  the job detail call it per row.
+- **org_job_moved** is called by the reassign and remove-with-reassign
+  handlers after their jobs `UPDATE` and before `COMMIT` (remove: before
+  `org_team_remove_member`), under the company lock they already hold; it
+  takes no lock of its own. It reads the caller from
+  `app.current_internal_user_id`.
+  - **Refused** with `P0001`, DETAIL `org_job_moved_refused`, unless the
+    caller is the active owner of the company `p_from` and `p_to` are both
+    current (not removed) members of, `p_from <> p_to`, and every job in
+    `p_job_ids` now has `employer_id = p_to`. An unset caller is refused the
+    same way. A NULL argument, an empty array or a NULL id raises `22023`.
+    Duplicate ids count once.
+  - **Not idempotent:** a repeat call writes the notice again. Callers pass
+    only the ids their `UPDATE ... RETURNING` moved, and since an empty
+    array is `22023`, a caller (the support SQL included) skips the call
+    when nothing moved.
+  - **The notice:** one `job_conversation_messages` row
+    `(conversation_id, 'system', 'outbound', body, 'sent')` per `open`
+    conversation of the jobs (unanswered invites included; closed ones get
+    none). The body is `Conversación transferida a <n> / Conversation moved
+    to <n>`, `<n>` the new holder's contact name with every run of whitespace
+    made one space, trimmed and clipped to 80 characters, or `otro miembro` /
+    `another member` without one. `created_at` is `clock_timestamp()`, so
+    the notice sorts after any message that committed during the move. No company name: the
+    readers are inside the company. `sender_user_id` is NULL (118's stamp,
+    as on every system row). Nothing on `job_conversations` changes: the
+    reply window, the read mark and `last_message_at` stay as they were, and
+    the row is outbound, so the inbox's unread badge ignores it. Every
+    last-message preview (the inbox, the conversation list and the
+    conversation detail) skips `sender_type = 'system'` rows, so the notice
+    is never the preview: it shows the newest real message instead.
+  - **The re-point (`p_removed` only):** applications of the jobs whose
+    `hire_contact_name` equals the old holder's contact name (lower,
+    btrim), or whose `hire_contact_phone` digits match the old holder's
+    `employer_profiles.phone` digits (the last 10 when both have at least
+    10, else all of them; never empty), get `hire_contact_name` = the
+    cleaned name above, `hire_contact_phone = NULL` and
+    `hire_details_updated_at = now()`. Only the listed jobs' applications
+    change. Nothing changes when the new holder has no contact name. The
+    columns are not covered by the audit change log, so no change record is
+    written (as for the employer's own hire-details save).
+  - **Returns** the number of notices written.
+
 ## Re-owned definers (no signature change)
 
 | Function | Caller | Owner | Returns |

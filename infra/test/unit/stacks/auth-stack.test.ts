@@ -65,6 +65,54 @@ describe('AuthStack', () => {
     });
   });
 
+  test('post-confirmation gets TEAM_MANAGEMENT_ENABLED (off unless the composition turns it on)', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Handler: 'index.handler',
+      Environment: {
+        Variables: Match.objectLike({ DLQ_URL: Match.anyValue(), TEAM_MANAGEMENT_ENABLED: 'false' }),
+      },
+    });
+  });
+
+  // Phase 3: a sign-up that should have joined a company by invite. A failed
+  // accept (or 133 missing: the CRITICAL 42883 line) leaves a confirmed login
+  // with no membership, which nobody sees unless it pages.
+  test('failed sign-up accepts alarm to the ops topic', () => {
+    const filters = Object.values(template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: '?"post_confirmation_invite_failed" ?"joined no company"' },
+    })) as any[];
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties.LogGroupName).toEqual({ Ref: expect.stringMatching(/^PostConfirmationLambdaLogGroup/) });
+    expect(filters[0].Properties.MetricTransformations).toEqual([expect.objectContaining({
+      MetricNamespace: 'Jale/Auth', MetricName: 'PostConfirmationInviteFailed', MetricValue: '1',
+    })]);
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'PostConfirmationInviteFailed',
+      Namespace: 'Jale/Auth',
+      MetricName: 'PostConfirmationInviteFailed',
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: [ALARM_TOPIC_ARN],
+    });
+  });
+
+  test('deferred sign-up accepts publish a count metric with no alarm', () => {
+    const filters = Object.values(template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: '"post_confirmation_invite_deferred"' },
+    })) as any[];
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties.LogGroupName).toEqual({ Ref: expect.stringMatching(/^PostConfirmationLambdaLogGroup/) });
+    expect(filters[0].Properties.MetricTransformations).toEqual([expect.objectContaining({
+      MetricNamespace: 'Jale/Auth', MetricName: 'PostConfirmationInviteDeferred', MetricValue: '1',
+    })]);
+    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm')) as any[];
+    expect(alarms.filter((alarm) => alarm.Properties.MetricName === 'PostConfirmationInviteDeferred')).toEqual([]);
+  });
+
   test('SQS dead-letter queue exists', () => {
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'jale-post-confirmation-dlq',
@@ -229,10 +277,11 @@ describe('AuthStack', () => {
     });
   });
 
-  test('sends all four alarms to the ops topic, and only their ALARM state', () => {
+  test('sends all five alarms to the ops topic, and only their ALARM state', () => {
     const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm')) as any[];
     expect(alarms.map((a) => a.Properties.AlarmName).sort()).toEqual([
       'EmployerCustomMessageErrors',
+      'PostConfirmationInviteFailed',
       'WorkerOtpSendErrors',
       'WorkerOtpSendThrottled',
       'WorkerOtpTwilioFailures',
@@ -515,7 +564,7 @@ describe('AuthStack', () => {
 // a dev synth may not pass. Without it the alarms still exist, with no action,
 // and the stack still synthesizes.
 describe('AuthStack without an alarm topic', () => {
-  test('keeps all four alarms, with no action', () => {
+  test('keeps all five alarms, with no action', () => {
     const app = new cdk.App({
       context: {
         environment: 'production',
@@ -530,10 +579,34 @@ describe('AuthStack without an alarm topic', () => {
       lambdaSg: network.lambdaSg,
     });
     const alarms = Object.values(Template.fromStack(auth).findResources('AWS::CloudWatch::Alarm')) as any[];
-    expect(alarms).toHaveLength(4);
+    expect(alarms).toHaveLength(5);
     for (const alarm of alarms) {
       expect(alarm.Properties.AlarmActions).toBeUndefined();
     }
+  });
+});
+
+describe('AuthStack — team management flag on', () => {
+  test('post-confirmation gets TEAM_MANAGEMENT_ENABLED=true', () => {
+    const app = new cdk.App({
+      context: {
+        environment: 'production',
+        otpSmsFromNumber: '+15125550123',
+        'aws:cdk:bundling-stacks': [],
+      },
+    });
+    const network = new NetworkStack(app, 'FlagNetworkStack');
+    const auth = new AuthStack(app, 'FlagAuthStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      teamManagementEnabled: true,
+    });
+    Template.fromStack(auth).hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: Match.objectLike({ DLQ_URL: Match.anyValue(), TEAM_MANAGEMENT_ENABLED: 'true' }),
+      },
+    });
   });
 });
 

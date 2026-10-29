@@ -232,6 +232,12 @@ export type JobDetail = Job & {
   application_status: ApplicationStatus | null;
   missing_docs: JobDocType[];
   /**
+   * The person at the company who answers this worker (Phase 4). Sent only to
+   * a worker who applied; null before that, or when the employer set none.
+   * Absent on older payloads.
+   */
+  contact_name?: string | null;
+  /**
    * The three-state picker's other three arrays plus the two derived
    * "what's left" lists (migrations 073/074). All optional: the
    * currently-deployed `worker-jobs-detail` handler does not select them

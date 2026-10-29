@@ -17,6 +17,7 @@ import {
   recordWorkerConversationReply,
   type ThreadOption,
 } from '../../lib/job-messaging';
+import { cleanLabelPart, collapseWhitespace, formatEmployerContactLabel } from '../../lib/employer-contact-label';
 import { queueOutboxText } from './outbox';
 import { detectLanguage, t, type Lang } from './templates';
 import {
@@ -563,14 +564,19 @@ async function sendChatsPickerOrAutoFocus(
   deps: RouterDeps,
   autoFocusSingle: boolean,
 ): Promise<void> {
+  // Each thread is named by its responsible person, "{contact} ({company})":
+  // both names come back with the row (one query for the whole picker), and
+  // the label is built here.
   const open = await client.query<{
     id: string;
     job_title: string;
+    contact_name: string | null;
     company: string;
     worker_thread_number: number | null;
   }>(
     `SELECT jc.id,
             COALESCE(NULLIF(j.title, ''), 'Trabajo') AS job_title,
+            jale_cap.employer_contact_name(jc.employer_id) AS contact_name,
             employer_display_name(jc.employer_id) AS company,
             jc.worker_thread_number
        FROM job_conversations jc
@@ -589,23 +595,24 @@ async function sendChatsPickerOrAutoFocus(
     return;
   }
 
-  if ((open.rowCount ?? 0) === 1 && autoFocusSingle) {
-    const row = open.rows[0];
-    await setFocusedConversation(client, conv, row.id, msg.messageSid, deps);
+  const threads = open.rows.map(r => ({
+    conversationId: r.id,
+    jobTitle: r.job_title,
+    companyName: formatEmployerContactLabel({ contactName: r.contact_name, companyName: r.company }),
+    threadNumber: r.worker_thread_number,
+  }));
+
+  if (threads.length === 1 && autoFocusSingle) {
+    const only = threads[0];
+    await setFocusedConversation(client, conv, only.conversationId, msg.messageSid, deps);
     await queueOutboxText(client, msg.messageSid, msg.from,
       conv.language === 'en'
-        ? `Now replying to ${row.company}. Send your message.`
-        : `Ahora respondes a ${row.company}. Escribe tu mensaje.`);
+        ? `Now replying to ${pickerLabel(only.companyName)}. Send your message.`
+        : `Ahora respondes a ${pickerLabel(only.companyName)}. Escribe tu mensaje.`);
     return;
   }
 
   // ≥1 open thread (or ≥2 when auto-focus is enabled): send picker
-  const threads = open.rows.map(r => ({
-    conversationId: r.id,
-    jobTitle: r.job_title,
-    companyName: r.company,
-    threadNumber: r.worker_thread_number,
-  }));
   const { pending_picker: _drop, ...restCtx } = (conv.state_context ?? {}) as ProfileStateContext;
   await deps.updateConversation(client, conv.id, {
     state_context: { ...restCtx, pending_picker: { kind: 'chats' as const, threads } },
@@ -616,7 +623,7 @@ async function sendChatsPickerOrAutoFocus(
     ? 'Your open conversations:'
     : 'Tus conversaciones abiertas:';
   const lines = threads.map((t, i) =>
-    `${i + 1}. ${t.companyName} — ${t.jobTitle}`);
+    `${i + 1}. ${pickerLabel(t.companyName)} — ${pickerJobTitle(t.jobTitle)}`);
   const footer = conv.language === 'en' ? 'Reply with the number.' : 'Responde con el número.';
   await queueOutboxText(client, msg.messageSid, msg.from,
     [header, ...lines, footer].join('\n'));
@@ -624,8 +631,21 @@ async function sendChatsPickerOrAutoFocus(
 
 // ── Disambiguation flow ─────────────────────────────────────────
 
-function sanitizeLabel(value: string | null | undefined, max = 40): string {
-  return (value ?? '').replace(/[\r\n\t -]/g, ' ').trim().slice(0, max) || 'Empleador';
+/**
+ * The employer name on a picker line or a "Now replying to" notice. A label
+ * from formatEmployerContactLabel is already clean and clipped, so it is
+ * shown whole: clipping it again would cut its closing parenthesis.
+ * Whitespace is still collapsed (a no-op on a label) because a picker stored
+ * in state_context before Phase 4 holds the raw company name, which may
+ * carry a newline.
+ */
+function pickerLabel(value: string | null | undefined): string {
+  return collapseWhitespace(value ?? '') || 'Empleador';
+}
+
+/** A job title on a picker line: a raw part, cleaned and clipped by code points. */
+function pickerJobTitle(value: string | null | undefined): string {
+  return cleanLabelPart(value, 40) || 'Trabajo';
 }
 
 export function parseDisambiguationPick(body: string): number | null {
@@ -734,7 +754,7 @@ export async function relayWorkerFreeText(
       ? 'You have several open conversations. Who do you want to message? Reply with the number, then send your message.'
       : 'Tienes varias conversaciones abiertas. ¿A quién le quieres escribir? Responde con el número, luego envía tu mensaje.';
     const lines = result.threads.map((t, i) =>
-      `${i + 1}. ${sanitizeLabel(t.companyName)} — ${sanitizeLabel(t.jobTitle)}`);
+      `${i + 1}. ${pickerLabel(t.companyName)} — ${pickerJobTitle(t.jobTitle)}`);
     await queueOutboxText(client, msg.messageSid, msg.from,
       [header, ...lines].join('\n'));
     return workerId;
@@ -804,7 +824,7 @@ export async function handlePickerResponse(
   await setFocusedConversation(client, conv, chosen.conversationId, msg.messageSid, deps);
   await queueOutboxText(client, msg.messageSid, msg.from,
     conv.language === 'en'
-      ? `Now replying to ${sanitizeLabel(chosen.companyName)}. Send your message.`
-      : `Ahora respondes a ${sanitizeLabel(chosen.companyName)}. Escribe tu mensaje.`);
+      ? `Now replying to ${pickerLabel(chosen.companyName)}. Send your message.`
+      : `Ahora respondes a ${pickerLabel(chosen.companyName)}. Escribe tu mensaje.`);
   return workerId;
 }

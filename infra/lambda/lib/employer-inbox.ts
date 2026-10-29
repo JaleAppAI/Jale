@@ -86,10 +86,15 @@ const INBOX_QUERY = `
     ORDER BY (jc.status = 'open') DESC, COALESCE(jc.last_message_at, jc.created_at) DESC
     LIMIT 1
   ) c ON true
+  -- The preview skips system rows (a job-move notice, "worker ended the
+  -- conversation"): they are not anyone's words, and an outbound system row
+  -- would otherwise read as the last thing said. A thread with only system
+  -- rows has no preview, like a thread with no messages.
   LEFT JOIN LATERAL (
     SELECT jcm.body
     FROM job_conversation_messages jcm
     WHERE jcm.conversation_id = c.id
+      AND jcm.sender_type <> 'system'
     ORDER BY jcm.created_at DESC
     LIMIT 1
   ) last_msg ON true
@@ -136,10 +141,14 @@ function toMillis(value: Date | string | null | undefined): number | null {
 //
 // ── WHY NOT last_worker_message_at ───────────────────────────────────────
 // Because that column does not mean "the worker sent a message". It means
-// "the worker engaged". `openWorkerConversation` (lib/job-messaging.ts:813)
+// "the worker engaged". `openWorkerConversation` (lib/job-messaging.ts)
 // stamps it when the worker taps "Open conversation" and inserts NO message
-// row -- the only three writers of job_conversation_messages are :503
-// (employer outbound), :617 (system outbound) and :692 (worker inbound).
+// row. The writers of job_conversation_messages are:
+//   * queueConversationMessageFromEmployer (job-messaging.ts) -- employer outbound;
+//   * closeWorkerConversation (job-messaging.ts) -- system outbound;
+//   * recordWorkerConversationReply (job-messaging.ts) -- worker inbound;
+//   * jale_cap.worker_post_application_message (migration 125) -- worker inbound;
+//   * jale_cap.org_job_moved (migration 138) -- system outbound (the move notice).
 // Keyed on it, the badge announced a message that does not exist, and the
 // preview next to that badge showed the EMPLOYER's own last text.
 //

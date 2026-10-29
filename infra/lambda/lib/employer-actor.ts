@@ -24,9 +24,19 @@ export interface EmployerActor {
   scopeUserIds: string[];
 }
 
+export type InactiveMembershipStatus = 'suspended' | 'removed';
+
+/**
+ * Why the caller may not act. A member who is not active is answered
+ * membership_inactive with their status, so the frontend can tell a removed
+ * login from a billing-suspended one. membershipStatus is absent only where
+ * the status is not known: a handler that maps CompanyUsageRefusedError (the
+ * caller stopped being active while it waited for the company lock).
+ */
 export type EmployerActorFailure =
   | { ok: false; status: 409; error: 'user_not_provisioned' }
-  | { ok: false; status: 403; error: 'no_organization' | 'membership_inactive' };
+  | { ok: false; status: 403; error: 'no_organization' }
+  | { ok: false; status: 403; error: 'membership_inactive'; membershipStatus?: InactiveMembershipStatus };
 
 export type EmployerActorResult = { ok: true; actor: EmployerActor } | EmployerActorFailure;
 
@@ -53,7 +63,11 @@ export async function resolveEmployerActor(
   const row = caller.rows[0];
   if (!row) return { ok: false, status: 409, error: 'user_not_provisioned' };
   if (!row.organization_id || !row.role) return { ok: false, status: 403, error: 'no_organization' };
-  if (row.status !== 'active') return { ok: false, status: 403, error: 'membership_inactive' };
+  if (row.status !== 'active') {
+    return row.status === 'suspended' || row.status === 'removed'
+      ? { ok: false, status: 403, error: 'membership_inactive', membershipStatus: row.status }
+      : { ok: false, status: 403, error: 'membership_inactive' };
+  }
 
   await setInternalUserRlsContext(client, row.user_id);
 
@@ -79,5 +93,8 @@ export function employerActorFailureResponse(
   failure: EmployerActorFailure,
   headers: Record<string, string>,
 ): { statusCode: number; headers: Record<string, string>; body: string } {
-  return { statusCode: failure.status, headers, body: JSON.stringify({ error: failure.error }) };
+  const body = 'membershipStatus' in failure && failure.membershipStatus
+    ? { error: failure.error, membershipStatus: failure.membershipStatus }
+    : { error: failure.error };
+  return { statusCode: failure.status, headers, body: JSON.stringify(body) };
 }

@@ -28,8 +28,11 @@
  * superuser, so what is asserted is what the database holds.
  */
 import { randomUUID } from 'node:crypto';
-import type { Pool } from 'pg';
-import { createCheckedPool } from '../../../lambda/lib/db';
+import type { Pool, PoolClient } from 'pg';
+import { createCheckedPool, setInternalUserRlsContext } from '../../../lambda/lib/db';
+import { auditCallerFor } from '../../../lambda/lib/audit/caller';
+import { setAuditContext } from '../../../lambda/lib/audit/context';
+import { recordWorkerConversationReply } from '../../../lambda/lib/job-messaging';
 import { apiEvent, FIXTURE_TOS_VERSION, parseResponse, World } from './r-paths-world';
 import { describeInProfiles, loginClient, loginUrl } from './helpers/login-pool';
 
@@ -57,6 +60,12 @@ jest.mock('../../../lambda/lib/db', () => {
 const { handler: createHandler } = require('../../../lambda/api/employer-conversations-create');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handler: sendHandler } = require('../../../lambda/api/employer-conversations-send');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { handler: inboxHandler } = require('../../../lambda/api/employer-inbox');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { handler: listHandler } = require('../../../lambda/api/employer-conversations-list');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { handler: detailHandler } = require('../../../lambda/api/employer-conversations-detail');
 
 if (!databaseUrl) {
   test('CONCERN: the employer messaging DB suite was not run (JALE_TEST_DATABASE_URL unset)', () => {
@@ -244,6 +253,7 @@ describeInProfiles(['standard', 'request', 'owner-unrestricted'], 'employer mess
       const outbox = await jobOutboxOf(s, conversation.id);
       expect(outbox).toHaveLength(1);
       expect(outbox[0]).toMatchObject({ message_id: message.id, send_kind: 'template', content_template: 'employer_message_invite_en' });
+      // world.employer() saves no contact name, so the label is the company alone.
       expect(outbox[0].content_variables).toMatchObject({
         '1': COMPANY,
         '2': JOB_TITLE,
@@ -316,6 +326,126 @@ describeInProfiles(['standard', 'request', 'owner-unrestricted'], 'employer mess
       // Sent by the flush, so the employer's message is marked sent.
       expect((await messagesOf(s, conversationId))[0].status).toBe('sent');
       expect(await intentsOf(s, s.readyEs.id)).toEqual([]);
+    });
+  });
+
+  // Phase 4: the worker sees the person who wrote, "{contact} ({company})",
+  // read on jale_api through jale_cap.employer_contact_name and
+  // employer_display_name (the owner's company), and the flush on the
+  // worker's reply (jale_whatsapp) heads each waiting message with its own
+  // writer.
+  describe('the worker sees the person who wrote', () => {
+    async function foremanScene() {
+      const foreman = await s.world.foreman(s.employer.id, { contactName: 'Fer Gómez' });
+      const job = await s.world.job(foreman.id, { title: 'Fixture Roofer' });
+      const applicationId = await s.world.application(job.id, s.readyEn.id, 'pending');
+      return { foreman, jobId: job.id, applicationId };
+    }
+
+    it("a foreman's first message: the invite's {{1}} and fallback carry the foreman's label", async () => {
+      const f = await foremanScene();
+      const response = parseResponse(await createHandler(apiEvent({
+        sub: f.foreman.sub,
+        httpMethod: 'POST',
+        resource: '/employer/conversations',
+        body: { job_id: f.jobId, worker_id: s.readyEn.id, initial_message: 'Fixture foreman hello' },
+      })));
+      expect(response.statusCode).toBe(201);
+      const [outbox] = await jobOutboxOf(s, response.body.conversation.id);
+      expect(outbox.content_variables['1']).toBe(`Fer Gómez (${COMPANY})`);
+      expect(outbox.content_variables.__fallback_body)
+        .toBe(`Fer Gómez (${COMPANY}) sent you a message about Fixture Roofer. Reply here to open the conversation.`);
+    });
+
+    it("waiting messages from the foreman and then the owner are each headed with their writer's label when the worker replies", async () => {
+      const f = await foremanScene();
+      await s.world.su.query(`UPDATE employer_profiles SET contact_name = 'Olga' WHERE user_id = $1`, [s.employer.id]);
+      const conversationId = await s.world.conversation({
+        jobId: f.jobId, employerId: f.foreman.id, workerId: s.readyEn.id, applicationId: f.applicationId,
+      });
+      const sendAs = (who: { sub: string }, body: string) => sendHandler(apiEvent({
+        sub: who.sub,
+        httpMethod: 'POST',
+        resource: '/employer/conversations/{conversationId}/messages',
+        pathParameters: { conversationId },
+        body: { body },
+      }));
+      expect(parseResponse(await sendAs(f.foreman, 'Fixture from F')).statusCode).toBe(200);
+      expect(parseResponse(await sendAs(s.employer, 'Fixture from O')).statusCode).toBe(200);
+      // A row with no sender, as rows from before 118 are: it is named by
+      // the conversation's employer, the foreman.
+      await s.world.message(conversationId, 'Fixture with no sender', 'waiting_worker_reply');
+      const waiting = await rows(s, `SELECT body, sender_user_id, status FROM job_conversation_messages
+                                      WHERE conversation_id = $1 ORDER BY created_at, id`, [conversationId]);
+      expect(waiting).toEqual([
+        { body: 'Fixture from F', sender_user_id: f.foreman.id, status: 'waiting_worker_reply' },
+        { body: 'Fixture from O', sender_user_id: s.employer.id, status: 'waiting_worker_reply' },
+        { body: 'Fixture with no sender', sender_user_id: null, status: 'waiting_worker_reply' },
+      ]);
+      // The worker replies on WhatsApp as the processor does: jale_whatsapp,
+      // the worker as the caller, inside one transaction.
+      const wa = loginClient('jale_whatsapp');
+      await wa.connect();
+      try {
+        await wa.query('BEGIN');
+        await setInternalUserRlsContext(wa as unknown as PoolClient, s.readyEn.id);
+        await setAuditContext(wa as unknown as PoolClient,
+          auditCallerFor(`fixture-${randomUUID()}`, { kind: 'worker', id: s.readyEn.id }, 'whatsapp'), 'whatsapp.inbound');
+        const routed = await recordWorkerConversationReply(
+          wa as unknown as PoolClient, s.readyEn.id, 'Fixture reply', `whatsapp:${s.readyEn.phone}`,
+          `SMfixture${randomUUID().replace(/-/g, '')}`, conversationId,
+        );
+        expect(routed).toEqual({ status: 'routed', conversationId });
+        await wa.query('COMMIT');
+      } catch (err) {
+        await wa.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        await wa.end();
+      }
+
+      // In the messages' own order, by created_at: the rows are written in
+      // one transaction, each stamped with clock_timestamp().
+      const freeform = (await jobOutboxOf(s, conversationId)).filter((row) => row.send_kind === 'freeform');
+      expect(freeform.map((row) => row.body)).toEqual([
+        `🏢 Fer Gómez (${COMPANY}) — Fixture Roofer\nFixture from F`,
+        `🏢 Olga (${COMPANY}) — Fixture Roofer\nFixture from O`,
+        `🏢 Fer Gómez (${COMPANY}) — Fixture Roofer\nFixture with no sender`,
+      ]);
+      // Compared in SQL: microseconds, which a JS Date would round away.
+      const [stamps] = await rows(s, `SELECT count(DISTINCT created_at)::int AS n FROM job_message_outbox
+                                       WHERE conversation_id = $1 AND send_kind = 'freeform'`, [conversationId]);
+      expect(stamps.n).toBe(3);
+    });
+
+    it('a system row is never the preview; a thread with only system rows has none', async () => {
+      const f = await foremanScene();
+      const conversationId = await s.world.conversation({
+        jobId: f.jobId, employerId: f.foreman.id, workerId: s.readyEn.id, applicationId: f.applicationId,
+      });
+      const system = (body: string) => s.world.su.query(
+        `INSERT INTO job_conversation_messages (conversation_id, sender_type, direction, body, status)
+         VALUES ($1, 'system', 'outbound', $2, 'sent')`, [conversationId, body]);
+      const previews = async () => {
+        const inbox = parseResponse(await inboxHandler(apiEvent({ sub: s.employer.sub, resource: '/employer/inbox' })));
+        const list = parseResponse(await listHandler(apiEvent({ sub: s.employer.sub, resource: '/employer/conversations' })));
+        const detail = parseResponse(await detailHandler(apiEvent({
+          sub: s.employer.sub, resource: '/employer/conversations/{conversationId}', pathParameters: { conversationId },
+        })));
+        expect([inbox.statusCode, list.statusCode, detail.statusCode]).toEqual([200, 200, 200]);
+        return [
+          inbox.body.items.find((i: { conversation_id: string | null }) => i.conversation_id === conversationId).last_message_preview,
+          list.body.conversations.find((c: { id: string }) => c.id === conversationId).last_message_preview,
+          detail.body.conversation.last_message_preview,
+        ];
+      };
+
+      await system('Fixture move notice');
+      expect(await previews()).toEqual([null, null, null]);
+
+      await s.world.message(conversationId, 'Fixture employer words', 'sent');
+      await system('Fixture second notice');
+      expect(await previews()).toEqual(['Fixture employer words', 'Fixture employer words', 'Fixture employer words']);
     });
   });
 

@@ -119,6 +119,9 @@ export async function prepareCheckoutOperation(
     // The row above proves an employer exists, so a 409 here cannot happen;
     // answered like the missing-employer case for safety.
     if (actorResult.status === 409) return { kind: 'error', statusCode: 403, error: 'employer_required' };
+    if (actorResult.error === 'membership_inactive' && actorResult.membershipStatus) {
+      return { kind: 'error', statusCode: actorResult.status, error: actorResult.error, extra: { membershipStatus: actorResult.membershipStatus } };
+    }
     return { kind: 'error', statusCode: actorResult.status, error: actorResult.error };
   }
   if (actorResult.actor.role !== 'owner') {

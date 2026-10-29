@@ -757,6 +757,13 @@ export default function WorkerJobDetailPage() {
     ? (formatLongDate(job.created_at, locale) ?? job.created_at)
     : null;
 
+  // Phase 4: the person at the company who answers this worker. The API sends
+  // it only to a worker who applied; it is the name alone (never a phone) and
+  // it adds nothing when it is just the company's name again.
+  const contactName = (job?.contact_name ?? '').replace(/\s+/g, ' ').trim();
+  const showContact = contactName !== ''
+    && contactName.toLowerCase() !== (job?.company_name ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+
   const scheduleTiles: JobFactTile[] = [];
   const whereTiles: JobFactTile[] = [];
   const requirementItems: JobFactRequirement[] = [];
@@ -920,6 +927,12 @@ export default function WorkerJobDetailPage() {
                       ) : undefined
                     }
                   />
+
+                  {showContact ? (
+                    <p className="mb-4 break-words text-sm text-[var(--jale-ink-2)]">
+                      {t('contact', { name: contactName })}
+                    </p>
+                  ) : null}
 
                   <JobFactsCard
                     pay={pay ? {

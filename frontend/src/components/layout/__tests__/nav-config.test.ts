@@ -4,6 +4,9 @@ import {
     employerMobileNav,
     employerPrimaryNav,
     employerSettingsNav,
+    employerTeamNav,
+    employerNavRole,
+    isEmployerNavItemVisible,
     isNavItemActive,
     workerPrimaryNav,
     type NavItem,
@@ -57,7 +60,7 @@ function expectLabelsResolve(items: NavItem[], namespace: string) {
 describe('nav label keys', () => {
     it('resolves every employer sidebar label under employer_dashboard', () => {
         expectLabelsResolve(
-            [...employerPrimaryNav, employerBillingNav, employerSettingsNav],
+            [...employerPrimaryNav, employerTeamNav, employerBillingNav, employerSettingsNav],
             'employer_dashboard',
         );
     });
@@ -164,5 +167,60 @@ describe('employerPrimaryNav order', () => {
             'dashboard',
             'messages',
         ]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3 (Task 14): who the employer nav is drawn for, and what that hides.
+// ---------------------------------------------------------------------------
+
+describe('employerNavRole', () => {
+    it('flag off (disabled) is the owner, exactly Phase 2', () => {
+        expect(employerNavRole({ status: 'disabled' })).toBe('owner');
+    });
+
+    it('ready is the membership role', () => {
+        const ready = { status: 'ready', companyName: 'Acme', userId: 'u', organizationId: 'o' } as const;
+        expect(employerNavRole({ ...ready, role: 'owner' })).toBe('owner');
+        expect(employerNavRole({ ...ready, role: 'foreman' })).toBe('foreman');
+    });
+
+    it('error falls back to billing.role, an unknown one counting as the owner', () => {
+        expect(employerNavRole({ status: 'error', billingRole: 'foreman' })).toBe('foreman');
+        expect(employerNavRole({ status: 'error', billingRole: 'owner' })).toBe('owner');
+        expect(employerNavRole({ status: 'error', billingRole: null })).toBe('owner');
+    });
+
+    it('loading and blocked are unknown, never the owner', () => {
+        expect(employerNavRole({ status: 'loading' })).toBeNull();
+        expect(employerNavRole({ status: 'blocked', reason: 'suspended', hasInvite: false })).toBeNull();
+    });
+});
+
+describe('isEmployerNavItemVisible', () => {
+    it('Billing and Team are owner-only; Team is also behind the team flag', () => {
+        expect(employerBillingNav.ownerOnly).toBe(true);
+        expect(employerTeamNav).toMatchObject({ href: '/employer/team', labelKey: 'nav.team', ownerOnly: true, flag: 'team' });
+    });
+
+    it('hides owner-only items from a foreman and while the role is unknown', () => {
+        for (const role of ['foreman', null] as const) {
+            expect(isEmployerNavItemVisible(employerBillingNav, role, true)).toBe(false);
+            expect(isEmployerNavItemVisible(employerTeamNav, role, true)).toBe(false);
+            expect(isEmployerNavItemVisible(employerSettingsNav, role, true)).toBe(true);
+        }
+    });
+
+    it('shows Team to an owner only with the flag on', () => {
+        expect(isEmployerNavItemVisible(employerTeamNav, 'owner', true)).toBe(true);
+        expect(isEmployerNavItemVisible(employerTeamNav, 'owner', false)).toBe(false);
+        expect(isEmployerNavItemVisible(employerBillingNav, 'owner', false)).toBe(true);
+    });
+
+    it('no primary or mobile item is owner-only or flagged', () => {
+        for (const item of [...employerPrimaryNav, ...employerMobileNav]) {
+            expect(item.ownerOnly ?? false, item.key).toBe(false);
+            expect(item.flag, item.key).toBeUndefined();
+        }
     });
 });

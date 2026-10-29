@@ -18,9 +18,37 @@ describe('hire-details nudge template', () => {
     expect(nudgeFirstName('')).toBeNull();
     expect(nudgeFirstName(null)).toBeNull();
     expect(hireDetailsNudgeLines({ kind: 'auto', workerName: null, jobTitle: 'Glazier', ...URLS })).toEqual({
-      en: 'You hired a worker for Glazier. Add a start date and where to report.',
-      es: 'Contrató a un trabajador para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.',
+      en: 'A worker was hired for Glazier. Add a start date and where to report.',
+      es: 'Se contrató a un trabajador para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.',
     });
+    expect(hireDetailsNudgeLines({ kind: 'auto', workerName: 'Ana Ruiz', jobTitle: 'Glazier', ...URLS })).toEqual({
+      en: 'Ana was hired for Glazier. Add a start date and where to report.',
+      es: 'Se contrató a Ana para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.',
+    });
+  });
+
+  it('is neutral about who hired: after a job moves the reader may not be the hirer', () => {
+    const EN_WHY = 'You are receiving this because a worker was hired on one of your jobs on Jale.';
+    const ES_WHY = 'Recibe este mensaje porque se contrató a un trabajador en uno de sus trabajos en Jale.';
+    for (const kind of ['auto', 'remind'] as const) {
+      for (const workerName of [null, 'Ana Ruiz']) {
+        const rendered = renderHireDetailsNudgeEmail({ kind, workerName, jobTitle: 'Glazier', ...URLS });
+        for (const part of [rendered.subject, rendered.bodyText, rendered.bodyHtml]) {
+          expect(part).not.toMatch(/you hired/i);
+          expect(part).not.toMatch(/(?<!se )contrató a/i);
+          expect(part).not.toMatch(/your new hire/i);
+          expect(part).not.toMatch(/su nuevo trabajador/i);
+        }
+        for (const body of [rendered.bodyText, rendered.bodyHtml]) {
+          expect(body).toContain(EN_WHY);
+          expect(body).toContain(ES_WHY);
+          if (kind === 'auto') {
+            expect(body).toContain('was hired for Glazier');
+            expect(body).toContain('Se contrató a');
+          }
+        }
+      }
+    }
   });
 
   it('says who asked when the worker pressed the remind button', () => {
@@ -29,9 +57,11 @@ describe('hire-details nudge template', () => {
       es: 'Ana pidió sus detalles de inicio para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.',
     });
     expect(hireDetailsNudgeLines({ kind: 'remind', workerName: null, jobTitle: 'Glazier', ...URLS }).es)
-      .toBe('Su nuevo trabajador pidió sus detalles de inicio para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.');
+      .toBe('Un nuevo trabajador pidió sus detalles de inicio para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.');
+    expect(hireDetailsNudgeLines({ kind: 'remind', workerName: null, jobTitle: 'Glazier', ...URLS }).en)
+      .toBe('A new hire asked for their start details for Glazier. Add a start date and where to report.');
     expect(hireDetailsNudgeSubject({ kind: 'auto', workerName: null, jobTitle: 'Glazier', ...URLS }))
-      .toBe('Add start details for your new hire · Agregue los detalles de inicio para su nuevo trabajador');
+      .toBe('Add start details for a new hire · Agregue los detalles de inicio de un nuevo trabajador');
   });
 
   it('escapes user text in the HTML and keeps the subject inside the outbox limit', () => {

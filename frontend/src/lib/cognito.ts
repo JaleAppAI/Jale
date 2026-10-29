@@ -69,13 +69,23 @@ function signUp(
     });
 }
 
-function confirm(pool: CognitoUserPool, username: string, code: string): Promise<void> {
+/**
+ * `clientMetadata` is ConfirmSignUp's ClientMetadata: Cognito hands it to the
+ * post-confirmation trigger. The SDK takes it as `confirmRegistration`'s
+ * fourth argument; undefined sends none.
+ */
+function confirm(
+    pool: CognitoUserPool,
+    username: string,
+    code: string,
+    clientMetadata?: Record<string, string>,
+): Promise<void> {
     return new Promise((resolve, reject) => {
         const user = new CognitoUser({ Username: username, Pool: pool });
         user.confirmRegistration(code, true, (err) => {
             if (err) reject(err);
             else resolve();
-        });
+        }, clientMetadata);
     });
 }
 
@@ -116,14 +126,27 @@ export function workerVerifyOtp(user: CognitoUser, otp: string): Promise<AuthTok
     });
 }
 
+/**
+ * `invite` (Phase 3): an invited foreman joins the inviting company, so the
+ * Cognito `name` is their own (the contact name) and no `custom:company_name`
+ * is sent. Without it, the attributes are Phase 2's: `name` is the company.
+ */
 export function employerSignUp(input: {
     email: string;
     password: string;
     companyName: string;
     contactName: string;
     phone: string;
-}): Promise<void> {
+}, opts?: { invite?: boolean }): Promise<void> {
     const email = input.email.trim().toLowerCase();
+    if (opts?.invite) {
+        return signUp(getEmployerPool(), email, input.password, {
+            email,
+            name: input.contactName.trim(),
+            phone_number: input.phone.trim(),
+            'custom:user_type': 'employer',
+        });
+    }
     return signUp(getEmployerPool(), email, input.password, {
         email,
         name: input.companyName.trim(),
@@ -133,8 +156,14 @@ export function employerSignUp(input: {
     });
 }
 
-export function employerConfirmSignUp(email: string, code: string): Promise<void> {
-    return confirm(getEmployerPool(), email.trim().toLowerCase(), code);
+/**
+ * `inviteToken` (Phase 3) reaches the post-confirmation trigger as
+ * ClientMetadata `{ inviteToken }`, which accepts that invite instead of
+ * creating a company. Without one no ClientMetadata is sent (Phase 2's call).
+ */
+export function employerConfirmSignUp(email: string, code: string, opts?: { inviteToken?: string }): Promise<void> {
+    const clientMetadata = opts?.inviteToken ? { inviteToken: opts.inviteToken } : undefined;
+    return confirm(getEmployerPool(), email.trim().toLowerCase(), code, clientMetadata);
 }
 
 /**

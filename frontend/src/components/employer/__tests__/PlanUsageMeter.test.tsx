@@ -66,4 +66,29 @@ describe('PlanUsageMeter', () => {
         renderIntl(<PlanUsageMeter activeCount={2} billing={billing} templateCount={null} />);
         expect(screen.getByText('Active jobs 2/10')).toBeInTheDocument();
     });
+
+    // Phase 3: the plan page is the owner's, so a foreman's meter does not link to it.
+    describe('"View plan"', () => {
+        it('is there by default, with or without billing', () => {
+            const { unmount } = renderIntl(<PlanUsageMeter activeCount={2} billing={billing} templateCount={1} />);
+            expect(screen.getByRole('link', { name: 'View plan' })).toHaveAttribute('href', '/employer/billing');
+            unmount();
+            renderIntl(<PlanUsageMeter activeCount={2} billing={null} templateCount={null} />);
+            expect(screen.getByRole('link', { name: 'View plan' })).toBeInTheDocument();
+        });
+
+        it('is gone, with its separator, when viewPlan is off', () => {
+            const { container, unmount } = renderIntl(
+                <PlanUsageMeter activeCount={2} billing={billing} templateCount={1} viewPlan={false} />,
+            );
+            expect(screen.queryByRole('link', { name: 'View plan' })).toBeNull();
+            expect(screen.getByText('Templates 1/20')).toBeInTheDocument();
+            // One separator, between jobs and templates; none dangling at the end.
+            expect(container.querySelectorAll('[aria-hidden="true"]')).toHaveLength(1);
+            unmount();
+            const plain = renderIntl(<PlanUsageMeter activeCount={2} billing={null} templateCount={null} viewPlan={false} />);
+            expect(screen.queryByRole('link', { name: 'View plan' })).toBeNull();
+            expect(plain.container.querySelectorAll('[aria-hidden="true"]')).toHaveLength(0);
+        });
+    });
 });

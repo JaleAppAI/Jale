@@ -424,7 +424,28 @@
       "panel_bullet_3": "Photos of previous work",
       "panel_bullet_4": "Message candidates directly",
       "panel_bullet_5": "Free to get started",
-      "forgot_not_confirmed": "Your account isn't confirmed yet. We sent a new confirmation code to {email}. Enter it below to finish signing up."
+      "forgot_not_confirmed": "Your account isn't confirmed yet. We sent a new confirmation code to {email}. Enter it below to finish signing up.",
+      "invite": {
+        "title": "Join {companyName} on Jale",
+        "body": "{companyName} invited you as a foreman. Create your account with {email}.",
+        "rejoin_body": "{companyName} invited you back. Sign in with {email} to rejoin.",
+        "rejoin_submit": "Sign in and join",
+        "not_found": "This invite link isn't valid. Ask your company for a new one.",
+        "expired": "Your invite expired, ask your company to resend it.",
+        "revoked": "This invite was cancelled. Ask your company for a new one.",
+        "used": "This invite was already used. Sign in instead.",
+        "email_mismatch": "Sign in with the email this invite was sent to.",
+        "already_member": "This account already belongs to a company on Jale, so it can't join another one.",
+        "employer_required": "Sign in with a Jale employer account to accept this invite.",
+        "busy": "We're handling other changes right now. Wait a moment and try again.",
+        "generic": "Something went wrong. Try again.",
+        "join_signed_in_body": "You're signed in. Join {companyName} with this account?",
+        "join_submit": "Join {companyName}",
+        "use_another_account": "Use another account",
+        "used_signed_in": "This invite was already used.",
+        "account_disabled": "This account can't sign in yet. If your invite just arrived, wait a minute and try again; otherwise ask your company to resend it."
+      },
+      "account_disabled": "This account can't sign in. If your company removed you, ask the owner to invite you again."
     },
     "shell": {
       "language_toggle": "Español",
@@ -481,7 +502,9 @@
       "errors": {
         "required": "Required.",
         "missing_summary": "Please add: {fields}"
-      }
+      },
+      "foreman_company_hint": "Only your company's owner can change these.",
+      "contact_name_hint": "Workers who apply to your jobs see this name."
     },
     "digest": {
       "title": "Notifications",
@@ -672,7 +695,8 @@
       "billing": "Billing",
       "settings": "Settings",
       "templates": "Templates",
-      "unread_badge": "{count, plural, one {# unread message} other {# unread messages}}"
+      "unread_badge": "{count, plural, one {# unread message} other {# unread messages}}",
+      "team": "Team"
     },
     "hero": {
       "eyebrow": "Got Jale?",
@@ -996,6 +1020,7 @@
       "delete_body": "Delete “{name}”? Jobs already posted from it are not affected.",
       "delete_confirm": "Delete",
       "delete_error": "Could not delete the template",
+      "delete_forbidden": "You can only delete templates you created.",
       "updated": "Updated",
       "col_name": "Name",
       "col_details": "Details",
@@ -1369,6 +1394,7 @@
     }
   },
   "worker_job_detail": {
+    "contact": "Contact: {name}",
     "back": "← Back to jobs",
     "required_docs": "Required documents",
     "pay_range": "Pay range",
@@ -1968,7 +1994,9 @@
     "company": {
       "owner_only": "Only your company's owner can change the plan or manage billing.",
       "suspended_title": "Some team members are suspended",
-      "suspended_body": "{count, plural, one {# foreman is suspended and can't} other {# foremen are suspended and can't}} use your company's account while your plan has fewer seats than members. Change your plan to bring them back."
+      "suspended_body": "{count, plural, one {# foreman is suspended and can't} other {# foremen are suspended and can't}} use your company's account while your plan has fewer seats than members. Change your plan to bring them back.",
+      "suspended_body_pro": "{count, plural, one {# foreman is suspended and can't} other {# foremen are suspended and can't}} use your company's account because every seat is taken. Remove them on the Team page or contact Jale support.",
+      "seats": "Foreman seats: {used} of {limit} used"
     },
     "actions": {
       "upgrade": "Upgrade plan",
@@ -2001,6 +2029,8 @@
       "body_jobs": "Your plan allows {limit, plural, one {# active job posting} other {# active job postings}}, and you have {used} active right now.",
       "body_jobs_zero": "Your current plan doesn't include any active job postings. Upgrade to publish this job.",
       "body_templates": "Your plan allows {limit, plural, one {# saved template} other {# saved templates}}. Delete one, or upgrade to save this one.",
+      "body_templates_no_upgrade": "Your plan allows {limit, plural, one {# saved template} other {# saved templates}}. Delete one to save this one.",
+      "body_templates_foreman": "Your company's plan allows {limit, plural, one {# saved template} other {# saved templates}}. Delete one you created, or ask your owner to free a slot.",
       "body_templates_zero": "Your current plan doesn't include saved templates.",
       "blocking_heading": "{count, plural, one {Using your active slot right now} other {Using your active slots right now}}",
       "and_more": "and {count} more",
@@ -2010,7 +2040,10 @@
       "cta_pause_job": "Pause another job",
       "cta_manage_templates": "Manage templates",
       "dismiss": "Not now",
-      "body_jobs_preflight": "You can’t post a job right now. Your plan allows {limit, plural, one {# open job} other {# open jobs}} and you already have {used}. Pause, close or delete one to post another, or upgrade your plan."
+      "body_jobs_preflight": "You can’t post a job right now. Your plan allows {limit, plural, one {# open job} other {# open jobs}} and you already have {used}. Pause, close or delete one to post another, or upgrade your plan.",
+      "foreman_body": "Your company has reached its plan limit — ask your owner to upgrade.",
+      "foreman_body_pro": "Your company is using all of its active job slots. Pause or close one of your jobs, or ask your owner to free a slot.",
+      "pro_owner_hint": "You're on the highest plan. Pause or close a job, or delete a template, to free a slot."
     },
     "limit_reached": {
       "modal_message": "You've reached your plan's limit of {limit, plural, one {# active job posting} other {# active job postings}}. Upgrade to post more.",
@@ -3593,6 +3626,104 @@
         "profile_body": "This is what employers see. Add your documents once and they’re used on every application.",
         "help_body": "All guides live here. Watch any of them again whenever you want."
       }
+    }
+  },
+  "employer_team": {
+    "title": "Team",
+    "seats": "{used} of {limit} foreman seats used",
+    "seats_pending": "{count, plural, one {# pending invite} other {# pending invites}}",
+    "no_seats": "Your plan has no foreman seats. Upgrade to invite foremen.",
+    "invite": {
+      "title": "Invite a foreman",
+      "email": "Email",
+      "name": "Name (optional)",
+      "submit": "Send invite",
+      "sent": "Invite sent to {email}.",
+      "seats_full": "All seats are in use. Remove a member or revoke an invite to free one.",
+      "seats_remedy": "Remove a member or revoke an invite to free one."
+    },
+    "errors": {
+      "email_in_use": "This email already has a Jale employer account with another company.",
+      "already_member": "This person is already on your team.",
+      "invite_pending": "There's already a pending invite for this email. Resend it instead.",
+      "seat_limit_reached": "All your foreman seats are in use.",
+      "invite_rate_limited": "Too many invites right now. Try again later.",
+      "invalid_email": "Enter a valid email address.",
+      "generic": "Something went wrong. Try again.",
+      "invalid_contact_name": "That name is too long. Use 120 characters or fewer.",
+      "invite_closed": "This invite is no longer pending. The list is now up to date.",
+      "invite_not_found": "We couldn't find that invite. The list is now up to date.",
+      "member_not_found": "We couldn't find that team member. Refresh the page and try again.",
+      "member_has_jobs": "This foreman still has jobs. Choose who takes them over and try again.",
+      "already_removed": "This foreman was already removed. Refresh the page.",
+      "cannot_remove_owner": "The owner can't be removed from the team.",
+      "invalid_assignee": "That person can't take these jobs right now. Refresh the page and choose someone else.",
+      "job_not_found": "We couldn't find this job. Refresh the page.",
+      "owner_required": "Only your company's owner can manage the team.",
+      "employer_required": "Sign in with a Jale employer account to manage a team.",
+      "busy": "We're handling other changes right now. Wait a moment and try again.",
+      "job_move_conflict": "This job was reassigned — refresh the page to continue."
+    },
+    "pending": {
+      "title": "Pending invites",
+      "expires": "Expires {date}",
+      "expired": "Expired",
+      "resend": "Resend",
+      "revoke": "Revoke",
+      "empty": "No pending invites.",
+      "resent": "Invite resent to {email}.",
+      "revoked": "Invite revoked.",
+      "resend_wait": "Try again in {seconds}s."
+    },
+    "members": {
+      "title": "Members",
+      "owner": "Owner",
+      "foreman": "Foreman",
+      "suspended": "Suspended",
+      "jobs": "{count, plural, one {# open job} other {# open jobs}}",
+      "remove": "Remove",
+      "you": "You"
+    },
+    "remove": {
+      "title": "Remove {name}?",
+      "body": "Their jobs and conversations move to the person you choose. They can't sign in afterwards.",
+      "reassign_label": "Move their jobs to",
+      "confirm": "Remove and move jobs",
+      "cancel": "Cancel",
+      "done": "{name} was removed. {count, plural, one {# job moved.} other {# jobs moved.}}",
+      "jobs_move": "{count, plural, one {# open job will move to {name}.} other {# open jobs will move to {name}.}}",
+      "access": "They lose access right away and their login is disabled.",
+      "access_pending": "{name} was removed, but we couldn't disable their login yet. We'll retry automatically."
+    },
+    "reassign": {
+      "label": "Responsible",
+      "save": "Change",
+      "done": "This job is now {name}'s."
+    },
+    "no_seats_link": "See plans"
+  },
+  "employer_access": {
+    "no_organization": {
+      "title": "Your invite expired",
+      "body": "Your invite expired, ask your company to resend it.",
+      "start_title": "Or start your own company",
+      "start_name": "Company name",
+      "start_submit": "Start my company"
+    },
+    "suspended": {
+      "title": "Your access is paused",
+      "body": "Your company's plan has no seat for you right now. Ask your company's owner."
+    },
+    "removed": {
+      "title": "You're no longer on this team",
+      "body": "Your company removed you from its team on Jale. Ask the owner to invite you again.",
+      "has_invite": "You have a new invite from your company. Open the link in your invite email to rejoin."
+    },
+    "sign_out": "Sign out",
+    "errors": {
+      "invalid_company_name": "Enter your company's name (up to 120 characters).",
+      "busy": "We're handling other changes right now. Wait a moment and try again.",
+      "generic": "Something went wrong. Try again."
     }
   }
 }

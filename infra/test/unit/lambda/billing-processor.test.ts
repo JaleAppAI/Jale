@@ -40,6 +40,7 @@ jest.mock('../../../lambda/lib/db');
 jest.mock('../../../lambda/lib/stripe-client');
 jest.mock('../../../lambda/lib/entitlements');
 jest.mock('../../../lambda/lib/email-outbox');
+jest.mock('../../../lambda/lib/member-access');
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const dbMod = require('../../../lambda/lib/db');
@@ -53,6 +54,8 @@ const mockGetStripeSecret: jest.Mock = stripeMod.getStripeSecret;
 const mockResolveEntitlements: jest.Mock = require('../../../lambda/lib/entitlements').resolveCompanyEntitlements;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const mockQueueEmail: jest.Mock = require('../../../lambda/lib/email-outbox').queueEmail;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const mockApplyMemberAccess: jest.Mock = require('../../../lambda/lib/member-access').applyMemberAccess;
 
 // ── Fake IDs ───────────────────────────────────────────────────────────────
 
@@ -655,6 +658,214 @@ describe('billing processor: processEnvelope()', () => {
     const failed = queryMock.mock.calls.find(([sql, params]) => String(sql).includes('UPDATE billing_webhook_events')
       && Array.isArray(params) && params[1] === 'failed');
     expect(failed![1]).toEqual([EVT1, 'failed', 'billing_owner_not_found', null]);
+  });
+
+  // ── Phase 3: Cognito follows billing (Task 6) ──────────────────────────
+  //
+  // After an enforce that suspended foremen or revoked invites, and after a
+  // restore that restored foremen, the processor reads the company's desired
+  // member access (134's org_member_access) inside its transaction and applies
+  // it to the employer pool after COMMIT, with the DB client released first.
+
+  /** Answers org_member_access with these rows; everything else as before. */
+  function withMemberAccess(queryMock: jest.Mock, rows: unknown[]) {
+    const base = queryMock.getMockImplementation()!;
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (String(sql).includes('org_member_access')
+      ? Promise.resolve({ rows })
+      : base(sql, params)));
+  }
+
+  function sqlTexts(queryMock: jest.Mock): string[] {
+    return queryMock.mock.calls.map(([sql]) => String(sql));
+  }
+
+  /** The release calls of the one client the mocked pool hands out. */
+  async function releaseOrder(): Promise<number[]> {
+    const pool = await mockGetDbPool();
+    const client = await pool.connect();
+    return client.release.mock.invocationCallOrder;
+  }
+
+  it('after an enforce that suspended foremen, reads org_member_access inside the transaction and applies it after COMMIT', async () => {
+    const { queryMock } = setupCompanyEnforcement([], ['f2@example.com']);
+    withMemberAccess(queryMock, [
+      { cognito_sub: 'sub-f2', enabled: false },
+      { cognito_sub: 'sub-f1', enabled: true },
+    ]);
+    mockApplyMemberAccess.mockResolvedValue({ converged: 2, failed: [] });
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+
+    const deadlineAt = Date.now() + 40_000;
+    const result = await processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })), { deadlineAt });
+
+    expect(result).toEqual({ outcome: 'processed' });
+    const sqls = sqlTexts(queryMock);
+    const enforceAt = sqls.findIndex((sql) => sql.includes('billing_enforce_org_limits'));
+    const accessAt = sqls.findIndex((sql) => sql.includes('org_member_access'));
+    const commitAt = sqls.lastIndexOf('COMMIT');
+    expect(enforceAt).toBeGreaterThan(-1);
+    expect(accessAt).toBeGreaterThan(enforceAt);
+    expect(commitAt).toBeGreaterThan(accessAt);
+    expect(queryMock.mock.calls[accessAt]).toEqual([
+      expect.stringContaining('FROM jale_cap.org_member_access($1)'),
+      [ORG1],
+    ]);
+    expect(mockApplyMemberAccess).toHaveBeenCalledTimes(1);
+    expect(mockApplyMemberAccess).toHaveBeenCalledWith(
+      [{ cognitoSub: 'sub-f2', enabled: false }, { cognitoSub: 'sub-f1', enabled: true }],
+      { deadlineAt },
+    );
+    const applyAt = mockApplyMemberAccess.mock.invocationCallOrder[0];
+    const committedAt = queryMock.mock.invocationCallOrder[commitAt];
+    expect(applyAt).toBeGreaterThan(committedAt);
+    // The client is back in the pool before any Cognito call.
+    const releases = await releaseOrder();
+    expect(releases.some((at) => at > committedAt && at < applyAt)).toBe(true);
+  });
+
+  it('an enforce that revoked invites reads member access and disables the re-invited member', async () => {
+    const { queryMock } = setupCompanyEnforcement([], [], 1);
+    withMemberAccess(queryMock, [{ cognito_sub: 'sub-reinvited', enabled: false }]);
+    mockApplyMemberAccess.mockResolvedValue({ converged: 1, failed: [] });
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })))).resolves.toEqual({ outcome: 'processed' });
+
+    expect(queryMock).toHaveBeenCalledWith(expect.stringContaining('org_member_access'), [ORG1]);
+    expect(mockApplyMemberAccess).toHaveBeenCalledWith(
+      [{ cognitoSub: 'sub-reinvited', enabled: false }],
+      expect.anything(),
+    );
+    const sqls = sqlTexts(queryMock);
+    expect(mockApplyMemberAccess.mock.invocationCallOrder[0])
+      .toBeGreaterThan(queryMock.mock.invocationCallOrder[sqls.lastIndexOf('COMMIT')]);
+  });
+
+  it('after a restore that restored foremen, the same', async () => {
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20, foremanSeatLimit: 3 });
+    const { queryMock } = setupResume(0);
+    const base = queryMock.getMockImplementation()!;
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (String(sql).includes('billing_restore_org')
+      ? Promise.resolve({ rows: [{
+        resumed_count: 0, resumed_titles: [], restored_count: 1, restored_emails: ['f2@example.com'], owner_email: 'employer@example.com',
+      }] })
+      : base(sql, params)));
+    withMemberAccess(queryMock, [{ cognito_sub: 'sub-f2', enabled: true }]);
+    mockApplyMemberAccess.mockResolvedValue({ converged: 1, failed: [] });
+    mockStripe(makeStripeSubscription({ status: 'active' }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'active' })))).resolves.toEqual({ outcome: 'processed' });
+
+    const sqls = sqlTexts(queryMock);
+    const restoreAt = sqls.findIndex((sql) => sql.includes('billing_restore_org'));
+    const accessAt = sqls.findIndex((sql) => sql.includes('org_member_access'));
+    const commitAt = sqls.lastIndexOf('COMMIT');
+    expect(restoreAt).toBeGreaterThan(-1);
+    expect(accessAt).toBeGreaterThan(restoreAt);
+    expect(commitAt).toBeGreaterThan(accessAt);
+    expect(queryMock.mock.calls[accessAt][1]).toEqual([ORG1]);
+    expect(mockApplyMemberAccess).toHaveBeenCalledWith([{ cognitoSub: 'sub-f2', enabled: true }], expect.anything());
+    expect(mockApplyMemberAccess.mock.invocationCallOrder[0]).toBeGreaterThan(queryMock.mock.invocationCallOrder[commitAt]);
+  });
+
+  it.each([
+    ['an enforce that only paused jobs', 'canceled'],
+    ['a restore that only resumed jobs', 'active'],
+    ['a status that neither enforces nor restores', 'past_due'],
+  ])('no member-access read or Cognito call when nothing was suspended, revoked or restored: %s', async (_label, status) => {
+    const { queryMock } = status === 'active' ? setupResume(1, ['Paused']) : setupEntitlementReduction(1, ['Newest job']);
+    withMemberAccess(queryMock, [{ cognito_sub: 'sub-f2', enabled: false }]);
+    mockStripe(makeStripeSubscription({ status }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status })))).resolves.toEqual({ outcome: 'processed' });
+
+    expect(sqlTexts(queryMock).some((sql) => sql.includes('org_member_access'))).toBe(false);
+    expect(mockApplyMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('a Cognito failure does not fail the event or roll back', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { queryMock } = setupCompanyEnforcement([], ['f2@example.com']);
+    withMemberAccess(queryMock, [{ cognito_sub: 'sub-f2', enabled: false }]);
+    mockApplyMemberAccess.mockResolvedValue({ converged: 0, failed: ['sub-f2'] });
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })))).resolves.toEqual({ outcome: 'processed' });
+
+    expect(queryMock).not.toHaveBeenCalledWith('ROLLBACK');
+    const inboxWrites = queryMock.mock.calls.filter(([sql, params]) => String(sql).includes('UPDATE billing_webhook_events')
+      && Array.isArray(params) && params.length === 4);
+    expect(inboxWrites.map(([, params]) => (params as unknown[])[1])).toEqual(['processed']);
+    const deferred = warn.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('member_access_deferred'));
+    expect(deferred).toHaveLength(1);
+    expect(JSON.parse(deferred[0])).toEqual({ event: 'member_access_deferred', organizationId: ORG1, eventId: EVT1, failed: 1 });
+    warn.mockRestore();
+  });
+
+  it('an applyMemberAccess that throws after COMMIT still leaves the event processed', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { queryMock } = setupCompanyEnforcement([], ['f2@example.com']);
+    withMemberAccess(queryMock, [{ cognito_sub: 'sub-f2', enabled: false }]);
+    mockApplyMemberAccess.mockRejectedValue(new Error('boom'));
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })))).resolves.toEqual({ outcome: 'processed' });
+
+    expect(queryMock).not.toHaveBeenCalledWith('ROLLBACK');
+    expect(warn.mock.calls.some(([line]) => String(line).includes('member_access_deferred'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('reads member access under a savepoint it releases', async () => {
+    const { queryMock } = setupCompanyEnforcement([], ['f2@example.com']);
+    withMemberAccess(queryMock, [{ cognito_sub: 'sub-f2', enabled: false }]);
+    mockApplyMemberAccess.mockResolvedValue({ converged: 1, failed: [] });
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })))).resolves.toEqual({ outcome: 'processed' });
+
+    const sqls = sqlTexts(queryMock);
+    const accessAt = sqls.findIndex((sql) => sql.includes('org_member_access'));
+    expect(sqls[accessAt - 1]).toBe('SAVEPOINT member_access_read');
+    expect(sqls[accessAt + 1]).toBe('RELEASE SAVEPOINT member_access_read');
+  });
+
+  it.each([
+    ['an enforce', 'canceled'],
+    ['a restore', 'active'],
+  ])('a member-access read that fails after %s rolls back to its savepoint, logs, and the billing change still commits', async (_label, status) => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    let queryMock: jest.Mock;
+    if (status === 'active') {
+      ({ queryMock } = setupResume(0));
+      const restoreBase = queryMock.getMockImplementation()!;
+      queryMock.mockImplementation((sql: string, params?: unknown[]) => (String(sql).includes('billing_restore_org')
+        ? Promise.resolve({ rows: [{
+          resumed_count: 0, resumed_titles: [], restored_count: 1, restored_emails: ['f2@example.com'], owner_email: 'employer@example.com',
+        }] })
+        : restoreBase(sql, params)));
+    } else {
+      ({ queryMock } = setupCompanyEnforcement([], ['f2@example.com']));
+    }
+    const base = queryMock.getMockImplementation()!;
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (String(sql).includes('org_member_access')
+      ? Promise.reject(Object.assign(new Error('permission denied for function org_member_access'), { code: '42501' }))
+      : base(sql, params)));
+    mockStripe(makeStripeSubscription({ status }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status })))).resolves.toEqual({ outcome: 'processed' });
+
+    const sqls = sqlTexts(queryMock);
+    const accessAt = sqls.findIndex((sql) => sql.includes('org_member_access'));
+    expect(sqls[accessAt + 1]).toBe('ROLLBACK TO SAVEPOINT member_access_read');
+    expect(sqls).not.toContain('ROLLBACK');
+    expect(sqls.lastIndexOf('COMMIT')).toBeGreaterThan(accessAt);
+    expect(mockApplyMemberAccess).not.toHaveBeenCalled();
+    const failed = errorLog.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('member_access_read_failed'));
+    expect(failed.map((line) => JSON.parse(line))).toEqual([
+      { event: 'member_access_read_failed', organizationId: ORG1, code: '42501' },
+    ]);
+    errorLog.mockRestore();
   });
 
   afterAll(() => {
@@ -1676,6 +1887,25 @@ describe('billing processor: processEnvelope()', () => {
 
       await expect(invoke(makeSubEvent({ id: EVT1, priceId: 'price_different_999' })))
         .rejects.toThrow('unknown_price');
+    });
+
+    it('gives member access a deadline 5 s before the Lambda runs out of time', async () => {
+      const { queryMock } = setupCompanyEnforcement([], ['f2@example.com']);
+      withMemberAccess(queryMock, [{ cognito_sub: 'sub-f2', enabled: false }]);
+      mockApplyMemberAccess.mockResolvedValue({ converged: 1, failed: [] });
+      mockStripe(makeStripeSubscription({ status: 'canceled' }));
+      const sqsEvent = {
+        Records: [{ messageId: 'msg-0001', eventSource: 'aws:sqs', body: JSON.stringify(makeEnvelope(makeSubEvent({ status: 'canceled' }))) }],
+      } as unknown as SQSEvent;
+      const context = { getRemainingTimeInMillis: () => 45_000 } as unknown as Context;
+
+      const before = Date.now();
+      await expect(Promise.resolve(handler(sqsEvent, context, () => undefined))).resolves.toBeUndefined();
+      const after = Date.now();
+
+      const { deadlineAt } = mockApplyMemberAccess.mock.calls[0][1];
+      expect(deadlineAt).toBeGreaterThanOrEqual(before + 40_000);
+      expect(deadlineAt).toBeLessThanOrEqual(after + 40_000);
     });
   });
 

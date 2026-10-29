@@ -61,6 +61,20 @@ export type ApiErrorPayload = {
    * finite number >= 0 is dropped, and the UI falls back to its own wording.
    */
   retry_after_seconds?: number;
+  /**
+   * Phase 3 team routes spell the wait in camelCase: 429
+   * `invite_rate_limited` and 503 `busy` carry `retryAfterSeconds`. Validated
+   * like `retry_after_seconds` but kept apart from it: the worker routes'
+   * snake_case key is unchanged. Team code reads it through
+   * `retryAfterSecondsOf` in `./team`.
+   */
+  retryAfterSeconds?: number;
+  /**
+   * 403 `membership_inactive`: `removed` or `suspended` (absent on a few
+   * routes). With the team flag on, `apiFetch` raises `MembershipBlockedError`
+   * for this 403 before a caller could parse it; kept for the flag-off path.
+   */
+  membershipStatus?: 'removed' | 'suspended';
 };
 
 /**
@@ -96,6 +110,8 @@ const ALLOWED_PAYLOAD_KEYS = [
   'fields',
   'blocking_jobs',
   'retry_after_seconds',
+  'retryAfterSeconds',
+  'membershipStatus',
 ] as const;
 
 /**
@@ -167,9 +183,10 @@ function pickAllowedPayload(body: Record<string, unknown>): ApiErrorPayload {
     // `missing_docs` above, applied to each variant.
     if (key === 'missing' && !isStringArray(value) && !isHireGateMissing(value)) continue;
     if (
-      key === 'retry_after_seconds'
+      (key === 'retry_after_seconds' || key === 'retryAfterSeconds')
       && !(typeof value === 'number' && Number.isFinite(value) && value >= 0)
     ) continue;
+    if (key === 'membershipStatus' && value !== 'removed' && value !== 'suspended') continue;
     if (key === 'blocking_jobs') {
       // One bad entry poisons the list: the dialog renders a row per entry, so
       // a partially-valid list is still one it cannot trust. Drop the whole key
@@ -278,6 +295,15 @@ function isLegalWallShape(err: unknown): boolean {
 }
 
 /**
+ * `MembershipBlockedError` (Phase 3) lives in `../api` too; same name-marker
+ * check, for the same reason. Its `reason` picks the backend code it stands for.
+ */
+function membershipBlockedCode(err: unknown): 'no_organization' | 'membership_inactive' | null {
+  if (!(err instanceof Error) || err.name !== 'MembershipBlockedError') return null;
+  return (err as Error & { reason?: unknown }).reason === 'no_organization' ? 'no_organization' : 'membership_inactive';
+}
+
+/**
  * Pre-`ApiError` call sites built errors as `new Error(code)` with `status`
  * (and sometimes `code`) tacked on. Nothing in `src/lib/api/*` throws that
  * shape any more, but page-local fetches still do, so classification has to
@@ -297,6 +323,13 @@ export function classifyError(err: unknown): ClassifiedError {
   if (isLegalWallShape(err)) {
     // apiFetch only raises this for a 403 { error: 'legal_required' }.
     return { kind: 'legal_wall', status: 403, code: 'legal_required', retryable: false };
+  }
+
+  const blockedCode = membershipBlockedCode(err);
+  if (blockedCode) {
+    // A redirect to /employer/access, like the legal wall; anything still
+    // rendering it shows the plain forbidden copy.
+    return { kind: 'forbidden', status: 403, code: blockedCode, retryable: false };
   }
 
   if (err instanceof ApiError) {

@@ -4,10 +4,14 @@ import { useEffect, useRef, type RefObject } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { Icon } from '@/components/ui/icon';
+import { useEmployerMembership } from '@/hooks/useEmployerMembership';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
 import { UnreadBadge } from './UnreadBadge';
 import {
     employerMobileNav,
+    employerNavRole,
     workerPrimaryNav,
+    isEmployerNavItemVisible,
     isNavItemActive,
     type NavItem,
     type ShellRole,
@@ -139,19 +143,48 @@ function WorkerTabs({ pathname, attentionCount }: { pathname: string; attentionC
     );
 }
 
-function EmployerTabs({ pathname, unreadCount }: { pathname: string; unreadCount: number }) {
+type EmployerTabsProps = { pathname: string; unreadCount: number };
+
+/**
+ * Same split as `Sidebar`'s `EmployerNav`: with the team flag off the bar is
+ * Phase 2's and the membership hook never runs. With it on, the bar follows the
+ * sidebar's rule (owner-only items need a known owner). Team is not on the bar
+ * at all, and Billing left it in sprint 29, so today the rule removes nothing
+ * here; it holds if an owner-only tab is ever added.
+ */
+function EmployerTabs(props: EmployerTabsProps) {
+    return isTeamManagementEnabled() ? (
+        <RoleAwareEmployerTabs {...props} />
+    ) : (
+        <EmployerTabItems {...props} role="owner" teamEnabled={false} />
+    );
+}
+
+function RoleAwareEmployerTabs(props: EmployerTabsProps) {
+    const membership = useEmployerMembership();
+    return <EmployerTabItems {...props} role={employerNavRole(membership)} teamEnabled />;
+}
+
+function EmployerTabItems({
+    pathname,
+    unreadCount,
+    role,
+    teamEnabled,
+}: EmployerTabsProps & { role: 'owner' | 'foreman' | null; teamEnabled: boolean }) {
     const t = useTranslations('employer_dashboard');
     return (
         <>
-            {employerMobileNav.map((item) => (
-                <TabLink
-                    key={item.key}
-                    item={item}
-                    pathname={pathname}
-                    label={t(item.labelKey)}
-                    badgeCount={item.key === 'messages' ? unreadCount : 0}
-                />
-            ))}
+            {employerMobileNav
+                .filter((item) => isEmployerNavItemVisible(item, role, teamEnabled))
+                .map((item) => (
+                    <TabLink
+                        key={item.key}
+                        item={item}
+                        pathname={pathname}
+                        label={t(item.labelKey)}
+                        badgeCount={item.key === 'messages' ? unreadCount : 0}
+                    />
+                ))}
         </>
     );
 }

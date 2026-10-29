@@ -91,8 +91,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       templateUsage: usage.templates,
       otherMembersActiveJobs,
       role: actor.role,
+      // A live invite holds a seat (Phase 3), so the owner's meter is
+      // used + pending against the limit. `used` stays the active foremen;
+      // billing-suspended ones hold no seat and are reported apart.
       seats: actor.role === 'owner'
-        ? { used: usage.activeForemen, limit: entitlements.foremanSeatLimit, suspended: usage.suspendedForemen }
+        ? {
+            used: usage.activeForemen,
+            pending: usage.pendingInvites,
+            limit: entitlements.foremanSeatLimit,
+            suspended: usage.suspendedForemen,
+          }
         : null,
       subscription: subRes.rows[0] ?? null,
       display_price_minor: planRes.rows[0].display_price_minor,

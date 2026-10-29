@@ -83,8 +83,8 @@ interface FilterRecord {
 }
 
 /**
- * Mirrors bin/jale-app.ts for the stacks that own MetricFilters (WhatsApp,
- * Ai, Api, Referrals, Billing, Notifications, MediaBoard, Matching) plus the
+ * Mirrors bin/jale-app.ts for the stacks that own MetricFilters (Auth,
+ * WhatsApp, Ai, Api, Referrals, Billing, Notifications, MediaBoard, Matching) plus the
  * stacks they depend on. Kept in one app so the audit sees every filter the
  * production synth produces. Returns the Stack objects, not Templates: the
  * construct tree is needed to map log groups back to handler sources.
@@ -184,6 +184,10 @@ function buildStacks(): Record<string, cdk.Stack> {
     api: api.api,
     employerAuthorizer: api.employerAuthorizer,
     employerResource: api.employerResource,
+    employerUserPoolId: auth.employerPool.userPool.userPoolId,
+    employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
+    teamManagementEnabled: false,
+    publicSiteBaseUrl: 'https://jaleapp.ai',
   });
 
   const referrals = new ReferralsStack(app, 'TestReferralsStack', {
@@ -220,6 +224,7 @@ function buildStacks(): Record<string, cdk.Stack> {
   });
 
   return {
+    AuthStack: auth,
     AiStack: ai,
     ApiStack: api,
     WhatsAppStack: whatsapp,
@@ -373,6 +378,7 @@ describe('CloudWatch MetricFilter patterns', () => {
     expect(withFilters).toEqual([
       'ai-stack.ts',
       'api-stack.ts',
+      'auth-stack.ts',
       'billing-stack.ts',
       'matching-stack.ts',
       'media-board-stack.ts',
@@ -386,6 +392,7 @@ describe('CloudWatch MetricFilter patterns', () => {
     expect(FILTERS.length).toBeGreaterThan(0);
     const stacks = new Set(FILTERS.map((f) => f.stack));
     for (const expected of [
+      'AuthStack',
       'AiStack',
       'ApiStack',
       'WhatsAppStack',

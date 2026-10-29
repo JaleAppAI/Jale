@@ -206,8 +206,9 @@ maybeDescribe('migration 134: removal, team lists, membership, member access', (
            CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')) p(privilege)
           WHERE c.oid IN ('public.employer_profiles'::regclass, 'public.jobs'::regclass, 'public.users'::regclass)
             AND has_column_privilege('jale_cap_org_team', c.oid, a.attname, p.privilege)`);
+      // employer_profiles.phone is 138's (org_job_moved matches a removed holder's phone).
       expect(rows[0].grants).toEqual([
-        'employer_profiles:contact_name:SELECT', 'employer_profiles:user_id:SELECT',
+        'employer_profiles:contact_name:SELECT', 'employer_profiles:phone:SELECT', 'employer_profiles:user_id:SELECT',
         'jobs:employer_id:SELECT', 'jobs:id:SELECT', 'jobs:status:SELECT',
         'users:cognito_sub:SELECT', 'users:email:SELECT', 'users:full_name:SELECT', 'users:id:SELECT', 'users:user_type:SELECT',
       ]);
@@ -224,7 +225,8 @@ maybeDescribe('migration 134: removal, team lists, membership, member access', (
       ]);
       const count = await world.su.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM pg_policy p WHERE 'jale_cap_org_team'::regrole::oid = ANY (p.polroles)`);
-      expect(count.rows[0].n).toBe(14);
+      // 133's twelve, 134's two, and 138's four (org-worker-naming-138 pins them).
+      expect(count.rows[0].n).toBe(18);
     });
 
     it('organization_invites has the full (organization_id, email) index the member access and membership reads use', async () => {

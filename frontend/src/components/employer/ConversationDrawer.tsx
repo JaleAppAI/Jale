@@ -26,6 +26,8 @@ import type { ComposerSubject } from '@/components/employer/EmptyThreadComposer'
 import { describedRows, forgetThreadedTargets, rememberDescribedTarget, type DescribedTargets } from '@/components/employer/described-targets';
 import { isLegalWallError } from '@/lib/api';
 import { ApiError } from '@/lib/api/errors';
+import { teamErrorMessageKey } from '@/lib/api/team';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
 import { formatTimeOfDay } from '@/lib/date';
 import {
   closeConversation,
@@ -94,6 +96,7 @@ export function ConversationDrawer() {
   const router = useRouter();
   const t = useTranslations('employer_messages');
   const tCommon = useTranslations('common');
+  const tTeam = useTranslations('employer_team');
   const locale = useLocale();
   const translateError = useErrorMessage();
   const toast = useToast();
@@ -339,6 +342,12 @@ export function ConversationDrawer() {
           setComposerError(t('worker_whatsapp_unavailable'));
         } else if (code === 'applicant_not_found') {
           setComposerError(t('candidate_unavailable'));
+          void refresh();
+        } else if (code === 'job_move_conflict' && isTeamManagementEnabled()) {
+          // Phase 3: the owner moved this job while the conversation was
+          // being created. Nothing was sent; re-read the inbox so the row
+          // follows the job, and say why.
+          setComposerError(tTeam(teamErrorMessageKey(err)));
           void refresh();
         } else {
           setComposerError(translateError(err));

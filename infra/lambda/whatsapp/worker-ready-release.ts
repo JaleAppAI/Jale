@@ -14,6 +14,7 @@ import { evaluateDelivery } from './lib/delivery-policy';
 import { insertAuthorizedIntentOutbox } from './lib/outbox';
 import { isWithinSessionWindow } from './lib/session-window';
 import { listOpenReferredJobIds } from '../lib/referred-jobs';
+import { formatEmployerContactLabel } from '../lib/employer-contact-label';
 
 // Renderer contracts (ReleaseRenderRequest/ReleaseRenderedMessage/ReleaseRenderer) are
 // owned by C2 in onboarding-types.ts per Binding Resolution #6. This module imports
@@ -384,6 +385,7 @@ export async function releaseWorkerReady(
           conversation_status: string;
           job_status: string;
           job_title: string;
+          contact_name: string | null;
           company_name: string;
           application_exists: boolean;
         }>(
@@ -400,12 +402,19 @@ export async function releaseWorkerReady(
           // unconditionally false in production — silently discarding every
           // employer_chat release. (Caught by the C9 concurrency gate,
           // scenario 5; unit tests with a fake client cannot see it.)
+          //
+          // The copy names the person who wrote the message (its
+          // sender_user_id, or the conversation's employer for rows from
+          // before 118), read here at release time through the two definers
+          // rather than from the intent payload, so a payload queued before
+          // Phase 4 (the bare company) still releases with the label.
           `SELECT jcm.id AS message_id,
                   jc.id AS conversation_id,
                   jc.status AS conversation_status,
                   j.status AS job_status,
                   j.title AS job_title,
-                  employer_display_name(jc.employer_id) AS company_name,
+                  jale_cap.employer_contact_name(COALESCE(jcm.sender_user_id, jc.employer_id)) AS contact_name,
+                  employer_display_name(COALESCE(jcm.sender_user_id, jc.employer_id)) AS company_name,
                   EXISTS (
                     SELECT 1 FROM job_applications ja
                      WHERE ja.job_id = jc.job_id AND ja.worker_id = $2
@@ -724,7 +733,7 @@ export async function releaseWorkerReady(
         workerId,
         language,
         conversationId: chat.conversation_id,
-        companyName: chat.company_name,
+        companyName: formatEmployerContactLabel({ contactName: chat.contact_name ?? null, companyName: chat.company_name }),
         jobTitle: chat.job_title,
       },
       intents: [intent],

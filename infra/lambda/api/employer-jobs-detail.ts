@@ -63,6 +63,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements,
          shift_periods,
          public_code, public_listing_enabled,
+         -- The job's responsible person (Phase 3): the owner's reassign
+         -- control preselects it. Already scoped by actor.scopeUserIds below.
+         employer_id,
          city_key, city, state, latitude::float8 AS latitude, longitude::float8 AS longitude,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $1) AS applicant_count
        FROM jobs

@@ -1,9 +1,16 @@
 'use client';
 import { useEffect, useState, type FormEvent, type InputHTMLAttributes, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
+import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode } from '@/lib/cognito';
+import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode, type AuthTokens } from '@/lib/cognito';
 import { captureSignupSource } from '@/lib/signup-source';
+import { isLegalWallError, isMembershipBlockedError } from '@/lib/api';
+import { ApiError } from '@/lib/api/errors';
+import { acceptInvite, getMembership } from '@/lib/api/team';
+import { clearEmployerMembershipCache, membershipAccessPath } from '@/lib/employer-membership-store';
+import { clearPendingInvite, storedInviteTokenFor } from '@/lib/employer-profile-flush';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
 import { authErrorKey, confirmErrorKey, forgotErrorKey, resendErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
@@ -68,20 +75,156 @@ const FIELD_LABEL_KEY: Record<EmployerSignupField, string> = {
     typical_job_types: 'fields.typical_job_types',
 };
 
-export default function EmployerAuthForm() {
+/**
+ * Phase 3: an invite the invite page looked up. `email` is the invite's own
+ * address, normalised (`trim().toLowerCase()`); the form locks it.
+ */
+export type EmployerInvite = {
+    token: string;
+    email: string;
+    companyName: string;
+    contactName: string | null;
+    /** A Jale employer login already has this email: sign in, then accept. */
+    existingAccount: boolean;
+};
+
+type EmployerAuthFormProps =
+    | { mode?: undefined; invite?: undefined }
+    | { mode: 'invite'; invite: EmployerInvite };
+
+/**
+ * What an invited foreman's sign-up asks for. Everything else on the sign-up
+ * step describes a company, and they join the inviting one: a foreman may not
+ * write company fields, so collecting them would only lose them.
+ */
+const INVITE_SIGNUP_FIELDS: readonly EmployerSignupField[] = ['contact_name', 'email', 'password', 'password_confirm', 'phone'];
+
+/**
+ * An accept refusal's copy, inside `auth.employer`. Anything unlisted (a
+ * transport failure, a 500) reads as the generic line.
+ */
+const INVITE_ACCEPT_ERROR_KEYS: Record<string, string> = {
+    invite_email_mismatch: 'invite.email_mismatch',
+    already_member: 'invite.already_member',
+    employer_required: 'invite.employer_required',
+    invite_not_found: 'invite.not_found',
+    invite_expired: 'invite.expired',
+    invite_revoked: 'invite.revoked',
+    invite_used: 'invite.used',
+    busy: 'invite.busy',
+};
+
+function inviteAcceptErrorKey(err: unknown): string {
+    return (err instanceof ApiError && INVITE_ACCEPT_ERROR_KEYS[err.code]) || 'invite.generic';
+}
+
+/**
+ * Cognito's answer for a disabled user (a removed or billing-suspended
+ * foreman, Phase 3): `NotAuthorizedException` with exactly this message.
+ * `authErrorKey` would read it as a wrong password.
+ */
+function isDisabledAccountError(err: unknown): boolean {
+    const e = err as { code?: string; name?: string; message?: string } | null;
+    return (e?.code ?? e?.name) === 'NotAuthorizedException' && e?.message === 'User is disabled.';
+}
+
+/**
+ * The invite page, WITHOUT a locale: `legalReturnUrl` goes through next-intl's
+ * router, which adds the locale itself (a prefixed path became `/en/en/…`).
+ * The token is in sessionStorage, so the page finds it again on return.
+ */
+export const INVITE_PAGE_PATH = '/auth/employer/invite';
+
+/**
+ * What an accept came to. `joined` and `blocked` hand the session to the app
+ * and land on the dashboard / the access screen; `legal_wall` goes to
+ * `/legal/accept` (the return URL is already stored); `refused` stays and
+ * shows `key` (inside `auth.employer`).
+ */
+export type InviteAcceptOutcome =
+    | { kind: 'joined' }
+    | { kind: 'blocked'; path: string }
+    | { kind: 'legal_wall' }
+    | { kind: 'refused'; code: string | null; key: string };
+
+/**
+ * Accepts the invite for `idToken`'s login and classifies the answer. Never
+ * throws. A `joined` answer has cleared the stored invite.
+ *
+ * `loginIsInvitee`: the login's email is known to be the invite's (invite
+ * mode locks it). The backend (130) answers `invite_used` before it compares
+ * emails, so only then does `invite_used` plus an active membership mean this
+ * person already accepted it (a double submit, or post-confirmation did): the
+ * accept is idempotent and lands on the dashboard. For any other login it is
+ * the `used` copy. `already_member` always means the invite is still live and
+ * the login belongs to another company: its copy, never a redirect.
+ */
+export async function settleInviteAccept(
+    idToken: string,
+    inviteToken: string,
+    loginIsInvitee: boolean,
+): Promise<InviteAcceptOutcome> {
+    let refusal: unknown;
+    try {
+        await acceptInvite(idToken, inviteToken);
+        clearPendingInvite();
+        return { kind: 'joined' };
+    } catch (err) {
+        refusal = err;
+    }
+    if (isLegalWallError(refusal)) {
+        try {
+            sessionStorage.setItem('legalReturnUrl', INVITE_PAGE_PATH);
+        } catch {
+            // Storage out of reach: the legal page falls back to its default.
+        }
+        return { kind: 'legal_wall' };
+    }
+    if (isMembershipBlockedError(refusal)) return { kind: 'blocked', path: membershipAccessPath(refusal) };
+    const code = refusal instanceof ApiError ? refusal.code : null;
+    if (code === 'invite_used' && loginIsInvitee) {
+        try {
+            await getMembership(idToken);
+            clearPendingInvite();
+            return { kind: 'joined' };
+        } catch (err) {
+            if (isMembershipBlockedError(err)) return { kind: 'blocked', path: membershipAccessPath(err) };
+            // Any other failure: the `used` copy.
+        }
+    }
+    return { kind: 'refused', code, key: inviteAcceptErrorKey(refusal) };
+}
+
+/**
+ * The employer sign-in / sign-up form.
+ *
+ * `mode="invite"` (Phase 3, the invite page only): the email is the invite's
+ * and locked; a new account signs up as a foreman (no company fields, Cognito
+ * `name` = their own name) and its confirm carries the invite token to the
+ * post-confirmation trigger; an existing account signs in, then accepts. In
+ * this mode the form lands the session itself, on the dashboard.
+ *
+ * Without it, the plain page: unchanged from Phase 2, except that with the
+ * team flag on its confirm step forwards a stored invite token whose email
+ * matches the one being confirmed (I4).
+ */
+export default function EmployerAuthForm(props: EmployerAuthFormProps = {}) {
+    const invite = props.mode === 'invite' ? props.invite : null;
+    const inviteMode = invite !== null;
     const t = useTranslations('auth.employer');
     const tCommon = useTranslations('common');
     const { setTokens } = useAuth();
+    const router = useRouter();
 
-    const [step, setStep] = useState<Step>('login');
-    const [email, setEmail] = useState('');
+    const [step, setStep] = useState<Step>(() => (invite && !invite.existingAccount ? 'signup' : 'login'));
+    const [email, setEmail] = useState(() => invite?.email ?? '');
     const [password, setPassword] = useState('');
     const [passwordConfirm, setPasswordConfirm] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [showPasswordConfirm, setShowPasswordConfirm] = useState(false);
     const [confirmationCode, setConfirmationCode] = useState('');
     const [companyName, setCompanyName] = useState('');
-    const [contactName, setContactName] = useState('');
+    const [contactName, setContactName] = useState(() => invite?.contactName ?? '');
     const [phoneCountryCode, setPhoneCountryCode] = useState<PhoneCountryCode>('+1');
     const [phoneLocalNumber, setPhoneLocalNumber] = useState('');
     const [city, setCity] = useState('');
@@ -96,10 +239,12 @@ export default function EmployerAuthForm() {
     // The employer sign-up page is a first-party entry (analytics #16, K3.6).
     // Read from the address on arrival, once -- the `?apply=1` precedent in
     // the worker job page -- rather than through `useSearchParams`, which this
-    // form does not otherwise need.
+    // form does not otherwise need. An invite sign-up is not a company sign-up,
+    // so invite mode records none.
     useEffect(() => {
+        if (inviteMode) return;
         captureSignupSource({ src: new URLSearchParams(window.location.search).get('src'), entry: 'signup_page' });
-    }, []);
+    }, [inviteMode]);
     const [resetSuccess, setResetSuccess] = useState(false);
     const [forgotEmail, setForgotEmail] = useState('');
     const [resetCode, setResetCode] = useState('');
@@ -137,7 +282,16 @@ export default function EmployerAuthForm() {
         return () => clearInterval(timer);
     }, [resendCooldown]);
 
-    const pendingProfile = (): EmployerProfilePatch => ({
+    /**
+     * `forInvite`: the confirm carried an invite token, so this login joins a
+     * company as a foreman. Only `{ contact_name, phone }` is staged: a
+     * foreman's PATCH may not carry company fields, and the flush adds
+     * `signup_source` only beside `company_name` (I4).
+     */
+    const pendingProfile = (forInvite: boolean): EmployerProfilePatch => forInvite ? {
+        contact_name: contactName.trim(),
+        phone: phone.trim(),
+    } : {
         company_name: companyName.trim(),
         contact_name: contactName.trim(),
         phone: phone.trim(),
@@ -147,7 +301,7 @@ export default function EmployerAuthForm() {
         typical_job_types: typicalJobTypes,
         company_size: companySize,
         company_description: companyDescription.trim(),
-    });
+    };
 
     /**
      * Asks Cognito for a new confirmation code — the single funnel for all
@@ -235,6 +389,43 @@ export default function EmployerAuthForm() {
         if (outcome.status === 'sent') setResendCooldown(RESEND_COOLDOWN_SECONDS);
     };
 
+    /**
+     * Invite mode: hands the signed-in session to the app and lands it. The
+     * membership cache is dropped first, since this login's company just
+     * changed.
+     */
+    const landInviteSession = (tokens: AuthTokens, path = '/employer/dashboard') => {
+        clearEmployerMembershipCache();
+        setTokens(tokens, 'employer');
+        router.replace(path);
+    };
+
+    /**
+     * Invite mode, after a successful sign-in: accept, then land. Never
+     * throws; a refusal is shown on the login step and the session is NOT
+     * handed to the app (the person asked to join, not to sign in). The
+     * login's email is the invite's (locked), so `invite_used` with an active
+     * membership is this person's own earlier accept (`settleInviteAccept`).
+     */
+    const joinInvite = async (current: EmployerInvite, tokens: AuthTokens) => {
+        const outcome = await settleInviteAccept(tokens.idToken, current.token, true);
+        switch (outcome.kind) {
+            case 'joined':
+                landInviteSession(tokens);
+                return;
+            case 'blocked':
+                landInviteSession(tokens, outcome.path);
+                return;
+            case 'legal_wall':
+                // Terms first (they need the session), then back to the page.
+                setTokens(tokens, 'employer');
+                router.replace('/legal/accept');
+                return;
+            case 'refused':
+                setError(t(outcome.key));
+        }
+    };
+
     const handleSignIn = async () => {
         setError(null);
         if (!email.trim() || !password) {
@@ -244,6 +435,10 @@ export default function EmployerAuthForm() {
         setIsLoading(true);
         try {
             const tokens = await employerSignIn(email, password);
+            if (invite) {
+                await joinInvite(invite, tokens);
+                return;
+            }
             // No navigation here: the auth page lands every fresh session (the
             // dashboard, or `returnUrl`). A push from the form raced it.
             setTokens(tokens, 'employer');
@@ -253,6 +448,14 @@ export default function EmployerAuthForm() {
             // browser console is shared with anything else on the page.
             // `authErrorKey` already turns the code into a translated sentence,
             // which is the only thing anyone needs from it.
+            if (isTeamManagementEnabled() && isDisabledAccountError(err)) {
+                // On the invite page a disabled login is most likely a removed
+                // member whose re-enable (done by the invite create/resend,
+                // after its COMMIT) has not landed yet, or an invite that was
+                // revoked: "wait, or ask for a resend", not "you were removed".
+                setError(t(invite ? 'invite.account_disabled' : 'account_disabled'));
+                return;
+            }
             const key = authErrorKey(err);
             if (key === 'errors.account_not_confirmed') {
                 // The credentials were fine; the account was simply never
@@ -323,10 +526,12 @@ export default function EmployerAuthForm() {
 
     const handleCreateAccount = async () => {
         setError(null);
-        const missing = validateEmployerSignupFields({
+        const allMissing = validateEmployerSignupFields({
             company_name: companyName, contact_name: contactName, email, password, password_confirm: passwordConfirm,
             phone, city, service_area: serviceArea, hiring_trades: hiringTrades, typical_job_types: typicalJobTypes,
         });
+        // Invite mode shows only its own fields, so it asks only for those.
+        const missing = inviteMode ? allMissing.filter((field) => INVITE_SIGNUP_FIELDS.includes(field)) : allMissing;
         setMissingFields(missing);
         if (missing.length > 0) {
             setError(t('errors.missing_summary', {
@@ -340,7 +545,11 @@ export default function EmployerAuthForm() {
         }
         setIsLoading(true);
         try {
-            await employerSignUp({ email, password, companyName, contactName, phone });
+            if (inviteMode) {
+                await employerSignUp({ email, password, companyName: '', contactName, phone }, { invite: true });
+            } else {
+                await employerSignUp({ email, password, companyName, contactName, phone });
+            }
             setConfirmationCode('');
             setConfirmOrigin('signup');
             setRecoveryFromForgot(false);
@@ -370,17 +579,35 @@ export default function EmployerAuthForm() {
      * reset to the '1-10' default the moment they entered their code — losing
      * real profile data to fix an email problem.
      */
-    const savePendingSignupProfile = () => {
+    const savePendingSignupProfile = (forInvite: boolean) => {
         if (confirmOrigin !== 'signup') return;
-        sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(pendingProfile()));
+        sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(pendingProfile(forInvite)));
+    };
+
+    /**
+     * The invite token this confirm carries to the post-confirmation trigger,
+     * or null. Only ever for the invite's own address (I4): invite mode's
+     * email is locked, but the forgot-password step can still promote another
+     * one onto the confirm step. The plain page forwards a stored token only
+     * with the team flag on, and only when the stored email matches.
+     */
+    const confirmInviteToken = (): string | null => {
+        if (invite) return email.trim().toLowerCase() === invite.email.trim().toLowerCase() ? invite.token : null;
+        if (!isTeamManagementEnabled()) return null;
+        return storedInviteTokenFor(email);
     };
 
     const handleConfirm = async () => {
         setError(null);
         setResendSuccess(false);
         setIsLoading(true);
+        const inviteToken = confirmInviteToken();
         try {
-            await employerConfirmSignUp(email, confirmationCode);
+            if (inviteToken) {
+                await employerConfirmSignUp(email, confirmationCode, { inviteToken });
+            } else {
+                await employerConfirmSignUp(email, confirmationCode);
+            }
         } catch (err) {
             // `confirmErrorKey`, not `authErrorKey`: a confirm against an
             // ALREADY-CONFIRMED account rejects with `NotAuthorizedException`,
@@ -399,7 +626,7 @@ export default function EmployerAuthForm() {
                 // signup still owes its profile patch to the sign-in that
                 // follows. Routing to login without it would strand the form's
                 // answers on a step the user can no longer get back to.
-                savePendingSignupProfile();
+                savePendingSignupProfile(inviteToken !== null || inviteMode);
                 goToStep('login');
                 setResetSuccess(false);
                 // From the forgot flow, "confirmed" means the email was never
@@ -414,7 +641,10 @@ export default function EmployerAuthForm() {
             return;
         }
 
-        savePendingSignupProfile();
+        savePendingSignupProfile(inviteToken !== null || inviteMode);
+        // The confirm carried the token: post-confirmation has settled the
+        // invite, so the stored copy is spent.
+        if (inviteToken) clearPendingInvite();
 
         // The recovery entry points collect an email and nothing else, so there
         // is no password to sign in with. The account IS confirmed now, so send
@@ -430,6 +660,12 @@ export default function EmployerAuthForm() {
 
         try {
             const tokens = await employerSignIn(email, password);
+            if (inviteMode) {
+                // Post-confirmation accepted the invite by its token; the
+                // invite page does not land sessions, so the form does.
+                landInviteSession(tokens);
+                return;
+            }
             // No navigation here: the auth page lands every fresh session (the
             // dashboard, or `returnUrl`). A push from the form raced it.
             setTokens(tokens, 'employer');
@@ -552,8 +788,12 @@ export default function EmployerAuthForm() {
     // "Create your employer account" — this user already has an account and is
     // trying to get back into it.
     const isRecoveryConfirm = step === 'confirm' && confirmOrigin === 'signin';
+    // Invite mode names the company on the two steps a person arrives on.
+    const inviteIntro = invite && (step === 'login' || step === 'signup');
+    const inviteCopy = invite ? { companyName: invite.companyName, email: invite.email } : null;
     const heading =
-        step === 'login' ? t('hero')
+        inviteIntro && inviteCopy ? t('invite.title', { companyName: inviteCopy.companyName })
+        : step === 'login' ? t('hero')
             : step === 'forgot_request' ? t('forgot_title')
                 : step === 'forgot_confirm' ? t('forgot_confirm_title')
                     : isRecoveryConfirm ? t('recovery_title')
@@ -562,7 +802,8 @@ export default function EmployerAuthForm() {
     // about, so they deliberately have no subtitle here. Rendering an empty <p>
     // for them (the old shape) left a paragraph that existed only as a margin.
     const subheading =
-        step === 'login' ? t('title')
+        inviteIntro && inviteCopy ? t(step === 'login' ? 'invite.rejoin_body' : 'invite.body', inviteCopy)
+        : step === 'login' ? t('title')
             : step === 'forgot_request' || step === 'forgot_confirm' ? ''
                 : isRecoveryConfirm ? t('recovery_subtitle')
                     // The signup's own code step: the code has arrived, so the
@@ -596,10 +837,12 @@ export default function EmployerAuthForm() {
                 {step === 'login' && (
                     <form onSubmit={submitStep(handleSignIn)} noValidate className="anim-fade-in flex flex-col gap-4">
                         <Field label={t('fields.email')}>
-                            <Input autoFocus type="email" placeholder={t('email_label')} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+                            {/* Invite mode: the invite's address, locked. */}
+                            <Input autoFocus={!inviteMode} readOnly={inviteMode} type="email" placeholder={t('email_label')} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
                         </Field>
                         <Field label={t('fields.password')}>
                             <PasswordInput
+                                autoFocus={inviteMode}
                                 placeholder={t('password_label')}
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
@@ -645,22 +888,29 @@ export default function EmployerAuthForm() {
                             <InlineFeedback tone="success">{t('confirmed_sign_in')}</InlineFeedback>
                         )}
                         <Button type="submit" className="w-full mt-1" size="lg" loading={isLoading} loadingLabel={tCommon('loading')}>
-                            {t('sign_in')}
+                            {inviteMode ? t('invite.rejoin_submit') : t('sign_in')}
                         </Button>
-                        <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setResetSuccess(false); goToStep('signup'); }} />
+                        {/* An existing account has nothing to sign up for. */}
+                        {invite?.existingAccount ? null : (
+                            <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setResetSuccess(false); goToStep('signup'); }} />
+                        )}
                     </form>
                 )}
 
                 {step === 'signup' && (
                     <form onSubmit={submitStep(handleCreateAccount)} noValidate className="anim-fade-in flex flex-col gap-4">
-                        <Field label={t('fields.company_name')} error={missingFields.includes('company_name') ? t('errors.required') : undefined}>
-                            <Input autoFocus value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
-                        </Field>
+                        {/* Invite mode: no company fields (this one or the ones
+                            after the phone). A foreman joins the inviting company. */}
+                        {inviteMode ? null : (
+                            <Field label={t('fields.company_name')} error={missingFields.includes('company_name') ? t('errors.required') : undefined}>
+                                <Input autoFocus value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+                            </Field>
+                        )}
                         <Field label={t('fields.contact_name')} error={missingFields.includes('contact_name') ? t('errors.required') : undefined}>
-                            <Input value={contactName} onChange={(e) => setContactName(e.target.value)} autoComplete="name" />
+                            <Input autoFocus={inviteMode} value={contactName} onChange={(e) => setContactName(e.target.value)} autoComplete="name" />
                         </Field>
                         <Field label={t('fields.email')} error={missingFields.includes('email') ? t('errors.required') : undefined}>
-                            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+                            <Input type="email" readOnly={inviteMode} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
                         </Field>
                         <Field label={t('fields.password_create')} error={missingFields.includes('password') ? t('errors.required') : undefined}>
                             <PasswordInput
@@ -693,37 +943,41 @@ export default function EmployerAuthForm() {
                                 onLocalNumberChange={setPhoneLocalNumber}
                             />
                         </Field>
-                        <Field label={t('fields.city')} error={missingFields.includes('city') ? t('errors.required') : undefined}>
-                            {/* Enter inside the city combobox picks a suggestion; it
-                                must never submit the account. `LocationPicker` only
-                                calls `preventDefault` when one of its options is
-                                actually highlighted, so a user who types a city and
-                                presses Enter to "accept" it would otherwise create
-                                the account from a half-typed address. The field lives
-                                in another lane's file, so the guard sits here — on
-                                the wrapper, after the picker's own handler has had
-                                its turn. */}
-                            <div onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}>
-                                <LocationPicker value={city} onChange={(v) => setCity(v.label)} />
-                            </div>
-                        </Field>
-                        <Field label={t('fields.service_area')} error={missingFields.includes('service_area') ? t('errors.required') : undefined}>
-                            <Input value={serviceArea} onChange={(e) => setServiceArea(e.target.value)} />
-                        </Field>
-                        <CheckboxGroup label={t('fields.hiring_trades')} error={missingFields.includes('hiring_trades') ? t('errors.required') : undefined}>
-                            {TRADES.map((trade) => <CheckboxCard key={trade} checked={hiringTrades.includes(trade)} label={t(`trades.${trade}`)} onChange={() => toggleTrade(trade)} />)}
-                        </CheckboxGroup>
-                        <CheckboxGroup label={t('fields.typical_job_types')} error={missingFields.includes('typical_job_types') ? t('errors.required') : undefined}>
-                            {JOB_TYPES.map((jobType) => <CheckboxCard key={jobType} checked={typicalJobTypes.includes(jobType)} label={t(`job_types.${jobType.replace('-', '_')}`)} onChange={() => toggleJobType(jobType)} />)}
-                        </CheckboxGroup>
-                        <Field label={t('fields.company_size')}>
-                            <Select value={companySize} onChange={(e) => setCompanySize(e.target.value as CompanySize)}>
-                                {COMPANY_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
-                            </Select>
-                        </Field>
-                        <Field label={t('fields.company_description')}>
-                            <Textarea rows={3} value={companyDescription} onChange={(e) => setCompanyDescription(e.target.value)} />
-                        </Field>
+                        {inviteMode ? null : (
+                            <>
+                                <Field label={t('fields.city')} error={missingFields.includes('city') ? t('errors.required') : undefined}>
+                                    {/* Enter inside the city combobox picks a suggestion; it
+                                        must never submit the account. `LocationPicker` only
+                                        calls `preventDefault` when one of its options is
+                                        actually highlighted, so a user who types a city and
+                                        presses Enter to "accept" it would otherwise create
+                                        the account from a half-typed address. The field lives
+                                        in another lane's file, so the guard sits here — on
+                                        the wrapper, after the picker's own handler has had
+                                        its turn. */}
+                                    <div onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}>
+                                        <LocationPicker value={city} onChange={(v) => setCity(v.label)} />
+                                    </div>
+                                </Field>
+                                <Field label={t('fields.service_area')} error={missingFields.includes('service_area') ? t('errors.required') : undefined}>
+                                    <Input value={serviceArea} onChange={(e) => setServiceArea(e.target.value)} />
+                                </Field>
+                                <CheckboxGroup label={t('fields.hiring_trades')} error={missingFields.includes('hiring_trades') ? t('errors.required') : undefined}>
+                                    {TRADES.map((trade) => <CheckboxCard key={trade} checked={hiringTrades.includes(trade)} label={t(`trades.${trade}`)} onChange={() => toggleTrade(trade)} />)}
+                                </CheckboxGroup>
+                                <CheckboxGroup label={t('fields.typical_job_types')} error={missingFields.includes('typical_job_types') ? t('errors.required') : undefined}>
+                                    {JOB_TYPES.map((jobType) => <CheckboxCard key={jobType} checked={typicalJobTypes.includes(jobType)} label={t(`job_types.${jobType.replace('-', '_')}`)} onChange={() => toggleJobType(jobType)} />)}
+                                </CheckboxGroup>
+                                <Field label={t('fields.company_size')}>
+                                    <Select value={companySize} onChange={(e) => setCompanySize(e.target.value as CompanySize)}>
+                                        {COMPANY_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+                                    </Select>
+                                </Field>
+                                <Field label={t('fields.company_description')}>
+                                    <Textarea rows={3} value={companyDescription} onChange={(e) => setCompanyDescription(e.target.value)} />
+                                </Field>
+                            </>
+                        )}
                         {error && <FormError>{error}</FormError>}
                         <Button type="submit" className="w-full mt-1" size="lg" loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('create_account')}
