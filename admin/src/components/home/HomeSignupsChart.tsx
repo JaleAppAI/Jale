@@ -19,7 +19,7 @@ export function HomeSignupsChart({ weeks }: { weeks: HomeMetrics['signupsWeekly'
   return (
     <ChartFrame
       title="Signups, cumulative"
-      subtitle="Workers and employers"
+      subtitle="Workers and companies"
       table={seriesTable('Signups, cumulative, by week', labels, series, { format: formatCount, partialLast })}
     >
       {weeks.length > 0 ? (

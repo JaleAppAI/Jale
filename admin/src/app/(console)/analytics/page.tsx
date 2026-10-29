@@ -73,8 +73,8 @@ export default async function AnalyticsPage({
 
       <section aria-label="Key figures" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         <StatTile label="Workers" value={formatCount(totals.totalWorkers)} hint={`${signedDelta(newWorkers)} this period · ${formatCount(newVerified)} verified`} />
-        <StatTile label="Employers" value={formatCount(totals.totalEmployers)} hint={`${signedDelta(newEmployers)} this period`} />
-        <StatTile label="Paying employers" value={formatCount(totals.payingEmployers)} hint={payingShare ? `${payingShare} of employers` : 'Active, trialing, or past due'} />
+        <StatTile label="Companies" value={formatCount(totals.totalEmployers)} hint={`${signedDelta(newEmployers)} this period`} />
+        <StatTile label="Paying companies" value={formatCount(totals.payingEmployers)} hint={payingShare ? `${payingShare} of companies` : 'Active, trialing, or past due'} />
         <StatTile label="Active jobs" value={formatCount(totals.jobsActive)} hint={`${formatCount(totals.jobsPaused)} paused · ${formatCount(totals.jobsClosed)} closed`} />
         <StatTile label="Hires" value={formatCount(totals.hiresTotal)} hint="All time" />
         <StatTile label="Jobs with ≥1 hire" value={formatCount(totals.jobsWithHire)} hint={hireShare ? `${hireShare} of all jobs` : 'All time'} />

@@ -111,7 +111,10 @@ assert.equal(fmtLib.perUnit(137, 14), '9.8');
 assert.equal(fmtLib.perUnit(5, 0), null);
 
 // ---- period end label ----
-const base = { employerId: 'e', displayName: 'X', planCode: 'starter', status: 'active', cancelAtPeriodEnd: false };
+const base = {
+  employerId: 'e', displayName: 'X', planCode: 'starter', status: 'active', cancelAtPeriodEnd: false,
+  organizationId: 'o', membersActive: 1, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: null,
+};
 assert.equal(fmtLib.periodEndLabel({ ...base, currentPeriodEnd: '2026-09-21T00:00:00.000Z' }), 'Renews Sep 21');
 assert.equal(fmtLib.periodEndLabel({ ...base, status: 'trialing', currentPeriodEnd: '2026-09-09T00:00:00.000Z' }), 'Trial ends Sep 9');
 assert.equal(fmtLib.periodEndLabel({ ...base, status: 'past_due', currentPeriodEnd: '2026-09-01T00:00:00.000Z' }), 'Due Sep 1');

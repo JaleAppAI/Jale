@@ -20,6 +20,7 @@ const FE4_PAGES = {
   employers: 'src/app/(console)/analytics/employers/page.tsx',
   ops: 'src/app/(console)/analytics/ops/page.tsx',
 };
+const COMPANY_PAGE = 'src/app/(console)/analytics/employers/[organizationId]/page.tsx';
 const fe4Source = Object.fromEntries(Object.entries(FE4_PAGES).map(([tab, path]) => [tab, read(path)]));
 const fe4Flat = (text) => text.replace(/\s+/g, ' '); // JSX text and props wrap across lines
 
@@ -53,11 +54,17 @@ const fe4Compiled = compileAdminSources({
   name: 'analytics-pages',
   sources: [
     ...Object.values(FE4_PAGES),
+    COMPANY_PAGE,
     'src/components/analytics/AnalyticsHeader.tsx',
     'src/components/analytics/StalePicker.tsx',
+    'src/components/analytics/SeatMeter.tsx',
+    'src/components/analytics/CompanyLink.tsx',
+    'src/components/analytics/CompaniesPanel.tsx',
+    'src/components/analytics/CompanyDetail.tsx',
   ],
   fakes: {
     'next/link': 'scripts/fakes/next-link.mjs',
+    'next/navigation': 'scripts/fakes/next-navigation.mjs',
     'src/lib/server/session.ts': 'scripts/fakes/session.mjs',
     'src/lib/server/admin-analytics.ts': 'scripts/fixtures/fe4-loaders.mjs',
   },
@@ -160,6 +167,15 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
     assert.ok(page.includes(kept), `growth keeps ${kept.slice(1)}`);
   }
   assert.doesNotMatch(page, /<form|AdminActionsPanel/, 'growth is read-only');
+  // Phase 5: the tiles count companies, not employer logins.
+  assert.match(page, /<StatTile label="Companies" value=\{formatCount\(totals\.totalEmployers\)\}/, 'growth: the Employers tile is Companies');
+  assert.match(page, /<StatTile label="Paying companies" /, 'growth: the paying tile is Paying companies');
+  assert.match(page, /\$\{payingShare\} of companies`/, 'growth: the paying share is of companies');
+  assert.doesNotMatch(page, /label="Employers"|label="Paying employers"|of employers/, 'growth: no tile still says employers');
+  assert.doesNotMatch(panels, /Total accounts by week|New accounts by week|label: 'Employers'|New paying employers|Paying employers by week/, 'growth: the old employer and accounts wording is gone');
+  assert.match(panels, /label: 'Companies', color: 'chart-2'/, '#1: the second series is Companies');
+  assert.match(panels, /Employer sign-ups count companies; a team member joining a company is not counted\./, '#1: the how-counted line says what an employer sign-up is');
+  assert.match(panels, /Employer logins with the applicant digest on and an email address, as of now/, '#13: adoption is per login');
 
   // #1: running totals (or new per week), workers and employers; verified workers in the table twin.
   assert.match(panels, /cumulativeSeries\(workersNew, totals\.totalWorkers\)/);
@@ -185,6 +201,40 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
   for (const [view, html] of Object.entries(rendered)) {
     assert.deepEqual(fe4Tags(html), ['#1', '#2', '#13', '#16'], `growth (${view}): the list tags of the tab, in order`);
   }
+  {
+    const html = rendered['long-8'];
+    assert.match(html, />Companies<\/p>/, 'growth: the Companies tile');
+    assert.match(html, />Paying companies<\/p>/, 'growth: the Paying companies tile');
+    assert.match(html, /\d+% of companies</, 'growth: the paying hint says of companies');
+    assert.match(html, /<h2[^>]*>New paying companies, by week<\/h2>/, '#2: the title');
+    assert.match(html, /Paying companies by week/, '#2: the table caption');
+    assert.match(html, /<th[^>]*>Companies<\/th>/, '#2: the column');
+    assert.match(html, /of companies are paying \(/, '#2: the headline note');
+    assert.match(html, /Total sign-ups by week/, '#1: the total twin caption');
+    assert.match(html, /Employer sign-ups count companies; a team member joining a company is not counted\./, '#1: the how-counted line is on the page');
+    assert.match(html, /of employer logins get the digest \(/, '#13: the headline note');
+    assert.doesNotMatch(html, /Total accounts by week|New accounts by week|New paying employers|of employers/, 'growth: no old wording is rendered');
+    const newView = (await fe4Render('growth', 'long', { weeks: '8', signups: 'new' })).html;
+    assert.match(newView, /New sign-ups by week/, '#1: the new twin caption');
+  }
+  // Paying list (Phase 5): seats per row, names open the company page.
+  assert.match(payingList, /<SeatMeter /, 'paying list: a seat meter per row');
+  assert.match(payingList, /Seat limit follows each row's plan\./, "paying list: the note says the limit follows each row's plan");
+  assert.match(payingList, /<CompanyLink name=\{row\.displayName\} ownerId=\{row\.employerId\} organizationId=\{row\.organizationId\} \/>/, 'paying list: the name is the shared company link');
+  assert.match(payingList, /title="Paying companies"/, 'paying list: the panel is Paying companies');
+  assert.match(payingList, /No paying companies yet\./, 'paying list: the empty state says companies');
+  assert.doesNotMatch(payingList, /Paying employers|No paying employers/, 'paying list: no employers wording is left');
+  {
+    const html = rendered['long-8'];
+    assert.match(html, /href="\/analytics\/employers\/00000000-0000-4000-8000-0000000000a1"[^>]*>Example Roofing Co<\/a>/, 'paying list: a name links to its company');
+    assert.match(html, /<h2[^>]*>Paying companies<\/h2>/, 'paying list: the panel title');
+    assert.doesNotMatch(html, /Paying employers/, 'paying list: the old title is gone');
+    assert.match(html, /href="\/analytics\/employers\/00000000-0000-4000-8000-0000000000a4"[^>]*>Empleador · 3fa1<\/a>/, 'paying list: an unnamed company is told apart by its id');
+    assert.match(html, /2 of 3 seats · 1 pending · 1 suspended/, 'paying list: the seat meter');
+    assert.match(html, /\b0 seats<|>0 seats</, 'paying list: a plan with no seat limit shows the seats held');
+    assert.match(html, /data-how-counted=""[^>]*>Seat limit follows each row&#x27;s plan\./, 'paying list: the note is on the page');
+  }
+  assert.match(rendered['empty-8'], /No paying companies yet\./, 'paying list: the empty state says companies');
   assert.match(rendered['empty-8'], /data-chart="collecting-since"/, '#16 with no rows: the collecting-since panel');
   assert.match(rendered['empty-8'], /No data yet · collecting since [^<]+</, '#16: the release label (jale sets it at release)');
   assert.doesNotMatch(rendered['long-26'], /data-chart="collecting-since"/, '#16 with rows: a real chart');
@@ -309,11 +359,13 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
   fe4AssertWaves('employers', [
     ['getEmployerWeekly', 'loadSlowestEmployers', 'loadStaleJobs'],
     ['getDigestAdoption', 'getDigestSends', 'getTemplateReuse'],
-    ['getAnalyticsTotals'],
+    ['getAnalyticsTotals', 'loadCompanies'],
   ]);
   const panels = read('src/components/analytics/panels/employers.tsx');
   const weeklyTable = read('src/components/analytics/EmployerWeeklyTable.tsx');
   const slowest = read('src/components/analytics/SlowestEmployers.tsx');
+  const companiesPanel = read('src/components/analytics/CompaniesPanel.tsx');
+  const seatMeter = read('src/components/analytics/SeatMeter.tsx');
   const staleList = read('src/components/analytics/StaleJobsList.tsx');
   const digestCard = read('src/components/analytics/DigestEmails.tsx');
   const stalePicker = read('src/components/analytics/StalePicker.tsx');
@@ -323,6 +375,9 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
   // The two lists name employers: each loads through its recorded loader.
   assert.match(page, /loadSlowestEmployers\(session, weeks\)/);
   assert.match(page, /loadStaleJobs\(session, staleDays\)/, '#4: the picked window reaches the recorded loader');
+  assert.match(page, /loadCompanies\(session\)/, 'the Companies panel loads through its recorded loader');
+  assert.doesNotMatch(page, /getCompanies\(|getCompany\(/, 'employers: the companies are never read unrecorded');
+  assert.match(page, /<CompaniesPanel rows=\{companies\} limit=\{COMPANIES_LIMIT\} \/>/, 'employers: the Companies panel shows the loaded rows');
   assert.doesNotMatch(page, /getSlowestEmployers\(|getStaleJobs\(|getAdminDbPool|@\/lib\/server\/db['"]/, 'employers: nothing is read unrecorded or from the pool');
   assert.match(page, /const \{ weekly, summary \} = splitEmployerWeekly\(weeklyRows\);/, 'the tiles read the SQL whole-window row');
   for (const [pattern, point] of [
@@ -354,15 +409,49 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
   assert.match(weeklyTable, /\{answeredLabel\(row\)\}/, 'Answered shows how many answers have no time');
   assert.match(weeklyTable, /title="Under 14 days old: unanswered counts are not final yet"/);
   assert.match(weeklyTable, />approx\.</, 'weeks with approximate hires are marked');
-  assert.deepEqual(fe4Headers(slowest), ['Employer', 'Applications', 'Unanswered 7d', 'Median first response', 'Active jobs']);
-  assert.match(slowest, /No employer has 3\+ applications in these weeks\./);
-  assert.match(slowest, /\{employerLabel\(row\.displayName, row\.employerId\)\}/, 'employer names use the shared label');
+  assert.deepEqual(fe4Headers(slowest), ['Company', 'Applications', 'Unanswered 7d', 'Median first response', 'Active jobs']);
+  assert.match(slowest, /No company has 3\+ applications in these weeks\./);
+  assert.match(slowest, /title="Slowest companies"/, 'slowest: the panel is Slowest companies');
+  assert.match(slowest, /subtitle="Companies with 3\+ applications in these weeks · most unanswered first, then slowest median"/, 'slowest: the subtitle says companies');
+  assert.match(slowest, /<TableScroll label="Slowest companies table">/, 'slowest: the table label');
+  assert.doesNotMatch(slowest, /Slowest employers|No employer has|Employers with/, 'slowest: no employers wording is left');
+  assert.match(slowest, /<CompanyLink name=\{row\.displayName\} ownerId=\{row\.employerId\} organizationId=\{row\.organizationId\} \/>/, 'slowest: the name is the shared company link (plain text without a company)');
+  assert.match(slowest, /<tr key=\{row\.employerId\}>/, 'slowest: rows are keyed by the owner login');
+  assert.match(slowest, /howCounted="Test companies are those whose owner is a test account\."/, 'slowest: the test-company rule is said');
+
+  // Phase 5: the Companies panel and the seat meter.
+  assert.deepEqual(fe4Headers(companiesPanel), ['Company', 'Plan', 'Members', 'Seats', 'Active jobs']);
+  assert.match(companiesPanel, /<CompanyLink name=\{row\.displayName\} ownerId=\{row\.ownerId\} organizationId=\{row\.organizationId\} \/>/, 'companies: the name is the shared company link, told apart by the owner id');
+  assert.match(companiesPanel, /<SeatMeter /, 'companies: the seat meter');
+  assert.match(companiesPanel, /rows\.length === limit/, 'companies: the open-from-the-lists hint shows only when the list is full');
+  assert.match(seatMeter, /seatMeterText\(/, 'the seat meter text comes from the shared helper');
+  assert.match(seatMeter, /seatsOverLimit\(/, 'the over-limit badge comes from the shared helper');
+  // Every link to a company page asks for prefetch={false}: the page records a read.
+  // The three lists go through one CompanyLink (name label, plain text without a company, prefetch off).
+  const companyLink = read('src/components/analytics/CompanyLink.tsx');
+  assert.match(companyLink, /organizationId === null/, 'CompanyLink: no company, plain text');
+  assert.match(companyLink, /employerLabel\(name, ownerId\)/, 'CompanyLink: the shared label');
+  for (const [path, source] of [
+    ['CompaniesPanel', companiesPanel], ['SlowestEmployers', slowest],
+    ['PayingEmployersList', read('src/components/analytics/PayingEmployersList.tsx')],
+  ]) {
+    assert.doesNotMatch(source, /<Link\b/, `${path}: company links go through CompanyLink`);
+    assert.match(source, /<CompanyLink /, `${path}: uses CompanyLink`);
+  }
+  for (const [path, source] of [
+    ['CompanyLink', companyLink],
+    ['company page', read(COMPANY_PAGE)],
+  ]) {
+    const links = source.match(/<Link\b[^>]*>/g) ?? [];
+    assert.ok(links.length >= 1, `${path}: has a link`);
+    for (const link of links) assert.match(link, /prefetch=\{false\}/, `${path}: ${link} never prefetches`);
+  }
   assert.deepEqual(fe4Headers(staleList), ['Job', 'Employer', 'Idle', 'Waiting applicants', 'Last application', 'Posted']);
   assert.match(staleList, /firstWithRest\(rows, STALE_JOBS_SHOWN\)/, 'the list shows exactly the rows the loader recorded');
   assert.match(staleList, /No active job has gone \{days\}\+ days without employer activity\./);
   assert.match(staleList, /and \{formatCount\(more\)\} more/);
   assert.match(staleList, /isIdleSincePosting\(job\) \? <span[^>]*>since posting<\/span> : null/);
-  assert.deepEqual(fe4Headers(digestCard), ['Week', 'Emailed', 'Sent', 'Failed', 'Unknown', 'Still sending', 'Employers reached', 'These weeks']);
+  assert.deepEqual(fe4Headers(digestCard), ['Week', 'Emailed', 'Sent', 'Failed', 'Unknown', 'Still sending', 'Logins reached', 'These weeks']);
   assert.match(digestCard, /\{adoptionLine\(adoption\)\}/, 'the adoption line always shows');
   assert.match(digestCard, /No digest emails in these weeks\./);
 
@@ -402,7 +491,7 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
     ['digest', 'Applicant digest emails launched on Aug 23, 2026, so earlier weeks are empty.'],
     ['digest', 'An employer with the digest on is emailed at most once a day, only on days with new applicants, and only when they have an email address.'],
     ['digest', 'Digest emails count by the week they were queued.'],
-    ['digest', 'Employers reached counts employers with at least one digest sent.'],
+    ['digest', 'Logins reached counts employer logins with at least one digest sent.'],
     ['digest', 'Who has the digest on, and their email address, is as of now; digest emails of deleted employers drop out.'],
   ]) {
     assert.ok(rendered['long-8'].includes(`data-panel-note="">${sentence}</p>`), `employers (${point}): a note says: ${sentence.slice(0, 48)}`);
@@ -411,6 +500,44 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
     assert.deepEqual(fe4Tags(html), ['#3', '#8', '#4', '#18'], `employers (${view}): the list tags of the tab, in order`);
   }
   assert.match(rendered['empty-8'], /data-chart="collecting-since"/, '#18 with no rows: collecting since');
+  // Phase 5 rendered: the Companies panel, the seat meter, and the links.
+  {
+    const html = rendered['long-8'];
+    const panel = html.match(/<section[^>]*>(?:(?!<section)[\s\S])*?<h2[^>]*>Companies<\/h2>[\s\S]*?<\/section>/)?.[0] ?? '';
+    assert.ok(panel.length > 0, 'employers: a Companies panel renders');
+    assert.ok(panel.includes('Top 4 by seats held; test accounts left out'), 'companies: the subtitle counts the rows shown');
+    assert.doesNotMatch(panel, /Open any company from the paying or slowest lists/, 'companies: a short list needs no hint');
+    assert.deepEqual([...panel.matchAll(/data-seat-meter=""[^>]*>([^<]*)</g)].map((m) => m[1]), [
+      '2 of 3 seats · 1 pending · 1 suspended', 'No seats on this plan', '3 of 0 seats', '4 seats',
+    ], 'companies: one meter per row, in the pinned words');
+    assert.equal((panel.match(/>over limit</g) ?? []).length, 1, 'companies: only the row over its limit is badged');
+    assert.match(panel, /href="\/analytics\/employers\/00000000-0000-4000-8000-0000000000a1"[^>]*>Example Roofing Co<\/a>/, 'companies: a name opens its company page');
+    assert.match(panel, />Empleador · 0000<\/a>/, 'companies: an unnamed company is told apart by its owner id');
+    assert.match(panel, /Free Plan Framing/);
+    assert.match(panel, /employer_free/, 'companies: the plan code');
+    // The Slowest list: a company row links, a memberless one is plain text.
+    assert.match(html, /href="\/analytics\/employers\/00000000-0000-4000-8000-0000000000a3"[^>]*>Example Plumbing<\/a>/, 'slowest: a name opens its company page');
+    assert.ok(html.includes('Memberless Painting'), 'slowest: the memberless row still shows');
+    assert.doesNotMatch(html, />Memberless Painting<\/a>/, 'slowest: a memberless row is not a link');
+    assert.match(html, /<h2[^>]*>Slowest companies<\/h2>/, 'slowest: the panel title');
+    assert.match(html, /Companies with 3\+ applications in these weeks/, 'slowest: the subtitle');
+    assert.match(html, /<th[^>]*>Company<\/th><th[^>]*>Applications<\/th>/, 'slowest: the column');
+    assert.doesNotMatch(html, /Slowest employers/, 'slowest: the old title is gone');
+    assert.match(html, /data-how-counted=""[^>]*>Test companies are those whose owner is a test account\.<\/p>/,'slowest: the test-company rule is on the page');
+    assert.match(html, /Digest on for \d+% of employer logins \(/, 'digest: the adoption line is per login');
+    assert.match(html, /<th[^>]*>Logins reached<\/th>/, 'digest: the column says logins');
+    assert.doesNotMatch(html, /Employers reached/, 'digest: the old column name is gone');
+    const empty = rendered['empty-8'];
+    assert.match(empty, /No company has 3\+ applications in these weeks\./, 'slowest: the empty state says company');
+    assert.match(empty, /No companies yet\./, 'companies: an empty state');
+    const full = (await (async () => {
+      globalThis.__adminCheck = { session: { sub: 'check-admin-sub', email: 'ops-admin@example.test', role: 'admin_readonly', groups: ['admin_readonly'] }, fe4Mode: 'long', fe4CompaniesFull: true };
+      const { default: Page } = await fe4Compiled.load(FE4_PAGES.employers);
+      return renderToStaticMarkup(await Page({ searchParams: Promise.resolve({ weeks: '8' }) }));
+    })());
+    assert.ok(full.includes('Top 100 by seats held; test accounts left out'), 'companies: a full list says top 100');
+    assert.ok(full.includes('Open any company from the paying or slowest lists'), 'companies: a full list says how to reach the rest');
+  }
   for (const stale of ['7', '30']) {
     const { html, calls } = await fe4Render('employers', 'long', { weeks: '8', stale });
     assert.ok(calls.names.includes('loadStaleJobs'));
@@ -418,6 +545,87 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
   }
 }
 // ==== end Employers ====
+
+// ==== Phase 5: company page (/analytics/employers/[organizationId]) ====
+{
+  const page = read(COMPANY_PAGE);
+  const detail = read('src/components/analytics/CompanyDetail.tsx');
+  const ORG = '00000000-0000-4000-8000-0000000000a1';
+  const SESSION = { sub: 'check-admin-sub', email: 'ops-admin@example.test', role: 'admin_readonly', groups: ['admin_readonly'] };
+  async function renderCompany(state = {}) {
+    globalThis.__adminCheck = { session: SESSION, fe4Mode: 'long', ...state };
+    const { default: Page } = await fe4Compiled.load(COMPANY_PAGE);
+    const html = renderToStaticMarkup(await Page({ params: Promise.resolve({ organizationId: ORG }) }));
+    return { html, loads: globalThis.__adminCheck.fe4CompanyLoads ?? [] };
+  }
+
+  assert.match(page, /\) \{\n  const session = await requireAdminSession\(\);\n  const \{ organizationId \} = await params;/, 'company: the session gate comes before any read');
+  assert.match(page, /\{ params \}: \{ params: Promise<\{ organizationId: string \}> \}/, 'company: params is a Promise (Next 16)');
+  assert.equal((page.match(/loadCompany\(/g) ?? []).length, 1, 'company: one load per request (each load is an audit record)');
+  assert.match(page, /loadCompany\(session, organizationId\)/);
+  assert.doesNotMatch(page, /generateMetadata/, 'company: a static title, so the page never loads twice');
+  assert.match(page, /export const metadata: Metadata = \{ title: 'Company' \};/, 'company: the static title');
+  assert.match(page, /if \(!company\) \{\n    notFound\(\);\n  \}/, 'company: an unknown company is a 404');
+  assert.doesNotMatch(page, /getAdminDbPool|@\/lib\/server\/db['"]|getCompany\(|getCompanyMembers\(/, 'company: nothing is read unrecorded');
+  assert.match(page, /href="\/analytics\/employers" prefetch=\{false\}/, 'company: a back link to the Employers tab');
+  assert.match(page, /export const dynamic = 'force-dynamic';/);
+  assert.deepEqual(fe4Headers(detail), ['Name', 'Role', 'Status', 'Joined', 'Active jobs']);
+  assert.match(detail, /memberLabel\(member\.displayName\)/, 'company: member names come from the shared label');
+  assert.match(detail, /member\.billingSuspended \?/, 'company: the billing label follows billingSuspended');
+  assert.match(detail, /planStatusLabel\(company\.planStatus\)/, 'company: the plan status is humanised');
+  assert.match(detail, /member\.status !== 'active' && member\.statusChangedAt !== null/, 'company: a status that changed shows when');
+
+  const { html, loads } = await renderCompany();
+  assert.deepEqual(loads, [ORG], 'company: loadCompany runs once, with the id from the URL');
+  assert.doesNotMatch(html, /@/, 'company: no @ anywhere in the page (no emails)');
+  assert.doesNotMatch(html, /NaN|undefined|Infinity|\[object Object\]/, 'company: no NaN, undefined or object text');
+  assert.doesNotMatch(html, /<main[\s>]/, 'company: the console layout owns <main>');
+  assert.doesNotMatch(html, /style="[^"]*(?:#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\()/, 'company: inline colours come only from tokens');
+  assert.match(html, /<h1[^>]*>Example Roofing Co<\/h1>/, 'company: the header names the company');
+  assert.match(html, /href="\/analytics\/employers"[^>]*>[^<]*(?:<span[^>]*>←<\/span>)? ?Employers</, 'company: the back link');
+  for (const [label, value] of [['Plan', 'employer_pro'], ['Plan status', 'Active'], ['Created', 'Sep 1, 2026'], ['Seats', '2 of 3 seats · 1 pending · 1 suspended']]) {
+    assert.match(fe4Flat(html), new RegExp(`${label}</dt><dd[^>]*>(?:<[^>]+>)*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), `company: the header shows ${label}: ${value}`);
+  }
+  const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].map((m) => m[1]).slice(1);
+  assert.equal(rows.length, 5, 'company: every member, removed ones included, one row each');
+  const cells = rows.map((row) => [...row.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g)].map((m) => m[1].replace(/<[^>]+>/g, '').trim()));
+  assert.deepEqual(cells[0], ['Example Roofing Co Owner', 'Owner', 'Active', 'Sep 1, 2026', '2'], 'company: the owner row');
+  assert.deepEqual(cells[1], ['Rosa Mendez', 'Foreman', 'Active', 'Sep 5, 2026', '1'], 'company: an active member shows no status date, even with a status change on record');
+  assert.deepEqual(cells[2], ['Unnamed', 'Foreman', 'Suspended for billing Sep 20, 2026', 'Sep 6, 2026', '0'], 'company: a member with no name is Unnamed; a billing suspension says so, with its date');
+  assert.deepEqual(cells[3], ['Unnamed', 'Foreman', 'Removed Sep 21, 2026', 'Sep 7, 2026', '0'], 'company: a blank name is Unnamed too; a removal shows when');
+  assert.deepEqual(cells[4], ['Luis Ortega', 'Foreman', 'Suspended', 'Sep 8, 2026', '3'], 'company: a suspension that is not billing is not labelled billing; no date on record, none shown');
+  assert.equal((html.match(/Suspended for billing/g) ?? []).length, 1, 'company: the billing label appears once, on the billing-suspended member');
+  assert.equal((html.match(/title="Suspended by billing"/g) ?? []).length, 1, 'company: the billing label carries a title as well');
+
+  // An unknown company (the loader's not_found shape) is a 404, not an empty page.
+  await assert.rejects(() => renderCompany({ fe4Company: 'missing' }), (error) => error.notFound === true, 'company: no company → notFound()');
+  // An id that is not a uuid is a 404 too (the loader never sends it to SQL).
+  globalThis.__adminCheck = { session: SESSION, fe4Mode: 'long' };
+  const { default: CompanyPage } = await fe4Compiled.load(COMPANY_PAGE);
+  await assert.rejects(() => CompanyPage({ params: Promise.resolve({ organizationId: 'not-a-uuid' }) }), (error) => error.notFound === true, 'company: a malformed id → notFound()');
+
+  // A company with only its owner, past due: one row, seats 0 of 3, the status in words.
+  {
+    const { html: one } = await renderCompany({ fe4Company: 'owner-only' });
+    assert.equal([...one.matchAll(/<tr[^>]*>/g)].length - 1, 1, 'company: an owner-only company has one member row');
+    assert.match(fe4Flat(one), /Plan status<\/dt><dd[^>]*>Past due</, 'company: past_due reads Past due');
+    assert.doesNotMatch(one, /past_due/, 'company: the raw status is never shown');
+    assert.match(one, /data-seat-meter=""[^>]*>0 of 3 seats</, 'company: an owner alone holds 0 of 3 seats');
+  }
+  // A free-plan company has no plan status and no seats.
+  {
+    const { html: free } = await renderCompany({ fe4Company: 'free' });
+    assert.match(fe4Flat(free), /Plan status<\/dt><dd[^>]*>—</, 'company: a free plan has no status, shown as a dash');
+    assert.match(free, /data-seat-meter=""[^>]*>No seats on this plan</, 'company: a free plan has no seats');
+  }
+  // No member rows: said so, not an empty table.
+  {
+    const { html: none } = await renderCompany({ fe4Company: 'empty' });
+    assert.match(none, /No members\./, 'company: no members is said');
+    assert.doesNotMatch(none, /<table/, 'company: no table without members');
+  }
+}
+// ==== end company page ====
 
 // ==== S28 FE-4: Ops health (/analytics/ops) ====
 {
@@ -604,7 +812,7 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
       ...[...source.matchAll(/className=\{`([^`]*)`\}/g)].map((m) => m[1].replace(/\$\{[^}]*\}/g, ' ')),
       ...(path.endsWith('table-styles.ts') ? [...source.matchAll(/=\s*[`']([^`']*)[`'];/g)].map((m) => m[1].replace(/\$\{[^}]*\}/g, ' ')) : []),
     ].flatMap((value) => value.split(/\s+/).filter(Boolean));
-  for (const path of [...files, ...Object.values(FE4_PAGES)]) {
+  for (const path of [...files, ...Object.values(FE4_PAGES), COMPANY_PAGE]) {
     const source = read(path);
     assert.doesNotMatch(source, /'use client'/, `${path} stays a server component`);
     assert.doesNotMatch(source, /(?<![\w&])#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/, `${path}: no raw colours; charts use --chart-* and --jale-card, chrome uses tokens`);

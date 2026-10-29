@@ -2,12 +2,13 @@ import { formatCount, weekLabel, wholePercent } from './analytics-format';
 import { isCurrentWeek, newestWeeksFirst } from './ops-health';
 import type { DigestAdoption, DigestSendFigures, DigestSendsWeekly } from './types';
 
-// "Digest on for 12% of employers (34 of 280) · 29 of them have an email
-// address". The share never rounds a fact away (<1%, >99%); with no
-// employers it is a dash, and with none on the email part is left out.
+// "Digest on for 12% of employer logins (34 of 280) · 29 of them have an
+// email address". The digest is per login: each member of a company gets their
+// own. The share never rounds a fact away (<1%, >99%); with no employer
+// logins it is a dash, and with none on the email part is left out.
 export function adoptionLine(adoption: DigestAdoption): string {
   const share = wholePercent(adoption.digestOn, adoption.employers);
-  const line = `Digest on for ${share} of employers (${formatCount(adoption.digestOn)} of ${formatCount(adoption.employers)})`;
+  const line = `Digest on for ${share} of employer logins (${formatCount(adoption.digestOn)} of ${formatCount(adoption.employers)})`;
   if (adoption.digestOn === 0) return line;
   const verb = adoption.digestOnWithEmail === 1 ? 'has' : 'have';
   return `${line} · ${formatCount(adoption.digestOnWithEmail)} of them ${verb} an email address`;
@@ -53,11 +54,11 @@ export function digestEmpty(split: DigestSplit): boolean {
 }
 
 // ---- S28 FE-4: #13 digest adoption ------------------------------------------------
-// The #13 headline: employers who get the digest (on, with an email address).
+// The #13 headline: employer logins who get the digest (on, with an email address).
 export function digestHeadline(adoption: DigestAdoption): { value: string; note: string } {
   return {
     value: wholePercent(adoption.digestOnWithEmail, adoption.employers),
-    note: `of employers get the digest (${formatCount(adoption.digestOnWithEmail)} of ${formatCount(adoption.employers)})`,
+    note: `of employer logins get the digest (${formatCount(adoption.digestOnWithEmail)} of ${formatCount(adoption.employers)})`,
   };
 }
 

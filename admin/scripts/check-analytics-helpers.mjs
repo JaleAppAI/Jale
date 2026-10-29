@@ -1165,12 +1165,12 @@ assert.deepEqual(
   { employers: 280, digestOn: 34, digestOnWithEmail: 29 },
 );
 for (const [employers, digestOn, digestOnWithEmail, line] of [
-  [280, 34, 29, 'Digest on for 12% of employers (34 of 280) · 29 of them have an email address'],
-  [0, 0, 0, 'Digest on for — of employers (0 of 0)'],
-  [280, 0, 0, 'Digest on for 0% of employers (0 of 280)'],
-  [300, 1, 1, 'Digest on for <1% of employers (1 of 300) · 1 of them has an email address'],
-  [1200, 1199, 0, 'Digest on for >99% of employers (1,199 of 1,200) · 0 of them have an email address'],
-  [5, 5, 5, 'Digest on for 100% of employers (5 of 5) · 5 of them have an email address'],
+  [280, 34, 29, 'Digest on for 12% of employer logins (34 of 280) · 29 of them have an email address'],
+  [0, 0, 0, 'Digest on for — of employer logins (0 of 0)'],
+  [280, 0, 0, 'Digest on for 0% of employer logins (0 of 280)'],
+  [300, 1, 1, 'Digest on for <1% of employer logins (1 of 300) · 1 of them has an email address'],
+  [1200, 1199, 0, 'Digest on for >99% of employer logins (1,199 of 1,200) · 0 of them have an email address'],
+  [5, 5, 5, 'Digest on for 100% of employer logins (5 of 5) · 5 of them have an email address'],
 ]) {
   assert.equal(digest.adoptionLine({ employers, digestOn, digestOnWithEmail }), line, `adoptionLine(${digestOn} of ${employers})`);
 }
@@ -1322,12 +1322,41 @@ const fe4Paying = [
 ];
 assert.deepEqual(health.payingChart({ weeks: fe4Paying, approximateBefore: null }), {
   labels: ['Oct 5', 'Oct 12'], partialLast: true,
-  series: [{ key: 'newPaying', label: 'New paying employers', color: 'chart-1', values: [3, 2] }],
+  series: [{ key: 'newPaying', label: 'New paying companies', color: 'chart-1', values: [3, 2] }],
 });
-assert.deepEqual(health.payingHeadline(fe4Paying), { value: '10%', note: 'of employers are paying (20 of 210)' });
-assert.deepEqual(health.payingHeadline([]), { value: '—', note: 'of employers are paying' });
+assert.deepEqual(health.payingHeadline(fe4Paying), { value: '10%', note: 'of companies are paying (20 of 210)' });
+assert.deepEqual(health.payingHeadline([]), { value: '—', note: 'of companies are paying' });
 assert.equal(health.approximateNote(null), null);
 assert.equal(health.approximateNote(fe4W[0]), 'Weeks before Sep 28 are approximate: subscription history starts then, so earlier churn is under-counted.');
+
+// Phase 5: the seat meter (Companies panel, company page, paying list).
+const seat = (seatsUsed, seatsPending, seatsSuspended, seatLimit) => ({ seatsUsed, seatsPending, seatsSuspended, seatLimit });
+assert.equal(health.seatMeterText(seat(2, 1, 1, 3)), '2 of 3 seats · 1 pending · 1 suspended');
+assert.equal(health.seatMeterText(seat(2, 0, 0, 3)), '2 of 3 seats', 'pending and suspended parts appear only when non-zero');
+assert.equal(health.seatMeterText(seat(2, 0, 1, 3)), '2 of 3 seats · 1 suspended');
+assert.equal(health.seatMeterText(seat(0, 2, 0, 3)), '0 of 3 seats · 2 pending');
+assert.equal(health.seatMeterText(seat(0, 0, 0, 0)), 'No seats on this plan');
+assert.equal(health.seatMeterText(seat(3, 0, 0, 0)), '3 of 0 seats', 'foremen on a plan with no seats are an over-limit case');
+assert.equal(health.seatMeterText(seat(0, 0, 1, 0)), '0 of 0 seats · 1 suspended', 'a suspended foreman is still a foreman on a plan with no seats');
+assert.equal(health.seatMeterText(seat(4, 0, 0, null)), '4 seats', 'no known limit: just the seats held');
+assert.equal(health.seatMeterText(seat(4, 1, 0, null)), '4 seats · 1 pending');
+assert.equal(health.seatsOverLimit(seat(3, 0, 0, 0)), true);
+assert.equal(health.seatsOverLimit(seat(2, 1, 0, 3)), false, 'used + pending equal to the limit is full, not over');
+assert.equal(health.seatsOverLimit(seat(3, 1, 0, 3)), true, 'a pending invite counts toward the limit');
+assert.equal(health.seatsOverLimit(seat(0, 0, 5, 0)), false, 'suspended foremen hold no seat');
+assert.equal(health.seatsOverLimit(seat(9, 9, 0, null)), false, 'no known limit: never over');
+// A member with no name (null, empty or blank) is "Unnamed"; a name is shown as typed.
+assert.equal(health.memberLabel(null), 'Unnamed');
+assert.equal(health.memberLabel(''), 'Unnamed');
+assert.equal(health.memberLabel('   '), 'Unnamed');
+assert.equal(health.memberLabel(' Rosa Mendez '), ' Rosa Mendez ', 'the name is shown as typed');
+// The plan status in words: the enum is never shown raw.
+assert.equal(health.planStatusLabel('past_due'), 'Past due');
+assert.equal(health.planStatusLabel('active'), 'Active');
+assert.equal(health.planStatusLabel('trialing'), 'Trialing');
+assert.equal(health.planStatusLabel('some_new_state'), 'Some new state', 'an unknown status is still readable');
+assert.equal(health.planStatusLabel(null), '—', 'a free company has no plan status');
+assert.equal(health.companyHref('00000000-0000-4000-8000-0000000000a1'), '/analytics/employers/00000000-0000-4000-8000-0000000000a1');
 
 // #18, #3, #8, #4
 const fe4Tpl = health.templateReuseChart({ weeks: [{ weekStart: fe4W[2], partial: true, jobs: 0, fromTemplate: 0, employersUsingTemplates: 0, templatesSaved: 0 }], collectingSince: fe4W[2] });
@@ -1414,7 +1443,7 @@ assert.deepEqual(
 assert.equal(ops.rankingTile({ buckets: [], jobsOlderThan24h: 1, fallbackShare: null, fallbackJobs: 0, rankedJobs: 0, jobsWithApplicationsButNoRanking: 0 }).value, '1 job');
 
 // #13
-assert.deepEqual(digest.digestHeadline({ employers: 280, digestOn: 34, digestOnWithEmail: 29 }), { value: '10%', note: 'of employers get the digest (29 of 280)' });
+assert.deepEqual(digest.digestHeadline({ employers: 280, digestOn: 34, digestOnWithEmail: 29 }), { value: '10%', note: 'of employer logins get the digest (29 of 280)' });
 assert.deepEqual(digest.digestHeadline({ employers: 0, digestOn: 0, digestOnWithEmail: 0 }).value, '—');
 const fe4Sends = digest.splitDigestSends([
   { weekStart: fe4W[2], emailed: 1, sent: 1, failed: 0, unknown: 0, inProgress: 0, employersReached: 1 },

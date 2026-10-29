@@ -71,7 +71,7 @@ const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   for (const item of healthItems) assert.ok(item.includes('shadow-[0_0_0_1px_var(--jale-divider)]'), 'each health item draws its own 1px divider hairline');
 
   for (const [value, label, hint] of [
-    ['1,240', 'Signups, all time', '+144 this week so far'], ['18', 'Paying employers', '+2 this week'],
+    ['1,240', 'Signups, all time', '+144 this week so far'], ['18', 'Paying companies', '+2 this week'],
     ['26', 'Hires, last 30 days', '19 jobs with a hire'], ['41', 'Open jobs', '6 stale'],
   ]) {
     assert.match(markup, new RegExp(`>${escape(value)}</p><p[^>]*>${escape(label)}</p><div[^>]*><span[^>]*>${escape(hint)}</span>`), `the ${label} tile`);
@@ -79,6 +79,8 @@ const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   assert.match(markup, /<a\b[^>]*href="\/analytics"[^>]*>Open analytics <span aria-hidden="true">→<\/span><\/a>/);
 
   assert.ok(markup.includes('>Signups, cumulative<'));
+  assert.ok(markup.includes('>Workers and companies<'), 'the chart counts workers and companies');
+  assert.ok(!markup.includes('Paying employers'), 'Home says companies');
   assert.match(markup, /role="img" aria-label="Signups, cumulative, latest Oct 12 \(so far\): Signups \(cumulative\) 1,240"/, 'the chart has a text alternative with the latest value');
   assert.match(markup, /data-axis-title="x"[^>]*>Week<\/div>/, 'the x axis has a title (D11)');
   assert.match(markup, /data-axis-title="y"[^>]*>Signups<\/div>/, 'the y axis has a title (D11)');

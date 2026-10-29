@@ -1,10 +1,12 @@
 import { requireAdminSession } from '@/lib/server/session';
 import {
+  COMPANIES_LIMIT,
   getAnalyticsTotals,
   getDigestAdoption,
   getDigestSends,
   getEmployerWeekly,
   getTemplateReuse,
+  loadCompanies,
   loadSlowestEmployers,
   loadStaleJobs,
   parseFunnelWeeks,
@@ -25,6 +27,7 @@ import {
 import { formatCount } from '@/lib/analytics-format';
 import { StatTile } from '@/components/ui/stat-tile';
 import { AnalyticsHeader } from '@/components/analytics/AnalyticsHeader';
+import { CompaniesPanel } from '@/components/analytics/CompaniesPanel';
 import { DigestEmails } from '@/components/analytics/DigestEmails';
 import { EmployerWeeklyTable } from '@/components/analytics/EmployerWeeklyTable';
 import { SlowestEmployers } from '@/components/analytics/SlowestEmployers';
@@ -44,8 +47,9 @@ export default async function EmployersPage({
   const now = new Date();
 
   // Three waves of at most three, each after the one before: db.ts caps the
-  // shared pool at max: 5. The two lists name employers, so each loads in its
-  // own recorded transaction (one connection) and is recorded before render.
+  // shared pool at max: 5. The lists name employers (and the Companies panel
+  // their owners), so each loads in its own recorded transaction (one
+  // connection) and is recorded before render.
   const [weeklyRows, slowest, staleJobs] = await Promise.all([
     getEmployerWeekly(weeks),
     loadSlowestEmployers(session, weeks),
@@ -56,7 +60,7 @@ export default async function EmployersPage({
     getDigestSends(weeks),
     getTemplateReuse(weeks),
   ]);
-  const [totals] = await Promise.all([getAnalyticsTotals()]);
+  const [totals, companies] = await Promise.all([getAnalyticsTotals(), loadCompanies(session)]);
 
   const { weekly, summary } = splitEmployerWeekly(weeklyRows);
   const digest = splitDigestSends(digestRows);
@@ -88,6 +92,9 @@ export default async function EmployersPage({
         </div>
         <div className="min-w-0 lg:col-span-2">
           <EmployerWeeklyTable rows={weeklyTableRows(weekly, now)} />
+        </div>
+        <div className="min-w-0 lg:col-span-2">
+          <CompaniesPanel rows={companies} limit={COMPANIES_LIMIT} />
         </div>
         <div className="min-w-0 lg:col-span-2">
           <SlowestEmployers rows={slowest} />
