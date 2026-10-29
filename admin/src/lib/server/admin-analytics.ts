@@ -326,7 +326,9 @@ export type CompanySummaryRow = {
   owner_id: string;
   display_name: string;
   created_at: PgTimestamp;
-  plan_code: string;
+  // NULL when the company has no eligible subscription and the catalog has
+  // no active employer_free row (139's LEFT JOIN keeps the company listed).
+  plan_code: string | null;
   plan_status: string | null;
   members_active: string | number;
   seats_used: string | number;

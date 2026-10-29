@@ -68,7 +68,7 @@ export const getMessageTraffic = loader('getMessageTraffic', (weeks) =>
 export const loadPayingEmployers = loader('loadPayingEmployers', () =>
   long()
     ? [
-        { employerId: '00000000-0000-4000-8000-000000000e01', displayName: 'Example Roofing Co', planCode: 'starter', status: 'active', currentPeriodEnd: '2026-11-01T00:00:00.000Z', cancelAtPeriodEnd: false, organizationId: ORG_ROOFING, membersActive: 4, seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: 3 },
+        { employerId: '00000000-0000-4000-8000-000000000e01', displayName: 'Example Roofing Co', planCode: 'employer_pro', status: 'active', currentPeriodEnd: '2026-11-01T00:00:00.000Z', cancelAtPeriodEnd: false, organizationId: ORG_ROOFING, membersActive: 4, seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: 3 },
         { employerId: '00000000-0000-4000-8000-000000000e02', displayName: 'A very long example employer name that wraps on phones', planCode: 'pro', status: 'past_due', currentPeriodEnd: '2026-10-20T00:00:00.000Z', cancelAtPeriodEnd: true, organizationId: ORG_LONG, membersActive: 1, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: null },
         // An unnamed company: the label adds the first four characters of the id.
         { employerId: '3fa10000-0000-4000-8000-000000000e08', displayName: 'Empleador', planCode: 'pro', status: 'trialing', currentPeriodEnd: '2026-11-05T00:00:00.000Z', cancelAtPeriodEnd: false, organizationId: ORG_FREE, membersActive: 1, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: 3 },
@@ -174,7 +174,8 @@ const COMPANY_ROWS = () => [
   company(ORG_ROOFING, '00000000-0000-4000-8000-000000000e01', 'Example Roofing Co', { seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: 3 }),
   company(ORG_FREE, '00000000-0000-4000-8000-000000000e06', 'Free Plan Framing', { seatsUsed: 0, seatLimit: 0 }, { planCode: 'employer_free', planStatus: null }),
   company(ORG_OVER, '00000000-0000-4000-8000-000000000e07', 'Empleador', { seatsUsed: 3, seatLimit: 0 }),
-  company(ORG_LONG, '00000000-0000-4000-8000-000000000e02', 'A very long example employer name that wraps on phones', { seatsUsed: 4, seatLimit: null }),
+  // No plan at all: the catalog lost its free row (139 keeps the company listed).
+  company(ORG_LONG, '00000000-0000-4000-8000-000000000e02', 'A very long example employer name that wraps on phones', { seatsUsed: 4, seatLimit: null }, { planCode: null, planStatus: null }),
 ];
 export const loadCompanies = loader('loadCompanies', () => {
   if (!long()) return [];
@@ -186,7 +187,8 @@ export const loadCompanies = loader('loadCompanies', () => {
 // globalThis.__adminCheck.fe4Company picks the shape:
 //   'found' (default): a company with an active, a suspended-for-billing, a suspended and a removed foreman;
 //   'owner-only': a past-due company holding only its owner;  'free': a free-plan company (no plan status, no seats);
-//   'empty': a company with no member rows;  'missing': the real loader's not_found shape.
+//   'empty': a company with no member rows;  'missing': the real loader's not_found shape;
+//   'no-plan': no eligible subscription and no free plan in the catalog (plan code null).
 // Like the real loader, an id that is not a uuid is not found.
 const OWNER = { userId: '00000000-0000-4000-8000-000000000e01', displayName: 'Example Roofing Co Owner', role: 'owner', status: 'active', billingSuspended: false, joinedAt: '2026-09-01T10:00:00.000Z', statusChangedAt: null, activeJobs: 2 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -199,6 +201,7 @@ export const loadCompany = loader('loadCompany', (_session, organizationId) => {
   if (shape === 'owner-only') return { company: { ...base, planStatus: 'past_due', seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, membersActive: 1 }, members: [OWNER] };
   if (shape === 'free') return { company: { ...base, planCode: 'employer_free', planStatus: null, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: 0, membersActive: 1 }, members: [OWNER] };
   if (shape === 'empty') return { company: base, members: [] };
+  if (shape === 'no-plan') return { company: { ...base, planCode: null, planStatus: null, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: null, membersActive: 1 }, members: [OWNER] };
   return {
     company: base,
     members: [

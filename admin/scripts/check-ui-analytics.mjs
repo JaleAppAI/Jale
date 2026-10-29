@@ -219,6 +219,7 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
   }
   // Paying list (Phase 5): seats per row, names open the company page.
   assert.match(payingList, /<SeatMeter /, 'paying list: a seat meter per row');
+  assert.match(payingList, /\{planLabel\(row\.planCode\)\}/, 'paying list: the plan code is shown in words');
   assert.match(payingList, /Seat limit follows each row's plan\./, "paying list: the note says the limit follows each row's plan");
   assert.match(payingList, /<CompanyLink name=\{row\.displayName\} ownerId=\{row\.employerId\} organizationId=\{row\.organizationId\} \/>/, 'paying list: the name is the shared company link');
   assert.match(payingList, /title="Paying companies"/, 'paying list: the panel is Paying companies');
@@ -231,6 +232,9 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
     assert.doesNotMatch(html, /Paying employers/, 'paying list: the old title is gone');
     assert.match(html, /href="\/analytics\/employers\/00000000-0000-4000-8000-0000000000a4"[^>]*>Empleador · 3fa1<\/a>/, 'paying list: an unnamed company is told apart by its id');
     assert.match(html, /2 of 3 seats · 1 pending · 1 suspended/, 'paying list: the seat meter');
+    assert.match(html, /text-\[var\(--jale-ink-2\)\]">Pro<\/span>/, 'paying list: employer_pro reads Pro');
+    assert.match(html, /text-\[var\(--jale-ink-2\)\]">pro<\/span>/, 'paying list: a code the catalog does not name is shown as it is');
+    assert.doesNotMatch(html, /employer_pro|employer_free/, 'paying list: no raw catalog code');
     assert.match(html, /\b0 seats<|>0 seats</, 'paying list: a plan with no seat limit shows the seats held');
     assert.match(html, /data-how-counted=""[^>]*>Seat limit follows each row&#x27;s plan\./, 'paying list: the note is on the page');
   }
@@ -423,6 +427,7 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
   assert.deepEqual(fe4Headers(companiesPanel), ['Company', 'Plan', 'Members', 'Seats', 'Active jobs']);
   assert.match(companiesPanel, /<CompanyLink name=\{row\.displayName\} ownerId=\{row\.ownerId\} organizationId=\{row\.organizationId\} \/>/, 'companies: the name is the shared company link, told apart by the owner id');
   assert.match(companiesPanel, /<SeatMeter /, 'companies: the seat meter');
+  assert.match(companiesPanel, /\{planLabel\(row\.planCode\)\}/, 'companies: the plan code is shown in words');
   assert.match(companiesPanel, /rows\.length === limit/, 'companies: the open-from-the-lists hint shows only when the list is full');
   assert.match(seatMeter, /seatMeterText\(/, 'the seat meter text comes from the shared helper');
   assert.match(seatMeter, /seatsOverLimit\(/, 'the over-limit badge comes from the shared helper');
@@ -514,7 +519,10 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
     assert.match(panel, /href="\/analytics\/employers\/00000000-0000-4000-8000-0000000000a1"[^>]*>Example Roofing Co<\/a>/, 'companies: a name opens its company page');
     assert.match(panel, />Empleador · 0000<\/a>/, 'companies: an unnamed company is told apart by its owner id');
     assert.match(panel, /Free Plan Framing/);
-    assert.match(panel, /employer_free/, 'companies: the plan code');
+    const planCells = [...panel.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].slice(1)
+      .map((m) => [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)][1]?.[1]);
+    assert.deepEqual(planCells, ['Pro', 'Free', 'Pro', 'No plan (catalog)'], 'companies: the plan in words, and no plan at all said so');
+    assert.doesNotMatch(panel, /employer_pro|employer_free/, 'companies: no raw catalog code');
     // The Slowest list: a company row links, a memberless one is plain text.
     assert.match(html, /href="\/analytics\/employers\/00000000-0000-4000-8000-0000000000a3"[^>]*>Example Plumbing<\/a>/, 'slowest: a name opens its company page');
     assert.ok(html.includes('Memberless Painting'), 'slowest: the memberless row still shows');
@@ -573,6 +581,7 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
   assert.match(detail, /memberLabel\(member\.displayName\)/, 'company: member names come from the shared label');
   assert.match(detail, /member\.billingSuspended \?/, 'company: the billing label follows billingSuspended');
   assert.match(detail, /planStatusLabel\(company\.planStatus\)/, 'company: the plan status is humanised');
+  assert.match(detail, /planLabel\(company\.planCode\)/, 'company: the plan code is shown in words');
   assert.match(detail, /member\.status !== 'active' && member\.statusChangedAt !== null/, 'company: a status that changed shows when');
 
   const { html, loads } = await renderCompany();
@@ -583,7 +592,7 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
   assert.doesNotMatch(html, /style="[^"]*(?:#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\()/, 'company: inline colours come only from tokens');
   assert.match(html, /<h1[^>]*>Example Roofing Co<\/h1>/, 'company: the header names the company');
   assert.match(html, /href="\/analytics\/employers"[^>]*>[^<]*(?:<span[^>]*>←<\/span>)? ?Employers</, 'company: the back link');
-  for (const [label, value] of [['Plan', 'employer_pro'], ['Plan status', 'Active'], ['Created', 'Sep 1, 2026'], ['Seats', '2 of 3 seats · 1 pending · 1 suspended']]) {
+  for (const [label, value] of [['Plan', 'Pro'], ['Plan status', 'Active'], ['Created', 'Sep 1, 2026'], ['Seats', '2 of 3 seats · 1 pending · 1 suspended']]) {
     assert.match(fe4Flat(html), new RegExp(`${label}</dt><dd[^>]*>(?:<[^>]+>)*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), `company: the header shows ${label}: ${value}`);
   }
   const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].map((m) => m[1]).slice(1);
@@ -617,6 +626,13 @@ async function fe4AssertRendersCleanly(tab, extraParams = {}) {
     const { html: free } = await renderCompany({ fe4Company: 'free' });
     assert.match(fe4Flat(free), /Plan status<\/dt><dd[^>]*>—</, 'company: a free plan has no status, shown as a dash');
     assert.match(free, /data-seat-meter=""[^>]*>No seats on this plan</, 'company: a free plan has no seats');
+  }
+  // No plan at all (the catalog lost its free row): said so, never a blank cell.
+  {
+    const { html: noPlan } = await renderCompany({ fe4Company: 'no-plan' });
+    assert.match(fe4Flat(noPlan), /Plan<\/dt><dd[^>]*>No plan \(catalog\)</, 'company: a NULL plan code reads No plan (catalog)');
+    assert.match(fe4Flat(noPlan), /Plan status<\/dt><dd[^>]*>—</, 'company: no plan, no plan status');
+    assert.doesNotMatch(noPlan, /NaN|undefined|null/, 'company: no null or undefined text');
   }
   // No member rows: said so, not an empty table.
   {

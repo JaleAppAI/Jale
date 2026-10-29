@@ -4,7 +4,7 @@ import { KVList } from '@/components/ui/kv-list';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { TableScroll } from '@/components/ui/table-scroll';
 import { formatCount } from '@/lib/analytics-format';
-import { formatDay, memberLabel, planStatusLabel } from '@/lib/employer-health';
+import { formatDay, memberLabel, planLabel, planStatusLabel } from '@/lib/employer-health';
 import type { CompanyMember, CompanySummary } from '@/lib/types';
 import { SeatMeter } from './SeatMeter';
 import { TABLE, TD, TD_NUM, TD_WRAP, TH, TH_NUM } from './table-styles';
@@ -22,7 +22,7 @@ export function CompanyFacts({ company }: { company: CompanySummary }) {
       <div className="p-5">
         <KVList
           items={[
-            { label: 'Plan', value: company.planCode },
+            { label: 'Plan', value: planLabel(company.planCode) },
             { label: 'Plan status', value: planStatusLabel(company.planStatus) },
             { label: 'Seats', value: <SeatMeter seats={company} /> },
             { label: 'Active members', value: formatCount(company.membersActive) },

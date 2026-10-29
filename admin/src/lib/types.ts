@@ -175,7 +175,8 @@ export type CompanySummary = {
   ownerId: string;
   displayName: string;
   createdAt: string;
-  planCode: string;
+  // null: no eligible subscription and no active free plan in the catalog.
+  planCode: string | null;
   planStatus: string | null;
   membersActive: number;
   seatsUsed: number;

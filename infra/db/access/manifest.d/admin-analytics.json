@@ -142,7 +142,7 @@
         "jale_admin_console"
       ],
       "created_by": "114",
-      "reason": "Admin console read: the slowest-answering employers, by id and display name; the console records every view of the list."
+      "reason": "Admin console read: the slowest-answering companies, one row per company keyed by its active owner (else the job holder), by id, display name and organization id; the console records every view of the list. Created by 114; dropped and recreated by 139, which appended organization_id."
     },
     "public.admin_analytics_stale_jobs(integer)": {
       "owner": "jale_admin",

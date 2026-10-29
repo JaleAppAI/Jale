@@ -1,5 +1,6 @@
 import { TableScroll } from '@/components/ui/table-scroll';
 import { formatCount } from '@/lib/analytics-format';
+import { planLabel } from '@/lib/employer-health';
 import type { CompanySummary } from '@/lib/types';
 import { AnalyticsPanel } from './AnalyticsPanel';
 import { CompanyLink } from './CompanyLink';
@@ -36,7 +37,7 @@ export function CompaniesPanel({ rows, limit }: { rows: CompanySummary[]; limit:
                   <td className={TD_WRAP}>
                     <CompanyLink name={row.displayName} ownerId={row.ownerId} organizationId={row.organizationId} />
                   </td>
-                  <td className={TD_WRAP}>{row.planCode}</td>
+                  <td className={TD_WRAP}>{planLabel(row.planCode)}</td>
                   <td className={TD_NUM}>{formatCount(row.membersActive)}</td>
                   <td className={TD_WRAP}><SeatMeter seats={row} /></td>
                   <td className={TD_NUM}>{formatCount(row.activeJobs)}</td>

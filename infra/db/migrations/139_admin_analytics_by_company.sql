@@ -66,12 +66,16 @@
 -- no index, no new login right.
 --
 -- LOCKS. CREATE POLICY takes ACCESS EXCLUSIVE on organization_members and
--- organization_invites until COMMIT, and every employer request reads
--- organization_members, so the policies are the last statements before the
--- self-check and lock_timeout fails a stuck apply fast; a timed-out apply
--- writes no ledger row and can simply be rerun. The self-check runs the
--- console's widest windows (26 weeks) while the two locks are held: about
--- milliseconds at today's volume.
+-- organization_invites until COMMIT. Every employer request reads
+-- organization_members, and so does every worker or WhatsApp path that names
+-- a company through employer_display_name() (118): worker job and application
+-- views, the WhatsApp processor and the conversation router among them. All
+-- of them wait while this apply holds, or queues for, those locks. So the
+-- policies are the last statements before the self-check, and lock_timeout
+-- fails a stuck apply fast; a timed-out apply writes no ledger row and can
+-- simply be rerun. While the two locks are held, the self-check runs the
+-- console's widest windows (26 weeks) and section 5b recomputes the eight
+-- release figures over all data: milliseconds at today's volume.
 --
 -- RELEASE INVARIANT. While no company has a foreman, a company is exactly
 -- one employer login, so every changed figure must equal the per-login
@@ -87,8 +91,11 @@
 -- DEPLOY ORDER: apply BEFORE deploying the admin console build that reads the
 -- new columns and calls the new functions. The deployed console reads the
 -- old columns by name, so it keeps working in between. If a figure proves
--- wrong, a forward migration restores the earlier bodies; never edit this
--- file once applied.
+-- wrong, a forward migration restores the earlier row logic (089, 113, 114,
+-- 123, 124) and KEEPS today's result columns, including the columns appended
+-- to admin_analytics_paying_employers and admin_analytics_slowest_employers,
+-- because the deployed console reads them. Never edit this file once
+-- applied.
 --
 -- REPLAY: refused once public.admin_analytics_companies exists.
 -- ============================================================
@@ -1040,8 +1047,9 @@ CREATE POLICY organization_invites_admin_analytics_read ON public.organization_i
 -- ── 5. Self-check ───────────────────────────────────────────
 -- Fail closed if a function drifted from the reviewed model (arguments,
 -- result, owner, security, search path, EXECUTE), if a policy drifted, if a
--- gate does not open, or if bad input is accepted. The calls are small: the
--- two policy locks are held until COMMIT.
+-- gate does not open, or if bad input is accepted. The calls read across all
+-- data (the totals, every company, the slowest list over 26 weeks) while the
+-- two policy locks are held until COMMIT: milliseconds at today's volume.
 DO $$
 DECLARE
   v_gate   CONSTANT TEXT := $q$(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)$q$;

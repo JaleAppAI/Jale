@@ -92,6 +92,24 @@ export function planStatusLabel(status: string | null): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+// The plan catalog's codes in words, as billing_plans names them (034:
+// employer_free "Free", employer_pro "Pro"; worker_free is a worker's plan).
+const PLAN_LABELS: ReadonlyMap<string, string> = new Map([
+  ['employer_free', 'Free'],
+  ['employer_pro', 'Pro'],
+  ['worker_free', 'Worker free'],
+]);
+
+// A plan code in words ("employer_pro" is "Pro"). A code the catalog does not
+// name is shown as it is, so support can still find it. No plan at all (a
+// company listed although the catalog lost its free plan, 139) says so.
+export function planLabel(code: string | null): string {
+  if (code === null) return 'No plan (catalog)';
+  const known = PLAN_LABELS.get(code);
+  if (known !== undefined) return known;
+  return code.trim() === '' ? '—' : code;
+}
+
 // The company page. Every link to it uses prefetch={false}: opening it records a read.
 export function companyHref(organizationId: string): string {
   return `/analytics/employers/${organizationId}`;

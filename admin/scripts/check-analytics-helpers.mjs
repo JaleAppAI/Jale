@@ -179,6 +179,16 @@ assert.deepEqual(
   },
   'a free company has no plan status, and a missing limit stays null',
 );
+// 139 keeps a company listed when the catalog lost its free row: no plan at all.
+assert.deepEqual(
+  analytics.mapCompanySummaryRow({ ...companyRow, plan_code: null, plan_status: null, seat_limit: null }),
+  {
+    organizationId: ORG_1, ownerId: '00000000-0000-0000-0000-000000000001', displayName: 'IT Analytics Co',
+    createdAt: '2026-09-01T10:00:00.000Z', planCode: null, planStatus: null,
+    membersActive: 3, seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: null, activeJobs: 4,
+  },
+  'a NULL plan code maps to null, never to a string',
+);
 const memberRow = {
   user_id: '00000000-0000-0000-0000-0000000000b1', display_name: 'Rosa Mendez', role: 'foreman', status: 'suspended',
   billing_suspended: true, joined_at: new Date('2026-09-02T10:00:00.000Z'),
@@ -1356,6 +1366,14 @@ assert.equal(health.planStatusLabel('active'), 'Active');
 assert.equal(health.planStatusLabel('trialing'), 'Trialing');
 assert.equal(health.planStatusLabel('some_new_state'), 'Some new state', 'an unknown status is still readable');
 assert.equal(health.planStatusLabel(null), '—', 'a free company has no plan status');
+// The plan code in words, as the catalog (034's billing_plans) names it.
+assert.equal(health.planLabel('employer_pro'), 'Pro');
+assert.equal(health.planLabel('employer_free'), 'Free');
+assert.equal(health.planLabel('worker_free'), 'Worker free');
+assert.equal(health.planLabel(null), 'No plan (catalog)', 'no plan at all says so (the catalog lost its free row)');
+assert.equal(health.planLabel('employer_team_annual'), 'employer_team_annual', 'a code the catalog does not name is shown as it is');
+assert.equal(health.planLabel('constructor'), 'constructor', 'an object key is not a known code');
+assert.equal(health.planLabel('  '), '—', 'a blank code is a dash');
 assert.equal(health.companyHref('00000000-0000-4000-8000-0000000000a1'), '/analytics/employers/00000000-0000-4000-8000-0000000000a1');
 
 // #18, #3, #8, #4
