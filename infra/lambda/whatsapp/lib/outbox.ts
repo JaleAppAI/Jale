@@ -7,6 +7,7 @@ import {
   requireTwilioStatusCallbackUrl,
   _clearTwilioSecretCacheForTests,
 } from './twilio-secret';
+import { collapseWhitespace } from '../../lib/employer-contact-label';
 import type { RenderedOutboxMessage } from './onboarding-types';
 import { isWithinSessionWindow } from './session-window';
 
@@ -135,6 +136,24 @@ function isTemplatePendingRejection(
     && contentTemplate.startsWith(APPLICATION_TEMPLATE_PREFIX);
 }
 
+/**
+ * Cleans one WhatsApp template variable for Meta, which refuses a parameter
+ * that contains a newline, a tab, or more than four consecutive spaces.
+ * Every run of whitespace (newline, tab, NBSP, U+2028, ...) becomes one space,
+ * the ends are trimmed, and an empty result becomes `-` (Meta also refuses an
+ * empty parameter). A null, undefined or number (the JSONB values are not
+ * guaranteed to be strings) is handled the same way.
+ *
+ * Applied to every ContentVariables value in `sendTwilioWhatsAppMessage`. It is
+ * NOT applied to a free-form `Body` (including `__fallback_body` when it is
+ * sent as one): the rule is about template parameters, and a free-form message
+ * may keep its line breaks.
+ */
+export function normalizeTemplateVariable(value: string | number | null | undefined): string {
+  const cleaned = collapseWhitespace(String(value ?? ''));
+  return cleaned === '' ? '-' : cleaned;
+}
+
 export async function sendTwilioWhatsAppMessage(to: string, row: {
   body: string | null;
   content_template: string | null;
@@ -170,7 +189,7 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
       throw new Error(`Template variable missing: ${row.content_template}`);
     }
     formValues.ContentSid = contentSid;
-    formValues.ContentVariables = JSON.stringify({ '1': firstVariable });
+    formValues.ContentVariables = JSON.stringify({ '1': normalizeTemplateVariable(firstVariable) });
   } else if (row.content_template) {
     const contentSid = secret.templates?.[row.content_template as keyof NonNullable<TwilioSecret['templates']>];
     if (!contentSid) {
@@ -185,7 +204,11 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
     } else {
       const { [FALLBACK_BODY_KEY]: _fallback, ...contentVariables } = row.content_variables ?? {};
       formValues.ContentSid = contentSid;
-      formValues.ContentVariables = JSON.stringify(contentVariables);
+      formValues.ContentVariables = JSON.stringify(
+        Object.fromEntries(
+          Object.entries(contentVariables).map(([key, value]) => [key, normalizeTemplateVariable(value)]),
+        ),
+      );
     }
   } else {
     formValues.Body = row.body ?? '';
