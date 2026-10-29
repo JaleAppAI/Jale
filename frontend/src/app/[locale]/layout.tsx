@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Lexend } from "next/font/google";
+import localFont from "next/font/local";
 import "../globals.css";
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages } from "next-intl/server";
@@ -17,11 +17,16 @@ import { OverlayPresenceProvider } from "@/lib/tutorials/overlay";
 import { TutorialProgressProvider } from "@/lib/tutorials/progress";
 import { WorkerTourGate } from "@/components/tutorials/WorkerTourGate";
 
-const lexend = Lexend({
-  subsets: ["latin"],
+// Lexend's latin subset, committed (src/fonts, with its OFL licence) so the
+// build never fetches from Google: next/font/google failed two production
+// builds on 2026-10-29 while Turbopack rewrote Google's font CSS, then passed
+// on a rerun. It is the variable font, so one file covers every weight, and
+// latin holds every Spanish character (á é í ó ú ñ ü ¿ ¡).
+const lexend = localFont({
+  src: "../../fonts/lexend-latin.woff2",
   variable: "--font-lexend",
   display: "swap",
-  weight: ["300", "400", "500", "600", "700", "800"],
+  weight: "300 800",
 });
 
 /**
