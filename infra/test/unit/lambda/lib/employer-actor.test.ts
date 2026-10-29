@@ -50,8 +50,22 @@ describe('resolveEmployerActor', () => {
     expect(setInternalUserRlsContext).not.toHaveBeenCalled();
   });
 
-  it.each(['suspended', 'removed'])('403 membership_inactive for a %s member', async (status) => {
-    const client = clientWith({ rows: [{ user_id: FOREMAN, organization_id: ORG, role: 'foreman', status }] });
+  it('a suspended member: 403 membership_inactive with membershipStatus suspended', async () => {
+    const client = clientWith({ rows: [{ user_id: FOREMAN, organization_id: ORG, role: 'foreman', status: 'suspended' }] });
+    expect(await resolveEmployerActor(client, 'sub-x'))
+      .toEqual({ ok: false, status: 403, error: 'membership_inactive', membershipStatus: 'suspended' });
+    expect(setInternalUserRlsContext).not.toHaveBeenCalled();
+  });
+
+  it('a removed member: 403 membership_inactive with membershipStatus removed', async () => {
+    const client = clientWith({ rows: [{ user_id: FOREMAN, organization_id: ORG, role: 'foreman', status: 'removed' }] });
+    expect(await resolveEmployerActor(client, 'sub-x'))
+      .toEqual({ ok: false, status: 403, error: 'membership_inactive', membershipStatus: 'removed' });
+    expect(setInternalUserRlsContext).not.toHaveBeenCalled();
+  });
+
+  it('a status it does not know is still inactive, with no membershipStatus', async () => {
+    const client = clientWith({ rows: [{ user_id: FOREMAN, organization_id: ORG, role: 'foreman', status: 'paused' }] });
     expect(await resolveEmployerActor(client, 'sub-x')).toEqual({ ok: false, status: 403, error: 'membership_inactive' });
     expect(setInternalUserRlsContext).not.toHaveBeenCalled();
   });
@@ -79,5 +93,33 @@ describe('employerActorFailureResponse', () => {
   it('maps a failure to its status and error body', () => {
     expect(employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, { a: 'b' }))
       .toEqual({ statusCode: 403, headers: { a: 'b' }, body: JSON.stringify({ error: 'membership_inactive' }) });
+  });
+
+  it('the failure response body carries membershipStatus', () => {
+    const res = employerActorFailureResponse(
+      { ok: false, status: 403, error: 'membership_inactive', membershipStatus: 'suspended' }, { a: 'b' },
+    );
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive', membershipStatus: 'suspended' });
+  });
+
+  it('a removed member\'s failure response body carries membershipStatus removed', async () => {
+    const client = clientWith({ rows: [{ user_id: FOREMAN, organization_id: ORG, role: 'foreman', status: 'removed' }] });
+    const failure = await resolveEmployerActor(client, 'sub-x');
+    if (failure.ok) throw new Error('expected a failure');
+    const res = employerActorFailureResponse(failure, { a: 'b' });
+    expect(res).toEqual({
+      statusCode: 403, headers: { a: 'b' }, body: JSON.stringify({ error: 'membership_inactive', membershipStatus: 'removed' }),
+    });
+  });
+
+  it('no_organization carries no membershipStatus', async () => {
+    const client = clientWith({ rows: [{ user_id: OWNER, organization_id: null, role: null, status: null }] });
+    const failure = await resolveEmployerActor(client, 'sub-x');
+    if (failure.ok) throw new Error('expected a failure');
+    expect(failure).not.toHaveProperty('membershipStatus');
+    expect(JSON.parse(employerActorFailureResponse(failure, {}).body)).toEqual({ error: 'no_organization' });
+    expect(JSON.parse(employerActorFailureResponse({ ok: false, status: 409, error: 'user_not_provisioned' }, {}).body))
+      .toEqual({ error: 'user_not_provisioned' });
   });
 });

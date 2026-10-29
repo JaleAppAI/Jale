@@ -769,6 +769,18 @@ describe('billing checkout handler', () => {
       expect(query).toHaveBeenCalledWith('COMMIT');
     });
 
+    it.each(['suspended', 'removed'] as const)('checkout: the actor failure for a %s member carries membershipStatus', async (membershipStatus) => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive', membershipStatus });
+      query.mockImplementation((sql: string) => users(sql) ?? Promise.resolve({ rows: [] }));
+
+      const res = await handler(event());
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive', membershipStatus });
+      expect(mockGetStripe).not.toHaveBeenCalled();
+      expect(query).toHaveBeenCalledWith('COMMIT');
+    });
+
     it('checkout: answers 403 no_organization for an employer with no company, before any Stripe call', async () => {
       mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'no_organization' });
       query.mockImplementation((sql: string) => users(sql) ?? Promise.resolve({ rows: [] }));

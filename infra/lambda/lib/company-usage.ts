@@ -7,6 +7,8 @@ export interface CompanyUsage {
   templates: number;
   activeForemen: number;
   suspendedForemen: number;
+  /** Live invites (not accepted, not revoked, not expired): each holds a seat. */
+  pendingInvites: number;
 }
 
 /**
@@ -29,6 +31,7 @@ type UsageRow = {
   templates: unknown;
   active_foremen: unknown;
   suspended_foremen: unknown;
+  pending_invites: unknown;
 };
 
 // Fail closed: only a JS number or a string of digits (the shape pg uses for
@@ -46,7 +49,7 @@ function count(value: unknown): number {
  * Company-wide usage for the caller's company (jale_cap.employer_org_usage,
  * migration 128): every member's active jobs, whatever their membership
  * status (a suspended foreman's active jobs still count), every member's
- * templates, and the active and suspended foremen.
+ * templates, the active and suspended foremen, and the live invites.
  *
  * With { lock: true } it first takes the company's organizations row
  * FOR NO KEY UPDATE, held until the transaction ends. That is the one lock
@@ -74,7 +77,7 @@ export async function readCompanyUsage(
   let res;
   try {
     res = await client.query<UsageRow>(
-      `SELECT organization_id, active_jobs, templates, active_foremen, suspended_foremen
+      `SELECT organization_id, active_jobs, templates, active_foremen, suspended_foremen, pending_invites
          FROM jale_cap.employer_org_usage($1)`,
       [options.lock === true],
     );
@@ -95,5 +98,6 @@ export async function readCompanyUsage(
     templates: count(row.templates),
     activeForemen: count(row.active_foremen),
     suspendedForemen: count(row.suspended_foremen),
+    pendingInvites: count(row.pending_invites),
   };
 }

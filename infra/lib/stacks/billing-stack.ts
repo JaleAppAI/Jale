@@ -43,6 +43,113 @@ export interface BillingStackProps extends cdk.StackProps {
    * Absent   => today's behaviour exactly: mail sends, nothing listens.
    */
   readonly emailConfigurationSetName?: string;
+  /**
+   * The employer user pool (AuthStack), for member access (Phase 3): the
+   * processor and the member-access sync make its users' sign-in follow
+   * billing suspension, restore, removal and invite revocation. Passed from
+   * `auth.employerPool.userPool`; AuthStack depends on nothing here, so the
+   * reference adds no cycle.
+   */
+  readonly employerUserPoolId: string;
+  readonly employerUserPoolArn: string;
+  /**
+   * Team management (Phase 3). Resolved once in the composition from
+   * `-c teamManagementEnabled` / `JALE_TEAM_MANAGEMENT_ENABLED`, off unless
+   * exactly 'true'. It becomes the three team Lambdas' TEAM_MANAGEMENT_ENABLED;
+   * with it off they answer 404 on every route. It does NOT gate the
+   * processor or the member-access sync: a rollback (flag off) relies on
+   * them still converging Cognito.
+   */
+  readonly teamManagementEnabled: boolean;
+  /**
+   * The frontend's public origin (`publicSiteBaseUrl` context or
+   * JALE_PUBLIC_SITE_BASE_URL), for the invite link the team dispatcher mails.
+   * Must be https; the synth fails otherwise (see resolveInviteSiteBaseUrl).
+   */
+  readonly publicSiteBaseUrl: string;
+}
+
+/**
+ * The invite link's base: an absolute https URL, trailing slashes dropped.
+ * Fail closed at synth, as NotificationsStack does for its own links, and
+ * stricter: lambda/lib/org-team.ts's inviteUrl() refuses anything but https,
+ * so an http base would turn every invite into a 500 at runtime.
+ */
+export function resolveInviteSiteBaseUrl(raw: string | undefined): string {
+  const value = (raw ?? '').trim();
+  let parsed: URL | undefined;
+  try {
+    parsed = value ? new URL(value) : undefined;
+  } catch {
+    parsed = undefined;
+  }
+  if (!parsed || parsed.protocol !== 'https:') {
+    throw new Error(
+      'BillingStack requires an https publicSiteBaseUrl (context publicSiteBaseUrl or '
+      + 'JALE_PUBLIC_SITE_BASE_URL) for the team invite link — pass -c publicSiteBaseUrl=https://jaleapp.ai',
+    );
+  }
+  return value.replace(/\/+$/, '');
+}
+
+/**
+ * The member-access sync runs every 15 minutes. Its alarms use a 30-minute
+ * period so every period holds at least one run (see the pool alarm).
+ */
+const MEMBER_ACCESS_SYNC_ALARM_PERIOD = cdk.Duration.minutes(30);
+
+/**
+ * The request pool's session timeouts for the invite accept
+ * (lambda/lib/db.ts): a wait on a company lock ends at 3 s and any one
+ * statement at 5 s, so the database leg errors out well inside its 20 s
+ * Lambda timeout and API Gateway's 29 s cap, leaving room for the post-COMMIT
+ * Cognito calls (bounded at about 10 s by member-access.ts's deadline).
+ *
+ * The team dispatcher overrides the statement bound to 10 s (TEAM_DISPATCHER_DB_TIMEOUTS)
+ * and runs 25 s: a remove moves every job of the member in one UPDATE (about
+ * 1,000 jobs at the far end), and still needs the Cognito deadline after it.
+ */
+const TEAM_DB_TIMEOUTS = {
+  DB_STATEMENT_TIMEOUT_MS: '5000',
+  DB_LOCK_TIMEOUT_MS: '3000',
+} as const;
+
+export const TEAM_DISPATCHER_DB_TIMEOUTS = {
+  ...TEAM_DB_TIMEOUTS,
+  DB_STATEMENT_TIMEOUT_MS: '10000',
+} as const;
+
+/**
+ * The public invite lookup: one read-only function call, so a statement
+ * bound and nothing else (it waits on no lock).
+ */
+const INVITE_LOOKUP_DB_TIMEOUTS = {
+  DB_STATEMENT_TIMEOUT_MS: '5000',
+} as const;
+
+/**
+ * Hard cap on the unauthenticated invite lookup's concurrent executions, and
+ * so on its jale_api_public connections (one per container; that login has no
+ * connection limit). The stage throttle in ApiStack is the other brake.
+ */
+const INVITE_LOOKUP_RESERVED_CONCURRENCY = 10;
+
+/**
+ * What lambda/lib/member-access.ts calls, on the employer pool's own ARN only
+ * (never userpool/*): read a user, then enable, or sign out and disable.
+ * The one statement every member-access caller gets: the processor, the
+ * sync, the team dispatcher and the invite accept.
+ */
+function memberAccessStatement(employerUserPoolArn: string): iam.PolicyStatement {
+  return new iam.PolicyStatement({
+    actions: [
+      'cognito-idp:AdminGetUser',
+      'cognito-idp:AdminEnableUser',
+      'cognito-idp:AdminDisableUser',
+      'cognito-idp:AdminUserGlobalSignOut',
+    ],
+    resources: [employerUserPoolArn],
+  });
 }
 
 export function validateBillingEmailConfiguration(
@@ -62,6 +169,9 @@ export function validateBillingEmailConfiguration(
  *   POST /employer/billing/checkout     → checkout Lambda  (employer auth, Idempotency-Key)
  *   POST /employer/billing/portal       → portal Lambda    (employer auth)
  *   POST /billing/webhook               → webhook verifier Lambda (no auth, Stripe HMAC)
+ *   GET, POST /employer/team/{action}   → team dispatcher (employer auth; Phase 3)
+ *   GET  /employer/invites/{token}      → invite lookup   (no auth; Phase 3)
+ *   POST /employer/invites/{token}      → invite accept   (employer auth; Phase 3)
  *
  * Secret isolation (rule 9 of the A6 spec):
  *   get-billing : DB_SECRET_ARN (request login) only
@@ -69,7 +179,17 @@ export function validateBillingEmailConfiguration(
  *   portal      : DB_SECRET_ARN (request login) + STRIPE_SECRET_ARN
  *   webhook     : WEBHOOK_SECRET_ARN + QUEUE_URL (no DB, no Stripe API key)
  *   processor   : DB_SECRET_ARN (billing service login) + STRIPE_SECRET_ARN (SQS consumer)
+ *                 + EMPLOYER_USER_POOL_ID (member access)
  *   sweeper     : DB_SECRET_ARN (the email-sender job login) + SES send
+ *   member sync : DB_SECRET_ARN (billing service login) + EMPLOYER_USER_POOL_ID
+ *   team        : DB_SECRET_ARN (request login) + EMPLOYER_USER_POOL_ID + PUBLIC_SITE_BASE_URL
+ *   lookup      : DB_SECRET_ARN (public login) only
+ *   accept      : DB_SECRET_ARN (request login) + EMPLOYER_USER_POOL_ID
+ *
+ * Member access (Phase 3): the processor, the member-access sync, the team
+ * dispatcher and the invite accept, and no other Lambda here, may get,
+ * enable, disable and globally sign out users of the employer pool, and of no
+ * other pool. The public invite lookup gets no Cognito grant.
  *
  * DB login split: jale_billing is a processor-only service login (migration
  * 034) — granted billing_plans/billing_customers/subscriptions/
@@ -96,6 +216,8 @@ export class BillingStack extends cdk.Stack {
     validateBillingEmailConfiguration(emailFromAddress, sesVerifiedIdentityArn);
     const requiredEmailFromAddress = emailFromAddress!;
     const requiredSesVerifiedIdentityArn = sesVerifiedIdentityArn!;
+    const inviteSiteBaseUrl = resolveInviteSiteBaseUrl(props.publicSiteBaseUrl);
+    const teamManagementEnabled = props.teamManagementEnabled ? 'true' : 'false';
 
     // ── Import operator-created secrets by name ──
     // These secrets are never CDK-managed; CDK only imports the ARN reference.
@@ -112,6 +234,9 @@ export class BillingStack extends cdk.Stack {
 
     // ── Database logins ──
     const apiDb = dedicatedDbLogin(this, 'jale_api');
+    // The public invite lookup only: 133 grants org_team_invite_lookup to this
+    // EXECUTE-only login and to no other.
+    const apiPublicDb = dedicatedDbLogin(this, 'jale_api_public');
     const emailSenderDb = dedicatedDbLogin(this, 'jale_job_email_sender');
 
     // ── DLQ + main queue ──
@@ -212,10 +337,12 @@ export class BillingStack extends cdk.Stack {
         DB_EXPECTED_LOGIN: 'jale_billing',
         STRIPE_SECRET_ARN: stripeApiSecret.secretArn,
         ALLOWED_ORIGIN: allowedOrigin,
+        EMPLOYER_USER_POOL_ID: props.employerUserPoolId,
       },
     });
     props.billingDbSecret.grantRead(processorLambda.function);
     stripeApiSecret.grantRead(processorLambda.function);
+    processorLambda.function.addToRolePolicy(memberAccessStatement(props.employerUserPoolArn));
 
     webhookQueue.grantConsumeMessages(processorLambda.function);
     processorLambda.function.addEventSource(
@@ -272,7 +399,122 @@ export class BillingStack extends cdk.Stack {
       targets: [new eventTargets.LambdaFunction(emailSweeperLambda.function)],
     });
 
+    // ── Lambda: member-access sync (Phase 3) ──
+    // Every 15 minutes, as the billing service login: re-applies the Cognito
+    // state of every foreman whose access changed in the last 7 days (a failed
+    // or late call after COMMIT, an expired re-invite) and purges sent invite
+    // mail. The handler stops calling Cognito 5 s before the timeout.
+    const memberAccessSyncLambda = new JaleLambdaFunction(this, 'MemberAccessSyncLambda', {
+      entry: path.join(__dirname, '../../lambda/billing/member-access-sync.ts'),
+      description: 'Converges employer Cognito sign-in with team membership every 15 minutes',
+      vpc: props.vpc,
+      securityGroups: [props.billingLambdaSg],
+      timeout: 300,
+      // No retries, neither Lambda's async ones nor EventBridge's: the next
+      // 15-minute run is the retry, and a retried failure would only page twice.
+      retryAttempts: 0,
+      environment: {
+        DB_SECRET_ARN: props.billingDbSecret.secretArn,
+        DB_EXPECTED_LOGIN: 'jale_billing',
+        EMPLOYER_USER_POOL_ID: props.employerUserPoolId,
+      },
+    });
+    props.billingDbSecret.grantRead(memberAccessSyncLambda.function);
+    memberAccessSyncLambda.function.addToRolePolicy(memberAccessStatement(props.employerUserPoolArn));
+    new events.Rule(this, 'MemberAccessSyncSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(15)),
+      targets: [new eventTargets.LambdaFunction(memberAccessSyncLambda.function, { retryAttempts: 0 })],
+    });
+
+    // ── Lambdas: team management (Phase 3) ──
+    // Three Lambdas, all on the billing security group (HTTPS egress through
+    // NAT, which is how Cognito is reached: the VPC has no cognito-idp
+    // endpoint) and the private subnets with egress. Each carries
+    // TEAM_MANAGEMENT_ENABLED; with it off every route answers 404. Timeouts
+    // stay under API Gateway's 29 s integration cap (team 25 s, accept 20 s,
+    // lookup 10 s), and the database leg is bounded by the *_DB_TIMEOUTS above.
+    //
+    // The team dispatcher (lambda/api/employer-team.ts) serves every
+    // /employer/team/{action} route, including the caller's membership
+    // (GET/POST membership): one resource instead of three keeps JaleApiStack
+    // under its resource gate (480, raised temporarily from 470 until the
+    // JaleApiStack split; see CEILING in api-stack-resource-ceiling.test.ts). The invite, revoke and remove delegates
+    // call Cognito after COMMIT (member access), and invite/resend mail a link
+    // built on the site's public origin.
+    const employerTeamLambda = new JaleLambdaFunction(this, 'EmployerTeamLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-team.ts'),
+      description: "Employer team: owner operations and the caller's membership",
+      vpc: props.vpc,
+      securityGroups: [props.billingLambdaSg],
+      timeout: 25,
+      environment: {
+        ...apiDb.environment,
+        ...TEAM_DISPATCHER_DB_TIMEOUTS,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+        TEAM_MANAGEMENT_ENABLED: teamManagementEnabled,
+        PUBLIC_SITE_BASE_URL: inviteSiteBaseUrl,
+        EMPLOYER_USER_POOL_ID: props.employerUserPoolId,
+      },
+    });
+    apiDb.grantRead(employerTeamLambda.function);
+    employerTeamLambda.function.addToRolePolicy(memberAccessStatement(props.employerUserPoolArn));
+
+    // Public: the invite page reads the invite before the person has an
+    // account. The public login, no Cognito, and a stage throttle (ApiStack).
+    const employerInviteLookupLambda = new JaleLambdaFunction(this, 'EmployerInviteLookupLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-invite-lookup.ts'),
+      description: 'Public employer invite lookup by token',
+      vpc: props.vpc,
+      securityGroups: [props.billingLambdaSg],
+      timeout: 10,
+      reservedConcurrentExecutions: INVITE_LOOKUP_RESERVED_CONCURRENCY,
+      environment: {
+        ...apiPublicDb.environment,
+        ...INVITE_LOOKUP_DB_TIMEOUTS,
+        ALLOWED_ORIGIN: allowedOrigin,
+        TEAM_MANAGEMENT_ENABLED: teamManagementEnabled,
+      },
+    });
+    apiPublicDb.grantRead(employerInviteLookupLambda.function);
+
+    // The signed-in accept. A removed member who rejoins is enabled in
+    // Cognito after COMMIT.
+    const employerInviteAcceptLambda = new JaleLambdaFunction(this, 'EmployerInviteAcceptLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-invite-accept.ts'),
+      description: 'Accepts an employer invite for the signed-in login',
+      vpc: props.vpc,
+      securityGroups: [props.billingLambdaSg],
+      timeout: 20,
+      environment: {
+        ...apiDb.environment,
+        ...TEAM_DB_TIMEOUTS,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+        TEAM_MANAGEMENT_ENABLED: teamManagementEnabled,
+        EMPLOYER_USER_POOL_ID: props.employerUserPoolId,
+      },
+    });
+    apiDb.grantRead(employerInviteAcceptLambda.function);
+    employerInviteAcceptLambda.function.addToRolePolicy(memberAccessStatement(props.employerUserPoolArn));
+
     // ── Routes ──
+    // /employer/team/{action} — the team dispatcher, employer auth. Both
+    // nodes are created whatever the flag, so the resource count is the same
+    // with it on and off (api-stack-resource-ceiling.test.ts).
+    const employerAuth = {
+      authorizer: props.employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    };
+    const teamActionResource = addPathOnlyResource(props.employerResource, 'team').addResource('{action}');
+    teamActionResource.addMethod('GET', lambdaIntegration(employerTeamLambda.function), employerAuth);
+    teamActionResource.addMethod('POST', lambdaIntegration(employerTeamLambda.function), employerAuth);
+
+    // /employer/invites/{token} — GET public (lookup), POST employer auth (accept).
+    const inviteTokenResource = addPathOnlyResource(props.employerResource, 'invites').addResource('{token}');
+    inviteTokenResource.addMethod('GET', lambdaIntegration(employerInviteLookupLambda.function));
+    inviteTokenResource.addMethod('POST', lambdaIntegration(employerInviteAcceptLambda.function), employerAuth);
+
     // /employer/billing — employer-auth routes
     const billingResource = props.employerResource.addResource('billing');
 
@@ -493,6 +735,82 @@ export class BillingStack extends cdk.Stack {
     knownEventSkipAlarm.addAlarmAction(alarmAction);
     knownEventSkipAlarm.addOkAction(alarmAction);
 
+    // ── Member access (Phase 3): the sync cannot reach the employer pool ──
+    // lambda/lib/member-access.ts logs member_access_pool_missing (no
+    // EMPLOYER_USER_POOL_ID) or member_access_pool_unavailable (access denied,
+    // pool not found, bad credentials) once per batch and fails the rest of
+    // it without throwing, so the sync Lambda's Errors metric never moves. On
+    // the SYNC's log group: it runs every 15 minutes, so a broken pool shows
+    // up here within one period whatever the billing traffic.
+    //
+    // The period is 30 minutes, not 5: with one run every 15 minutes a 5-minute
+    // period has no datapoint between runs, notBreaching turns that into OK,
+    // and a persistent failure flapped ALARM -> OK -> ALARM, paging every run.
+    // Every 30-minute period holds at least one run, so it stays in ALARM.
+    const memberAccessPoolFilter = new logs.MetricFilter(this, 'MemberAccessPoolUnavailableMetricFilter', {
+      logGroup: memberAccessSyncLambda.logGroup,
+      metricNamespace: 'Jale/Billing',
+      metricName: 'MemberAccessPoolUnavailable',
+      filterPattern: logs.FilterPattern.anyTerm('member_access_pool_unavailable', 'member_access_pool_missing'),
+      metricValue: '1',
+    });
+    const memberAccessPoolAlarm = jaleAlarm(this, 'MemberAccessPoolUnavailableAlarm', {
+      metric: memberAccessPoolFilter.metric({ period: MEMBER_ACCESS_SYNC_ALARM_PERIOD, statistic: 'Sum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      alarmName: 'MemberAccessPoolUnavailable',
+      actions: [alarmAction],
+    });
+    memberAccessPoolAlarm.addOkAction(alarmAction);
+
+    // More changes in 7 days than one sync run reads (500): a metric for
+    // dashboards, no alarm (the newest changes still converge first).
+    new logs.MetricFilter(this, 'MemberAccessSyncSaturatedMetricFilter', {
+      logGroup: memberAccessSyncLambda.logGroup,
+      metricNamespace: 'Jale/Billing',
+      metricName: 'MemberAccessSyncSaturated',
+      filterPattern: logs.FilterPattern.literal('"member_access_sync_saturated"'),
+      metricValue: '1',
+    });
+
+    // ── Team management (Phase 3): the API Lambdas' silent failures ──
+    // Each handler catches its errors and answers 500 (or, after COMMIT,
+    // answers success with accessUpdated:false), so its Errors metric never
+    // moves. These filters on each Lambda's OWN log group are the signal; the
+    // terms must match the handlers (metric-filter-patterns.test.ts):
+    //   lookup : invite_lookup_misconfigured (wrong DB login: every lookup
+    //            fails) and invite_lookup_failed (a DB error) —
+    //            lambda/api/employer-invite-lookup.ts;
+    //   accept : invite_accept_failed — lambda/api/employer-invite-accept.ts;
+    //   team   : member_access_failed (a change whose Cognito attempts ran
+    //            out) and member_access_deadline (changes left when the
+    //            deadline hit) — lambda/lib/member-access.ts. A removed
+    //            foreman may still be signed in until the 15-minute sync
+    //            converges it; the DB membership check still answers 403.
+    for (const [id, fn, terms, metricName] of [
+      ['InviteLookupFailed', employerInviteLookupLambda, ['invite_lookup_misconfigured', 'invite_lookup_failed'], 'InviteLookupFailed'],
+      ['InviteAcceptFailed', employerInviteAcceptLambda, ['invite_accept_failed'], 'InviteAcceptFailed'],
+      ['TeamMemberAccessFailed', employerTeamLambda, ['member_access_failed', 'member_access_deadline'], 'TeamMemberAccessFailed'],
+    ] as const) {
+      const metricFilter = new logs.MetricFilter(this, `${id}MetricFilter`, {
+        logGroup: fn.logGroup,
+        metricNamespace: 'Jale/Billing',
+        metricName,
+        filterPattern: terms.length === 1
+          ? logs.FilterPattern.literal(`"${terms[0]}"`)
+          : logs.FilterPattern.anyTerm(...terms),
+        metricValue: '1',
+      });
+      const teamAlarm = jaleAlarm(this, `${id}Alarm`, {
+        metric: metricFilter.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmName: metricName,
+        actions: [alarmAction],
+      });
+      teamAlarm.addOkAction(alarmAction);
+    }
+
     // ── 1c: the webhook verifier's silent failures (roadmap 2026-10-01) ──
     // The verifier catches everything: a bad signature returns 400 (and logs
     // a bare BillingWebhookInvalidSignature line), any other error returns
@@ -520,16 +838,19 @@ export class BillingStack extends cdk.Stack {
       verifierAlarm.addOkAction(alarmAction);
     }
 
-    // Uncaught failures in either billing Lambda: the processor throws on a
+    // Uncaught failures in the billing Lambdas: the processor throws on a
     // retryable error so SQS redelivers; the verifier catches every handler
     // error, so its Errors metric only moves on an init failure, a timeout,
     // or running out of memory.
-    for (const [id, fn, alarmName] of [
-      ['BillingWebhookLambdaErrorsAlarm', webhookVerifierLambda, 'BillingWebhookLambdaErrors'],
-      ['BillingProcessorLambdaErrorsAlarm', processorLambda, 'BillingProcessorLambdaErrors'],
+    for (const [id, fn, alarmName, period] of [
+      ['BillingWebhookLambdaErrorsAlarm', webhookVerifierLambda, 'BillingWebhookLambdaErrors', cdk.Duration.minutes(5)],
+      ['BillingProcessorLambdaErrorsAlarm', processorLambda, 'BillingProcessorLambdaErrors', cdk.Duration.minutes(5)],
+      // The sync throws only on a database failure (read or purge). Its
+      // period matches its 15-minute schedule (see the pool alarm above).
+      ['MemberAccessSyncLambdaErrorsAlarm', memberAccessSyncLambda, 'MemberAccessSyncLambdaErrors', MEMBER_ACCESS_SYNC_ALARM_PERIOD],
     ] as const) {
       const errorsAlarm = jaleAlarm(this, id, {
-        metric: fn.function.metricErrors({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+        metric: fn.function.metricErrors({ period, statistic: 'Sum' }),
         threshold: 1,
         evaluationPeriods: 1,
         alarmName,

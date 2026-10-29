@@ -6,6 +6,7 @@ import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -30,6 +31,15 @@ export interface AuthStackProps extends cdk.StackProps {
    * exist and are visible in the console, with no action.
    */
   readonly alarmTopicArn?: string;
+  /**
+   * Team management (Phase 3), resolved once in the composition
+   * (`-c teamManagementEnabled` / `JALE_TEAM_MANAGEMENT_ENABLED`). It becomes
+   * post-confirmation's TEAM_MANAGEMENT_ENABLED: on, a confirmed employer can
+   * join a company by invite token or by verified email; off, Phase 2's
+   * statements exactly. Optional and off by default, so a harness that does
+   * not pass it synthesizes the flag-off trigger.
+   */
+  readonly teamManagementEnabled?: boolean;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -55,6 +65,7 @@ export class AuthStack extends cdk.Stack {
       environment: {
         ...apiDb.environment,
         DLQ_URL: dlq.queueUrl,
+        TEAM_MANAGEMENT_ENABLED: props.teamManagementEnabled === true ? 'true' : 'false',
       },
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
@@ -190,6 +201,41 @@ export class AuthStack extends cdk.Stack {
     const notify = (alarm: cloudwatch.Alarm): void => {
       if (alarmAction) alarm.addAlarmAction(alarmAction);
     };
+    // ── Post-confirmation: sign-up accepts (Phase 3) ──
+    // A confirmed employer whose invite accept failed (any error but a lock
+    // timeout or a members-key race), or whose accept function is missing
+    // (the CRITICAL 42883 line: migration 133 not applied), keeps their users
+    // row but joins no company. The trigger swallows both so the sign-up never
+    // fails, so the Lambda's Errors metric never moves: this alarm is the
+    // only signal. Terms, on the trigger's own log group, must match
+    // lambda/post-confirmation/index.ts.
+    const inviteFailedFilter = new logs.MetricFilter(this, 'PostConfirmationInviteFailedMetricFilter', {
+      logGroup: postConfirmationLambda.logGroup,
+      metricNamespace: 'Jale/Auth',
+      metricName: 'PostConfirmationInviteFailed',
+      filterPattern: logs.FilterPattern.anyTerm('post_confirmation_invite_failed', 'joined no company'),
+      metricValue: '1',
+    });
+    notify(new cloudwatch.Alarm(this, 'PostConfirmationInviteFailedAlarm', {
+      alarmName: 'PostConfirmationInviteFailed',
+      alarmDescription:
+        'An employer sign-up could not accept its invite (or the accept function is missing); they have no company. Check the post-confirmation logs',
+      metric: inviteFailedFilter.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }));
+    // Lock timeouts and time-budget skips: the person can still accept from
+    // the invite link. A count for dashboards, no alarm.
+    new logs.MetricFilter(this, 'PostConfirmationInviteDeferredMetricFilter', {
+      logGroup: postConfirmationLambda.logGroup,
+      metricNamespace: 'Jale/Auth',
+      metricName: 'PostConfirmationInviteDeferred',
+      filterPattern: logs.FilterPattern.literal('"post_confirmation_invite_deferred"'),
+      metricValue: '1',
+    });
+
     notify(new cloudwatch.Alarm(this, 'WorkerOtpSendErrorAlarm', {
       alarmName: 'WorkerOtpSendErrors',
       alarmDescription: 'Worker OTP CreateAuthChallenge Lambda reported an error',

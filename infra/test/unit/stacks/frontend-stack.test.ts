@@ -1,4 +1,7 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
+import * as cxapi from 'aws-cdk-lib/cx-api';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import { FrontendStack } from '../../../lib/stacks/frontend-stack';
@@ -12,8 +15,24 @@ const describeIfDocker = process.env.SKIP_DOCKER_TESTS ? describe.skip : describ
 /** The admin console's distribution, as the composition passes its id. */
 const ADMIN_DISTRIBUTION_ID = 'EDFDVBD6EXAMPLE';
 
+/**
+ * The Docker build args of the stack's one container image, from the asset
+ * manifest the synth writes (the template only carries the image digest).
+ */
+function imageBuildArgs(app: cdk.App, stack: cdk.Stack): Record<string, string> {
+  const assembly = app.synth();
+  const manifestArtifact = assembly.artifacts.find((artifact) => artifact instanceof cxapi.AssetManifestArtifact
+    && artifact.id === `${stack.artifactId}.assets`) as cxapi.AssetManifestArtifact | undefined;
+  expect(manifestArtifact).toBeDefined();
+  const manifest = JSON.parse(fs.readFileSync(manifestArtifact!.file, 'utf8'));
+  const images = Object.values(manifest.dockerImages ?? {}) as Array<{ source: { dockerBuildArgs?: Record<string, string> } }>;
+  expect(images).toHaveLength(1);
+  return images[0].source.dockerBuildArgs ?? {};
+}
+
 describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
   let template: Template;
+  let buildArgs: Record<string, string>;
 
   beforeAll(() => {
     const app = new cdk.App();
@@ -31,10 +50,30 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
       employerClientId: 'test-employer-client',
       whatsappBusinessNumber: '15551234567',
       adminDistributionId: ADMIN_DISTRIBUTION_ID,
+      teamManagementEnabled: false,
     };
     const stack = new FrontendStack(app, 'TestFrontendStack', props);
 
     template = Template.fromStack(stack);
+    buildArgs = imageBuildArgs(app, stack);
+  });
+
+  test('passes NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED as a build arg', () => {
+    expect(buildArgs).toEqual({
+      NEXT_PUBLIC_WORKER_POOL_ID: 'us-east-1_TEST',
+      NEXT_PUBLIC_WORKER_CLIENT_ID: 'test-worker-client',
+      NEXT_PUBLIC_EMPLOYER_POOL_ID: 'us-east-1_EMPL',
+      NEXT_PUBLIC_EMPLOYER_CLIENT_ID: 'test-employer-client',
+      NEXT_PUBLIC_API_BASE_URL: 'https://example.com/api',
+      // Off: the frontend makes no membership call and shows Phase 2's nav.
+      NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED: 'false',
+    });
+  });
+
+  test('the Dockerfile declares the build arg and exports it to the Next.js build', () => {
+    const dockerfile = fs.readFileSync(path.resolve(__dirname, '../../../../frontend/Dockerfile'), 'utf8');
+    expect(dockerfile).toMatch(/^ARG NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED$/m);
+    expect(dockerfile).toMatch(/^ENV NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED=\$NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED$/m);
   });
 
   test('creates a container Lambda function', () => {
@@ -739,9 +778,12 @@ describeIfDocker('FrontendStack without survey origin', () => {
       employerPoolId: 'us-east-1_EMPL',
       employerClientId: 'test-employer-client',
       whatsappBusinessNumber: '15551234567',
+      teamManagementEnabled: true,
     });
 
     const tpl = Template.fromStack(stack);
+    // This stack also has the team-management flag on (the first one, off).
+    expect(imageBuildArgs(app, stack).NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED).toBe('true');
 
     // Without the admin distribution's id there is no admin CDN alarm.
     expect(Object.keys(tpl.findResources('AWS::CloudWatch::Alarm', {

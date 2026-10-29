@@ -5,7 +5,7 @@ import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
-import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
+import { employerActorFailureResponse, resolveEmployerActor, type EmployerRole } from '../lib/employer-actor';
 import { parseSignupSource } from '../lib/signup-source';
 import { TRADE_KEYS } from '../lib/worker-vocab';
 
@@ -17,6 +17,48 @@ const CORS_HEADERS = corsHeaders();
 const VALID_TRADES = TRADE_KEYS;
 const VALID_JOB_TYPES = ['full-time', 'part-time', 'contract'] as const;
 const VALID_COMPANY_SIZES = ['1-10', '11-50', '51-200', '200+'] as const;
+// The company's fields are the owner's (Phase 3). A foreman's PATCH writes
+// only their own contact name and phone; any other field is refused before
+// any write. signup_source is accepted and ignored: a first-profile flush
+// from a build that predates invite mode carries it, and a foreman's first
+// save must never 403 (it is not a company sign-up, so it is not recorded).
+const FOREMAN_PATCH_FIELDS: ReadonlySet<string> = new Set(['contact_name', 'phone', 'signup_source']);
+
+const MEMBERSHIP_SAVEPOINT = 'org_team_membership';
+let membershipFallbackLogged = false;
+
+/**
+ * The caller's role and the company's name, as every Phase 3 reader shows it
+ * (the active owner's company_name, jale_cap.org_team_membership, migration
+ * 134): a foreman's own row carries no company fields.
+ *
+ * Under its own savepoint, because this is the first call on every employer
+ * page: before 134 is applied the function is missing (42883), and that must
+ * not become an outage. Then the answer comes from the actor and the caller's
+ * own row (an owner's row holds the company name; with the flag off every
+ * login is an owner), logged once per container. Any other error is rethrown.
+ */
+async function readMembership(
+  client: { query: (sql: string) => Promise<{ rows?: Array<{ role?: string; company_name?: string | null }> }> },
+  actorRole: EmployerRole,
+  profileRow: { company_name?: string | null },
+): Promise<{ role: string; companyName: string | null }> {
+  await client.query(`SAVEPOINT ${MEMBERSHIP_SAVEPOINT}`);
+  try {
+    const membership = await client.query('SELECT role, company_name FROM jale_cap.org_team_membership()');
+    await client.query(`RELEASE SAVEPOINT ${MEMBERSHIP_SAVEPOINT}`);
+    const row = membership.rows?.[0];
+    return { role: row?.role ?? actorRole, companyName: row?.company_name ?? null };
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code !== '42883') throw err;
+    await client.query(`ROLLBACK TO SAVEPOINT ${MEMBERSHIP_SAVEPOINT}`);
+    if (!membershipFallbackLogged) {
+      membershipFallbackLogged = true;
+      console.warn(JSON.stringify({ metric: 'employer_profile_membership_fallback', reason: 'org_team_membership_missing' }));
+    }
+    return { role: actorRole, companyName: actorRole === 'owner' ? profileRow.company_name ?? null : null };
+  }
+}
 
 function cleanText(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
@@ -91,6 +133,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_json' }) };
       }
 
+      const isOwner = actor.role === 'owner';
+      if (!isOwner) {
+        const fields = body !== null && typeof body === 'object' ? Object.keys(body) : [];
+        if (fields.some((field) => !FOREMAN_PATCH_FIELDS.has(field))) {
+          await client.query('COMMIT');
+          return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'owner_required' }) };
+        }
+      }
+
       const hiringTrades = validateStringArray(body.hiring_trades, VALID_TRADES, 'invalid_hiring_trades');
       if (!Array.isArray(hiringTrades)) {
         await client.query('COMMIT');
@@ -120,6 +171,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // before the first write.
       await setAuditContext(client, auditCaller(event, { kind: 'employer', id: actor.userId }, 'web'), 'employer.profile_update');
 
+      // companyName is always null for a foreman (refused above), so a
+      // foreman's PATCH never mirrors anything into users.full_name.
       if (companyName) {
         await client.query('UPDATE users SET full_name = $1, phone = COALESCE($2, phone) WHERE cognito_sub = $3', [companyName, phone, cognitoSub]);
       } else if (phone) {
@@ -177,7 +230,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // after sign-in. Best-effort under its own savepoint; the function keeps
       // the first write, only for an account created in the last 24 hours,
       // so a later save never changes it.
-      const signupSource = parseSignupSource(body.signup_source);
+      const signupSource = isOwner ? parseSignupSource(body.signup_source) : null;
       if (signupSource) {
         await recordSignupSource(client, actor.userId, signupSource);
       }
@@ -227,6 +280,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          WHERE u.cognito_sub = $1`,
         [cognitoSub],
       );
+    }
+    // Both methods answer with the caller's role and the company's name (the
+    // frontend replaces its profile with the PATCH response).
+    if (result.rows.length > 0) {
+      result.rows[0] = { ...result.rows[0], ...(await readMembership(client, actor.role, result.rows[0])) };
     }
     await client.query('COMMIT');
 

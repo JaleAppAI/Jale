@@ -42,6 +42,11 @@ export const EXPECTED_DB_LOGIN: Readonly<Record<string, string>> = {
   'JaleBillingStack/GetBillingLambda': 'jale_api',
   'JaleBillingStack/CheckoutLambda': 'jale_api',
   'JaleBillingStack/PortalLambda': 'jale_api',
+  // Phase 3 team management: the dispatcher and the signed-in accept. And
+  // generate-description, which resolves the caller's employer actor.
+  'JaleBillingStack/EmployerTeamLambda': 'jale_api',
+  'JaleBillingStack/EmployerInviteAcceptLambda': 'jale_api',
+  'JaleApiStack/EmployerGenerateDescriptionLambda': 'jale_api',
   'JaleDocumentsStack/EmployerUploadToken': 'jale_api',
   'JaleDocumentsStack/WorkerVaultDispatch': 'jale_api',
   'JaleDocumentsStack/WorkerDocumentsList': 'jale_api',
@@ -59,10 +64,11 @@ export const EXPECTED_DB_LOGIN: Readonly<Record<string, string>> = {
   'JaleReportsStack/ReportIntake': 'jale_api',
   'JaleReportsStack/PublicReportIntake': 'jale_api_public_reports',
   'JaleReportsStack/ReportCleanup': 'jale_job_report_cleanup',
-  // The three unauthenticated endpoints: the EXECUTE-only public login.
+  // The four unauthenticated endpoints: the EXECUTE-only public login.
   'JaleApiStack/WorkerWebSignupLambda': 'jale_api_public',
   'JaleDocumentsStack/WorkerDocumentsDispatch': 'jale_api_public',
   'JaleNotificationsStack/DigestUnsubscribeLambda': 'jale_api_public',
+  'JaleBillingStack/EmployerInviteLookupLambda': 'jale_api_public',
   // The five background jobs: one login each.
   'JaleBillingStack/EmailOutboxSweeperLambda': 'jale_job_email_sender',
   'JaleReferralsStack/VisibilityOutboxDrainLambda': 'jale_job_visibility_drain',
@@ -95,6 +101,8 @@ export const EXPECTED_DB_LOGIN: Readonly<Record<string, string>> = {
   'JaleReferralsStack/PublicJobApplyIntentLambda': 'jale_public_jobs',
   'JaleReferralsStack/PublicJobsListLambda': 'jale_public_jobs',
   'JaleBillingStack/BillingProcessorLambda': 'jale_billing',
+  // Phase 3's member-access sync (Task 6) runs as the billing service login.
+  'JaleBillingStack/MemberAccessSyncLambda': 'jale_billing',
   'JaleMatchingStack/EmployerCandidateRerankLambda': 'jale_matching',
   'JaleAdminStack/AdminNextjsFunction': 'jale_admin_console',
 };

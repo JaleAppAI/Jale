@@ -1521,8 +1521,9 @@ export class WhatsAppStack extends cdk.Stack {
     // a plain `addResource()` for a node that carries no method of its own.
     // `test/unit/stacks/api-stack-resource-ceiling.test.ts` synthesizes the
     // real composition, asserts the exact count, and fails the build above
-    // 470, which is where splitting ApiStack (a nested stack, or a second
-    // RestApi for `/worker/*`) becomes the answer.
+    // its CEILING (480 since 2026-10-27, raised temporarily from 470), which
+    // is where splitting ApiStack (a nested stack, or a second RestApi for
+    // `/worker/*`) becomes the answer. That split is planned as its own task.
     onboardingResource.addResource('{action}').addMethod('ANY', webOnboardingIntegration, workerAuth);
 
     // ═══════════════════════════════════════════════════════════════════

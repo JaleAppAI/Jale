@@ -1,5 +1,41 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as cdk from 'aws-cdk-lib';
+import { resolveTeamManagementEnabled } from '../../lib/app-composition';
+
+describe('the team-management flag', () => {
+  const saved = process.env.JALE_TEAM_MANAGEMENT_ENABLED;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.JALE_TEAM_MANAGEMENT_ENABLED;
+    else process.env.JALE_TEAM_MANAGEMENT_ENABLED = saved;
+  });
+
+  const app = (context: Record<string, unknown> = {}) => new cdk.App({ context });
+
+  it('TEAM_MANAGEMENT_ENABLED is false without context and env, true with -c teamManagementEnabled=true or JALE_TEAM_MANAGEMENT_ENABLED=true', () => {
+    delete process.env.JALE_TEAM_MANAGEMENT_ENABLED;
+    expect(resolveTeamManagementEnabled(app())).toBe(false);
+
+    expect(resolveTeamManagementEnabled(app({ teamManagementEnabled: 'true' }))).toBe(true);
+    // cdk.json context arrives as a boolean.
+    expect(resolveTeamManagementEnabled(app({ teamManagementEnabled: true }))).toBe(true);
+
+    process.env.JALE_TEAM_MANAGEMENT_ENABLED = 'true';
+    expect(resolveTeamManagementEnabled(app())).toBe(true);
+  });
+
+  it('only exactly true turns it on; context wins over the environment', () => {
+    // An unset GitHub variable expands to ''.
+    for (const value of ['', 'false', 'TRUE', '1', 'yes', ' true ']) {
+      process.env.JALE_TEAM_MANAGEMENT_ENABLED = value;
+      expect(resolveTeamManagementEnabled(app())).toBe(value.trim() === 'true');
+    }
+    process.env.JALE_TEAM_MANAGEMENT_ENABLED = 'true';
+    expect(resolveTeamManagementEnabled(app({ teamManagementEnabled: 'false' }))).toBe(false);
+    delete process.env.JALE_TEAM_MANAGEMENT_ENABLED;
+    expect(resolveTeamManagementEnabled(app({ teamManagementEnabled: false }))).toBe(false);
+  });
+});
 
 describe('cdk app entrypoint', () => {
   // The composition moved out of bin/jale-app.ts into lib/app-composition.ts
@@ -36,6 +72,22 @@ describe('cdk app entrypoint', () => {
     expect(adminAt).toBeGreaterThan(reportsAt);
     expect(app.slice(adminAt)).toContain('reportImagesBucket: reports.imagesBucket');
     expect(app.slice(adminAt)).toContain('reportImagesKey: reports.imagesKey');
+  });
+
+  it('resolves the team-management flag once, before AuthStack, and feeds Auth, Billing and Frontend', () => {
+    const app = readComposition();
+    const resolvedAt = app.indexOf('const teamManagementEnabled = resolveTeamManagementEnabled(app)');
+    const authAt = app.indexOf("new AuthStack(app, 'JaleAuthStack'");
+    const billingAt = app.indexOf("new BillingStack(app, 'JaleBillingStack'");
+    const frontendAt = app.indexOf("new FrontendStack(app, 'JaleFrontendStack'");
+    expect(resolvedAt).toBeGreaterThan(-1);
+    expect(authAt).toBeGreaterThan(resolvedAt);
+    expect(app.match(/resolveTeamManagementEnabled\(app\)/g)).toHaveLength(1);
+    for (const at of [authAt, billingAt, frontendAt]) {
+      const block = app.slice(at, app.indexOf('});', at));
+      expect(block).toContain('teamManagementEnabled,');
+    }
+    expect(app.slice(billingAt, app.indexOf('});', billingAt))).toContain('publicSiteBaseUrl:');
   });
 
   it('composes the audit stacks, the audit stack right after the database stack', () => {

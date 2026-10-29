@@ -359,9 +359,11 @@ export class ApiStack extends cdk.Stack {
     });
     apiDb.grantRead(employerJobsDeleteLambda.function);
 
-    // T-A1: AI job-description generation — employer auth, NO DB access (the
-    // construct still places it in the VPC like every sibling Lambda; that's
-    // expected, not a leftover). Daily-cap table modeled on AuthStack's
+    // T-A1: AI job-description generation — employer auth. Since Phase 3 it
+    // reads the database once, as the request login: the caller's employer
+    // actor (a removed or suspended foreman, or a login with no company, gets
+    // 403 before any Bedrock call). The shared lambdaSg is the one RdsSg
+    // admits on 5432. Daily-cap table modeled on AuthStack's
     // OtpRateLimitTable precedent (PAY_PER_REQUEST + AWS-managed encryption +
     // TTL + RemovalPolicy.RETAIN) but with a single partition key `pk` --
     // this table's key is already the composite "<sub>#<YYYY-MM-DD>" string,
@@ -381,12 +383,14 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
+        ...apiDb.environment,
         GENERATION_CAP_TABLE: generationCapTable.tableName,
         GENERATION_DAILY_LIMIT: '10',
         BEDROCK_MODEL_ID,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
+    apiDb.grantRead(employerGenerateDescriptionLambda.function);
     generationCapTable.grantReadWriteData(employerGenerateDescriptionLambda.function);
     employerGenerateDescriptionLambda.function.addToRolePolicy(
       new iam.PolicyStatement({
@@ -1288,6 +1292,34 @@ export class ApiStack extends cdk.Stack {
         },
         {
           ResourcePath: '/reports/{action}',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
+        },
+        // Team management (Phase 3, BillingStack's routes). The dispatcher's
+        // POST covers every owner write (invite, resend, revoke, remove,
+        // reassign) and start-my-own-company (POST membership): each one
+        // takes the company lock, and invite/resend queue an email. Its GET
+        // (team list, own membership) is left at the stage default.
+        {
+          ResourcePath: '/employer/team/{action}',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 5,
+          ThrottlingRateLimit: 2,
+        },
+        // GET /employer/invites/{token} — UNAUTHENTICATED invite lookup, the
+        // invite page's first read. The 43-character token is unguessable, so
+        // this is a database-connection brake, not an enumeration defence:
+        // every call reaches pool.connect() as jale_api_public.
+        {
+          ResourcePath: '/employer/invites/{token}',
+          HttpMethod: 'GET',
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
+        },
+        // POST /employer/invites/{token} — the signed-in accept (company lock).
+        {
+          ResourcePath: '/employer/invites/{token}',
           HttpMethod: 'POST',
           ThrottlingBurstLimit: 10,
           ThrottlingRateLimit: 5,

@@ -86,6 +86,11 @@ jobs:
       JALE_SES_CONFIGURATION_SET_NAME: ${{ vars.JALE_SES_CONFIGURATION_SET_NAME }}
       JALE_WHATSAPP_BUSINESS_NUMBER: ${{ vars.JALE_WHATSAPP_BUSINESS_NUMBER }}
       JALE_WORKER_JOBS_RENAME_PHASE1: ${{ vars.JALE_WORKER_JOBS_RENAME_PHASE1 }}
+      # Employer team management (Phase 3). Set per GitHub environment, so
+      # every deploy keeps its value; unset (empty) or anything but 'true' is
+      # off. Feeds the team Lambdas, the post-confirmation trigger and the
+      # frontend bundle (NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED) alike.
+      JALE_TEAM_MANAGEMENT_ENABLED: ${{ vars.JALE_TEAM_MANAGEMENT_ENABLED }}
       # The results of the audit system's pre-checks: the detection
       # services' modes (create | existing | off) and the engine's default
       # shared_preload_libraries for postgres16 (the list, or none). REQUIRED:
@@ -325,6 +330,11 @@ jobs:
       JALE_SES_CONFIGURATION_SET_NAME: ${{ vars.JALE_SES_CONFIGURATION_SET_NAME }}
       JALE_WHATSAPP_BUSINESS_NUMBER: ${{ vars.JALE_WHATSAPP_BUSINESS_NUMBER }}
       JALE_WORKER_JOBS_RENAME_PHASE1: ${{ vars.JALE_WORKER_JOBS_RENAME_PHASE1 }}
+      # Employer team management (Phase 3). Set per GitHub environment, so
+      # every deploy keeps its value; unset (empty) or anything but 'true' is
+      # off. Feeds the team Lambdas, the post-confirmation trigger and the
+      # frontend bundle (NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED) alike.
+      JALE_TEAM_MANAGEMENT_ENABLED: ${{ vars.JALE_TEAM_MANAGEMENT_ENABLED }}
       # The results of the audit system's pre-checks: the detection
       # services' modes (create | existing | off) and the engine's default
       # shared_preload_libraries for postgres16 (the list, or none). REQUIRED:

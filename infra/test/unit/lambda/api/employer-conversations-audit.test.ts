@@ -274,6 +274,45 @@ describe('employer.conversation_create / _send / _update', () => {
     expect(mockRecordAttempt).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['the conversations foreign key (23503)', { code: '23503', constraint: 'job_conversations_job_employer_fkey' }],
+    ['the application guard (23514)', {
+      code: '23514',
+      message: 'job_conversations: a conversation must name its application\'s worker and job, and that job\'s employer',
+    }],
+  ])('create: a job moved to another member meanwhile, refused by %s: 409 job_move_conflict, ROLLBACK, nothing recorded or sent', async (_label, fields) => {
+    (createApplicantConversation as jest.Mock).mockRejectedValue(
+      Object.assign(new Error(String((fields as { message?: string }).message ?? 'violates foreign key constraint')), fields),
+    );
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await createHandler(event({
+      body: JSON.stringify({ job_id: JOB_ID, worker_id: WORKER_ID, initial_message: 'fixture text' }),
+    }));
+    const warned = warn.mock.calls;
+    warn.mockRestore();
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({ error: 'job_move_conflict' });
+    // Logged with the refusal, so a genuine employer mismatch (no race) is visible.
+    const f = fields as { code: string; constraint?: string };
+    expect(warned).toEqual([['employer-conversations-create job_move_conflict:', f.code, f.constraint]]);
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(mockRecordAttempt).not.toHaveBeenCalled();
+    expect(sendPendingJobMessageOutbox).not.toHaveBeenCalled();
+  });
+
+  it('create: another foreign key violation is still a 500', async () => {
+    (createApplicantConversation as jest.Mock).mockRejectedValue(
+      Object.assign(new Error('violates foreign key constraint'), { code: '23503', constraint: 'job_conversations_worker_id_fkey' }),
+    );
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await createHandler(event({
+      body: JSON.stringify({ job_id: JOB_ID, worker_id: WORKER_ID, initial_message: 'fixture text' }),
+    }));
+    spy.mockRestore();
+    expect(res.statusCode).toBe(500);
+  });
+
   it('send: records the thread it returns before COMMIT', async () => {
     (queueConversationMessageFromEmployer as jest.Mock).mockResolvedValue(undefined);
     (getEmployerConversationDetail as jest.Mock).mockResolvedValue(detail);

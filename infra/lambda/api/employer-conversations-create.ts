@@ -12,6 +12,7 @@ import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { conversationReadEvent } from '../lib/audit/conversations';
 import { recordAccess, recordAttempt, type AttemptEvent } from '../lib/audit/record';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
+import { isJobMoveRace } from '../lib/org-team';
 
 
 const CORS_HEADERS = corsHeaders();
@@ -93,6 +94,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     if (message === 'worker_whatsapp_unavailable') {
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'worker_whatsapp_unavailable' }) };
+    }
+    if (isJobMoveRace(err)) {
+      // The job moved to another member (a reassign or a remove) between the
+      // scope read and the insert: 135's foreign key or 105's guard refused
+      // the conversation, so nothing was written. A retry reads the moved job.
+      // Logged: the same refusals would also mean a genuine employer mismatch.
+      const e = err as { code?: unknown; constraint?: unknown };
+      console.warn('employer-conversations-create job_move_conflict:', e.code, e.constraint);
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'job_move_conflict' }) };
     }
     if (client && caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
     console.error('employer-conversations-create error:', message);

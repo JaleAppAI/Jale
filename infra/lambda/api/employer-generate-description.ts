@@ -4,6 +4,9 @@ import {
   ConverseCommand,
 } from '@aws-sdk/client-bedrock-runtime';
 import { DynamoDBClient, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import type { PoolClient } from 'pg';
+import { getDbPool, setRlsContext } from '../lib/db';
+import { employerActorFailureResponse, resolveEmployerActor, type EmployerActorFailure } from '../lib/employer-actor';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { PAY_INTERVALS, TRADE_CATEGORIES } from '../lib/job-fields';
 
@@ -154,6 +157,29 @@ function buildUngroundedSystemPrompt(): string {
   );
 }
 
+/**
+ * The caller's membership, in its own short transaction: null for an active
+ * member of a company, else the failure to answer. Throws on a database
+ * error (the handler's catch answers 500); the transaction is rolled back and
+ * the client released either way.
+ */
+async function checkEmployerActor(cognitoSub: string): Promise<EmployerActorFailure | null> {
+  const pool = await getDbPool();
+  const client: PoolClient = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await setRlsContext(client, cognitoSub);
+    const result = await resolveEmployerActor(client, cognitoSub);
+    await client.query('COMMIT');
+    return result.ok ? null : result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* connection already unusable */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   try {
     const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
@@ -231,6 +257,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
       payInterval = body.pay_interval;
     }
+
+    // Only an active member of a company drafts a description (Phase 3): a
+    // removed member whose Cognito user a re-invite enabled, a billing-
+    // suspended foreman and a login with no company are answered here, before
+    // the cap and the model are touched. After validation, so a malformed
+    // body still 400s without a database round trip. The client goes back to
+    // the pool before the cap check and the model call.
+    const actorFailure = await checkEmployerActor(cognitoSub);
+    if (actorFailure) return employerActorFailureResponse(actorFailure, CORS_HEADERS);
 
     // Cap check runs AFTER full body validation (a malformed/invalid body
     // must 400 without burning a generation from the daily quota) and

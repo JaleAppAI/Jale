@@ -57,6 +57,13 @@ export interface FrontendStackProps extends cdk.StackProps {
    * publishes its metrics to. Without it, there is no such alarm.
    */
   readonly adminDistributionId?: string;
+  /**
+   * Team management (Phase 3), the same value the backend's Lambdas get,
+   * resolved once in the composition. Baked into the client bundle as
+   * NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED ('true' | 'false'): off, the frontend
+   * makes no membership call and keeps Phase 2's navigation.
+   */
+  readonly teamManagementEnabled: boolean;
 }
 
 /**
@@ -124,6 +131,7 @@ export class FrontendStack extends cdk.Stack {
           NEXT_PUBLIC_EMPLOYER_POOL_ID: props.employerPoolId,
           NEXT_PUBLIC_EMPLOYER_CLIENT_ID: props.employerClientId,
           NEXT_PUBLIC_API_BASE_URL: `https://${props.domainName}/api`,
+          NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED: props.teamManagementEnabled ? 'true' : 'false',
         },
       }),
       memorySize: 1024, // Next.js needs >512 MB; 1024 keeps cold starts reasonable
