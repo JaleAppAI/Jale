@@ -158,4 +158,12 @@ for (const selector of [':root', '.dark']) {
   }
 }
 
-console.log(`admin token drift check passed: ${feRoot.size} :root and ${feDark.size} .dark tokens match the app`);
+// The app and the console each commit Lexend (each Docker build context holds
+// its own app only), so the two copies, and their licence, must stay the same.
+for (const file of ['lexend-latin.woff2', 'OFL.txt']) {
+  const admin = readFileSync(resolve(adminRoot, 'src', 'fonts', file));
+  const app = readFileSync(resolve(adminRoot, '..', 'frontend', 'src', 'fonts', file));
+  assert.ok(admin.equals(app), `admin/src/fonts/${file} differs from frontend/src/fonts/${file}: copy the app's file over`);
+}
+
+console.log(`admin token drift check passed: ${feRoot.size} :root and ${feDark.size} .dark tokens match the app, and so does the Lexend font`);

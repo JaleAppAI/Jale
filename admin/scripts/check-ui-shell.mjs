@@ -59,7 +59,11 @@ assert.match(globalsCss, /^@import "tailwindcss";\n/, 'globals.css is the Tailwi
 assert.doesNotMatch(globalsCss, /@import url\(/, 'globals.css loads no remote stylesheet: the CSP blocks it, and next/font self-hosts Lexend');
 assert.match(read('postcss.config.mjs'), /'@tailwindcss\/postcss': \{\}/, 'Tailwind v4 runs through PostCSS');
 const rootLayoutSource = read('src/app/layout.tsx');
-assert.match(rootLayoutSource, /import \{ Lexend \} from 'next\/font\/google';/, 'Lexend comes from next/font (self-hosted)');
+assert.match(rootLayoutSource, /import localFont from 'next\/font\/local';/, 'Lexend comes from next/font/local: the build never fetches from Google');
+assert.doesNotMatch(rootLayoutSource, /from ['"]next\/font\/google['"]/, 'no Google Fonts request at build time');
+assert.match(rootLayoutSource, /src: '\.\.\/fonts\/lexend-latin\.woff2'/, 'the committed Lexend file is the source');
+assert.ok(existsSync(resolve(root, 'src/fonts/lexend-latin.woff2')), 'the Lexend file is committed');
+assert.ok(existsSync(resolve(root, 'src/fonts/OFL.txt')), 'Lexend ships with its OFL licence');
 assert.match(rootLayoutSource, /variable: '--font-lexend'/, 'the font is exposed as --font-lexend');
 assert.match(rootLayoutSource, /<html lang="en" className=\{lexend\.variable\}/, 'the font variable sits on <html>');
 

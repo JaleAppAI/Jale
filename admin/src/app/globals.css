@@ -8,8 +8,9 @@
  * scripts/check-ui-token-drift.mjs fails when the two files disagree: change
  * the frontend file first, then copy the blocks again.
  *
- * Lexend is loaded with next/font/google in src/app/layout.tsx, which sets
- * --font-lexend on <html> and self-hosts the files; the CSP allows
+ * Lexend is loaded with next/font/local in src/app/layout.tsx, which sets
+ * --font-lexend on <html> and serves the committed variable font (src/fonts)
+ * from /_next/static; the CSP allows
  * font-src 'self' only, so a Google Fonts @import would never load here.
  *
  * This is the admin's only stylesheet: the pre-Tailwind legacy.css was
