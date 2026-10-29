@@ -807,7 +807,22 @@ try {
     await analytics.getBillingInboxNow();
     await analytics.getOnboardingRestarts(8);
     await analytics.getOperatorResets(8);
-    assert.equal(await eventCount(), before, 'the aggregates record nothing');
+    // The company-grouped aggregates (139), and the bare reads the loaders
+    // wrap (they take a client; here, the console's own pool).
+    await analytics.getAcquisition(8);
+    await analytics.getPayingWeekly(8);
+    await analytics.getTemplateReuse(8);
+    for (const name of ['getCompanies', 'getCompany', 'getCompanyMembers', 'getPayingEmployers', 'getSlowestEmployers']) {
+      assert.equal(typeof analytics[name], 'function', `${name} is exported`);
+    }
+    const bare = await db.getAdminDbPool();
+    await analytics.getPayingEmployers(bare);
+    await analytics.getSlowestEmployers(bare, 8);
+    assert.ok(Array.isArray(await analytics.getCompanies(bare)));
+    // An unknown company: nothing found, nothing recorded.
+    assert.equal(await analytics.getCompany(bare, randomUUID()), null);
+    assert.deepEqual(await analytics.getCompanyMembers(bare, randomUUID()), []);
+    assert.equal(await eventCount(), before, 'the aggregates, getCompanies and the other bare reads record nothing');
 
     const slowest = await analytics.loadSlowestEmployers(viewer, 8);
     const [slowestEvent] = await eventsFor('request_id', viewer.requestId);
@@ -830,6 +845,387 @@ try {
     assert.deepEqual(staleEvent.subject_user_ids, [...new Set(shown.map((row) => row.employerId))]);
     assert.ok(staleEvent.subject_user_ids.includes(employer));
     assert.equal(staleEvent.result_count, shown.length);
+  });
+
+  // --- Companies: the panel, a company page and the lists, end to end ---------
+  // Any role reads analytics; the lowest (admin_readonly) is used on purpose,
+  // so there is no denial case to add.
+  await step('the companies panel and a company page record owners and members, with the seat figures and no contact details', async () => {
+    const tag = randomUUID().slice(0, 8);
+    const dbLogin = 'jale_admin_console';
+    const created = { users: [], orgs: [], jobs: [] };
+    let testSerial = 0;
+
+    // A test account by the console's rule: an @jale.test email. The local
+    // part is not the user's id, so a leak check on it cannot match an id.
+    const makeTestAccount = async (id) => {
+      testSerial += 1;
+      await su.query('UPDATE users SET email = $2 WHERE id = $1', [id, `testacct-${tag}-${testSerial}@jale.test`]);
+    };
+    // An employer login that owns a one-person company (a real sign-up's shape).
+    async function company(orgName, { companyName = orgName, contact = null, testOwner = false } = {}) {
+      const owner = await createUser('employer');
+      created.users.push(owner);
+      if (testOwner) await makeTestAccount(owner);
+      await su.query('INSERT INTO employer_profiles (user_id, company_name, contact_name) VALUES ($1, $2, $3)', [owner, companyName, contact]);
+      const { rows: [org] } = await su.query('INSERT INTO organizations (name) VALUES ($1) RETURNING id::text', [orgName]);
+      created.orgs.push(org.id);
+      await su.query(`INSERT INTO organization_members (user_id, organization_id, role, status) VALUES ($1, $2, 'owner', 'active')`, [owner, org.id]);
+      return { owner, org: org.id };
+    }
+    async function foreman(org, { status = 'active', billingSuspended = false, fullName = null, contact = null, profile = false, testAccount = false } = {}) {
+      const id = await createUser('employer');
+      created.users.push(id);
+      if (fullName !== null) await su.query('UPDATE users SET full_name = $2 WHERE id = $1', [id, fullName]);
+      if (testAccount) await makeTestAccount(id);
+      if (contact !== null || profile) await su.query('INSERT INTO employer_profiles (user_id, contact_name) VALUES ($1, $2)', [id, contact]);
+      await su.query(
+        `INSERT INTO organization_members (user_id, organization_id, role, status, billing_suspended_at)
+         VALUES ($1, $2, 'foreman', $3, CASE WHEN $4::boolean THEN now() END)`,
+        [id, org, status, billingSuspended],
+      );
+      return id;
+    }
+    async function job(employer) {
+      const { rows: [row] } = await su.query(
+        `INSERT INTO jobs (employer_id, title, location, job_type, status)
+         VALUES ($1, 'Synthetic company job', 'Tijuana', 'full-time', 'active') RETURNING id::text`,
+        [employer],
+      );
+      created.jobs.push(row.id);
+      return row.id;
+    }
+    const invite = (org, by, expires, revoked = false) => su.query(
+      `INSERT INTO organization_invites (organization_id, email, token_hash, invited_by, created_at, expires_at, revoked_at)
+       VALUES ($1, $2, decode(md5(random()::text) || md5(random()::text), 'hex'), $3,
+               now() - interval '10 days', now() + $4::interval, CASE WHEN $5::boolean THEN now() END)`,
+      [org, `invitee-${randomUUID()}@example.test`, by, expires, revoked],
+    );
+    const subscribe = (owner, status = 'active', graceEndsAt = null) => su.query(
+      `INSERT INTO subscriptions (user_id, plan_code, status, grace_ends_at, current_period_start, current_period_end)
+       VALUES ($1, 'employer_pro', $2, $3::timestamptz, now() - interval '3 days', now() + interval '27 days')`,
+      [owner, status, graceEndsAt],
+    );
+    const daysFromNow = (days) => new Date(Date.now() + days * 86_400_000).toISOString();
+    const eventCount = async () => (await su.query('SELECT count(*)::int AS n FROM jale_audit.events')).rows[0].n;
+    const only = (ids, wanted) => ids.filter((id) => wanted.includes(id));
+    const listed = (rows, key, id, label) => {
+      const row = rows.find((candidate) => candidate[key] === id);
+      assert.ok(row, `${label} is listed`);
+      return row;
+    };
+
+    try {
+      // Alpha: an owner and six more members, in the order they join: two
+      // active foremen (one a test account), a billing-suspended foreman, a
+      // foreman suspended for another reason, and two removed ones; one live
+      // invite (plus an expired and a revoked one, which hold no seat); a pro
+      // plan. Beta: a paying one-person company.
+      const alpha = await company(`Check Alpha ${tag}`, { contact: 'Rosa Alpha' });
+      const f1 = await foreman(alpha.org, { contact: 'Foreman One' });
+      const f2 = await foreman(alpha.org, { fullName: 'Foreman Two', testAccount: true });
+      const f3 = await foreman(alpha.org, { status: 'suspended', billingSuspended: true, fullName: '' });
+      const f5 = await foreman(alpha.org, { status: 'suspended', fullName: 'Foreman Five', contact: '   ' });
+      const f4 = await foreman(alpha.org, { status: 'removed', fullName: 'Foreman Four' });
+      const f6 = await foreman(alpha.org, { status: 'removed', fullName: '', profile: true });
+      await invite(alpha.org, alpha.owner, '2 days');
+      await invite(alpha.org, alpha.owner, '-1 day');
+      await invite(alpha.org, alpha.owner, '2 days', true);
+      await subscribe(alpha.owner);
+      const beta = await company(`Check Beta ${tag}`, { contact: 'Beto Beta' });
+      await subscribe(beta.owner);
+
+      // Delta: no subscription and an empty company name. Epsilon: pro, past
+      // due and past its grace period. Zeta: pro, past due inside grace.
+      const delta = await company(`Check Delta ${tag}`, { companyName: '' });
+      const epsilon = await company(`Check Epsilon ${tag}`, { contact: 'Eva Epsilon' });
+      await subscribe(epsilon.owner, 'past_due', daysFromNow(-2));
+      const zeta = await company(`Check Zeta ${tag}`, { contact: 'Zoe Zeta' });
+      await subscribe(zeta.owner, 'past_due', daysFromNow(2));
+
+      // Gamma: a company whose owner is a test account, paying, with three
+      // unanswered applications: out of the panel and Slowest, kept in Paying.
+      const gamma = await company(`Check Gamma ${tag}`, { contact: 'Gus Gamma', testOwner: true });
+      await subscribe(gamma.owner);
+
+      // Jobs: Alpha's company holds four active jobs (the owner's, f1's, the
+      // test foreman's and the removed foreman's); a memberless login and
+      // Gamma hold their own.
+      await job(alpha.owner);
+      const jobF1 = await job(f1);
+      await job(f2);
+      await job(f4);
+      const memberless = await createUser('employer');
+      created.users.push(memberless);
+      const jobMemberless = await job(memberless);
+      const jobGamma = await job(gamma.owner);
+
+      // Three unanswered applications, 8 days old, on each of three jobs:
+      // Alpha's (held by a foreman), the memberless login's and Gamma's. The
+      // first two rank equally, so the owner id breaks the tie.
+      const workers = [await createUser('worker'), await createUser('worker'), await createUser('worker')];
+      created.users.push(...workers);
+      for (const target of [jobF1, jobMemberless, jobGamma]) {
+        for (const worker of workers) {
+          await su.query(
+            `INSERT INTO job_applications (job_id, worker_id, status, applied_at)
+             VALUES ($1, $2, 'pending', now() - interval '8 days')`,
+            [target, worker],
+          );
+        }
+      }
+
+      // What must never reach a page or an access record: an email (or its
+      // local part), a phone number, an invite address.
+      const { rows: contacts } = await su.query('SELECT email, phone FROM users WHERE id = ANY($1::uuid[])', [created.users]);
+      const forbidden = ['@', 'example.test', 'invitee-', '2025550123'];
+      for (const { email, phone } of contacts) {
+        if (email) forbidden.push(email, email.split('@')[0]);
+        if (phone) forbidden.push(phone);
+      }
+      const leaks = (value) => forbidden.filter((needle) => JSON.stringify(value).includes(needle));
+
+      const { admin, live, viewer } = await signedIn('admin_readonly');
+      // The record's fixed fields: the signed-in admin, the admin channel,
+      // no record type, no purpose, no reason.
+      const who = (event) => [event.actor_kind, event.actor_id, event.actor_role, event.actor_session, event.channel, event.record_type, event.purpose_kind, event.purpose_id, event.reason];
+      const WHO = ['admin', admin.id, 'admin_readonly', live.id, 'admin', null, null, null, null];
+
+      // --- The Companies panel: one event, the owners in row order -----------
+      const panel = await analytics.loadCompanies(viewer);
+      const panelEvents = await eventsFor('request_id', viewer.requestId);
+      assert.equal(panelEvents.length, 1, 'the panel records one event');
+      const [panelEvent] = panelEvents;
+      assert.deepEqual(
+        [panelEvent.kind, panelEvent.outcome, panelEvent.surface, panelEvent.categories, panelEvent.db_login, panelEvent.record_ids, panelEvent.field_names],
+        ['read', 'allowed', 'admin.analytics_companies', ['analytics', 'billing'], dbLogin, [], []],
+      );
+      assert.deepEqual(who(panelEvent), WHO);
+      assert.deepEqual(panelEvent.subject_user_ids, panel.map((row) => row.ownerId), 'owners, in the panel order');
+      assert.equal(panelEvent.result_count, panel.length);
+      assert.deepEqual(
+        only(panelEvent.subject_user_ids, [alpha.owner, beta.owner]),
+        [alpha.owner, beta.owner],
+        'Alpha (three seats held) outranks Beta (none)',
+      );
+      assert.equal(panelEvent.subject_user_ids.includes(memberless), false, 'a memberless login is no listed company');
+      for (const foremanId of [f1, f2, f3, f4, f5, f6]) {
+        assert.equal(panelEvent.subject_user_ids.includes(foremanId), false, 'the panel names owners only');
+      }
+      // Test accounts are decided by the owner: a test owner's company is out
+      // of the panel; a test foreman does not take a real company out.
+      assert.equal(panelEvent.subject_user_ids.includes(gamma.owner), false, 'a test owner is not listed');
+      assert.equal(panel.some((row) => row.organizationId === gamma.org), false);
+      const alphaRow = listed(panel, 'organizationId', alpha.org, 'Alpha');
+      assert.deepEqual(
+        [alphaRow.ownerId, alphaRow.displayName, alphaRow.planCode, alphaRow.planStatus, alphaRow.membersActive,
+          alphaRow.seatsUsed, alphaRow.seatsPending, alphaRow.seatsSuspended, alphaRow.seatLimit, alphaRow.activeJobs],
+        [alpha.owner, `Check Alpha ${tag}`, 'employer_pro', 'active', 3, 2, 1, 1, 3, 4],
+        'Alpha: 3 active members (owner + 2, the test foreman included), 2 seats used, 1 live invite, only the billing-suspended foreman suspended, limit 3, 4 jobs',
+      );
+      const betaRow = listed(panel, 'organizationId', beta.org, 'Beta');
+      assert.deepEqual(
+        [betaRow.membersActive, betaRow.seatsUsed, betaRow.seatsPending, betaRow.seatsSuspended, betaRow.seatLimit, betaRow.activeJobs],
+        [1, 0, 0, 0, 3, 0],
+      );
+      // The plan fallbacks, through real rows: no subscription, and past due
+      // beyond grace, are the free plan with no status; inside grace is pro.
+      const deltaRow = listed(panel, 'organizationId', delta.org, 'Delta');
+      assert.deepEqual(
+        [deltaRow.displayName, deltaRow.planCode, deltaRow.planStatus, deltaRow.seatLimit, deltaRow.membersActive, deltaRow.seatsUsed],
+        ['Empleador', 'employer_free', null, 0, 1, 0],
+        'no subscription: the free plan, and an empty company name falls back to the placeholder, never an email',
+      );
+      const epsilonRow = listed(panel, 'organizationId', epsilon.org, 'Epsilon');
+      assert.deepEqual(
+        [epsilonRow.planCode, epsilonRow.planStatus, epsilonRow.seatLimit],
+        ['employer_free', null, 0],
+        'past due beyond its grace period falls back to the free plan',
+      );
+      const zetaRow = listed(panel, 'organizationId', zeta.org, 'Zeta');
+      assert.deepEqual(
+        [zetaRow.planCode, zetaRow.planStatus, zetaRow.seatLimit],
+        ['employer_pro', 'past_due', 3],
+        'past due inside its grace period keeps the plan',
+      );
+      assert.deepEqual(leaks(panel), [], 'no panel field carries contact details');
+      assert.deepEqual(leaks(panelEvent), [], 'nor does the panel record');
+
+      // --- One company: every member recorded, the owner first ----------------
+      const pageViewer = await session.getCurrentAdminSession();
+      const page = await analytics.loadCompany(pageViewer, alpha.org);
+      const pageEvents = await eventsFor('request_id', pageViewer.requestId);
+      assert.equal(pageEvents.length, 1, 'the company page records one event');
+      const [pageEvent] = pageEvents;
+      assert.deepEqual(
+        [pageEvent.kind, pageEvent.outcome, pageEvent.surface, pageEvent.categories, pageEvent.db_login, pageEvent.record_ids, pageEvent.field_names],
+        ['read', 'allowed', 'admin.analytics_company_members', ['analytics', 'billing', 'profile'], dbLogin, [], []],
+      );
+      assert.deepEqual(who(pageEvent), WHO);
+      // Owner; active (by joined); suspended; removed. Joined in this order.
+      const order = [alpha.owner, f1, f2, f3, f5, f4, f6];
+      assert.equal(page.members.length, 7);
+      assert.equal(pageEvent.result_count, 7);
+      assert.deepEqual(page.members.map((member) => member.userId), order, 'the page order');
+      assert.deepEqual(pageEvent.subject_user_ids, order, 'every member, removed ones included, in the page order');
+      assert.deepEqual(
+        page.members.map((member) => [member.role, member.status, member.billingSuspended]),
+        [['owner', 'active', false], ['foreman', 'active', false], ['foreman', 'active', false],
+          ['foreman', 'suspended', true], ['foreman', 'suspended', false], ['foreman', 'removed', false], ['foreman', 'removed', false]],
+      );
+      assert.ok(page.company, 'the company header is present');
+      assert.equal(page.company.organizationId, alpha.org);
+      assert.deepEqual(
+        [page.company.seatsUsed, page.company.seatsPending, page.company.seatsSuspended, page.company.seatLimit, page.company.activeJobs, page.company.membersActive],
+        [2, 1, 1, 3, 4, 3],
+        'the page header agrees with the panel: a non-billing suspension is not "suspended" and holds no seat',
+      );
+      const byId = new Map(page.members.map((member) => [member.userId, member]));
+      assert.deepEqual(
+        order.map((id) => byId.get(id).displayName),
+        ['Rosa Alpha', 'Foreman One', 'Foreman Two', null, 'Foreman Five', 'Foreman Four', null],
+        'contact name; else the account name as typed (no profile row, or a blank contact); no name at all is null, never the email',
+      );
+      assert.deepEqual(order.map((id) => byId.get(id).activeJobs), [1, 1, 1, 0, 0, 1, 0], 'a removed member still holds its job');
+      assert.deepEqual(leaks(page.members), [], 'no member field carries contact details');
+      assert.deepEqual(leaks(page.company), [], 'no company field carries contact details');
+      assert.deepEqual(leaks(pageEvent), [], 'nor does the access record');
+
+      // A company with no profile name and no contact name: the owner is
+      // named by the account name, as typed.
+      const deltaViewer = await session.getCurrentAdminSession();
+      const deltaPage = await analytics.loadCompany(deltaViewer, delta.org);
+      assert.deepEqual(deltaPage.members.map((member) => [member.userId, member.displayName]), [[delta.owner, 'Test Person']]);
+      assert.deepEqual(leaks(deltaPage), []);
+
+      // A test owner's company is not listed, but its page opens by id, and
+      // the page is recorded like any other.
+      const gammaViewer = await session.getCurrentAdminSession();
+      const gammaPage = await analytics.loadCompany(gammaViewer, gamma.org);
+      assert.ok(gammaPage.company, 'a test company is found by its id');
+      assert.deepEqual(gammaPage.members.map((member) => member.userId), [gamma.owner]);
+      const [gammaEvent] = await eventsFor('request_id', gammaViewer.requestId);
+      assert.deepEqual([gammaEvent.kind, gammaEvent.outcome, gammaEvent.subject_user_ids, gammaEvent.result_count], ['read', 'allowed', [gamma.owner], 1]);
+
+      // The bare reads the loaders wrap record nothing.
+      const quietBefore = await eventCount();
+      const bare = await db.getAdminDbPool();
+      assert.equal((await analytics.getCompanies(bare)).some((row) => row.organizationId === alpha.org), true);
+      assert.equal((await analytics.getCompany(bare, alpha.org)).organizationId, alpha.org);
+      assert.equal((await analytics.getCompanyMembers(bare, alpha.org)).length, 7);
+      assert.equal(await eventCount(), quietBefore, 'getCompanies, getCompany and getCompanyMembers record nothing');
+
+      // --- An unknown, malformed or ownerless company records one not_found ---
+      const { rows: [orphan] } = await su.query('INSERT INTO organizations (name) VALUES ($1) RETURNING id::text', [`Check Orphan ${tag}`]);
+      created.orgs.push(orphan.id);
+      for (const unknown of [randomUUID(), 'not-a-uuid', orphan.id]) {
+        const missViewer = await session.getCurrentAdminSession();
+        const missed = await analytics.loadCompany(missViewer, unknown);
+        assert.deepEqual(missed, { company: null, members: [] });
+        const missEvents = await eventsFor('request_id', missViewer.requestId);
+        assert.equal(missEvents.length, 1, `one record for a miss (${unknown})`);
+        assert.deepEqual(
+          [missEvents[0].kind, missEvents[0].outcome, missEvents[0].surface, missEvents[0].categories, missEvents[0].record_ids, missEvents[0].subject_user_ids, missEvents[0].result_count, missEvents[0].db_login],
+          ['attempt', 'not_found', 'admin.analytics_company_members', ['analytics', 'billing', 'profile'], [], [], 0, dbLogin],
+        );
+        assert.deepEqual(who(missEvents[0]), WHO);
+      }
+
+      // --- The paying list: payers (owners), seats as the panel's -------------
+      const payingViewer = await session.getCurrentAdminSession();
+      const paying = await analytics.loadPayingEmployers(payingViewer);
+      const [payingEvent] = await eventsFor('request_id', payingViewer.requestId);
+      assert.deepEqual(who(payingEvent), WHO);
+      assert.deepEqual(payingEvent.subject_user_ids, paying.map((row) => row.employerId), 'payers, in the list order');
+      assert.equal(payingEvent.result_count, paying.length);
+      assert.deepEqual(
+        only(payingEvent.subject_user_ids, [alpha.owner, beta.owner]),
+        [alpha.owner, beta.owner],
+        'by company name: Alpha before Beta',
+      );
+      const payingAlpha = listed(paying, 'organizationId', alpha.org, 'Alpha (paying)');
+      assert.equal(payingAlpha.employerId, alpha.owner);
+      assert.deepEqual(
+        [payingAlpha.membersActive, payingAlpha.seatsUsed, payingAlpha.seatsPending, payingAlpha.seatsSuspended, payingAlpha.seatLimit],
+        [3, 2, 1, 1, 3],
+        'the paying list reports the same seats as the panel',
+      );
+      assert.equal(payingEvent.subject_user_ids.includes(gamma.owner), true, 'the paying list has no test filter');
+      // Past due is still paying, with its own plan's limit, even beyond grace.
+      const payingEpsilon = listed(paying, 'organizationId', epsilon.org, 'Epsilon (paying)');
+      assert.deepEqual([payingEpsilon.employerId, payingEpsilon.status, payingEpsilon.planCode, payingEpsilon.seatLimit], [epsilon.owner, 'past_due', 'employer_pro', 3]);
+      assert.deepEqual(leaks(paying), [], 'no paying field carries contact details');
+      assert.deepEqual(leaks(payingEvent), []);
+
+      // --- The slowest list: one row per company, keyed by its owner ----------
+      const slowViewer = await session.getCurrentAdminSession();
+      const slowest = await analytics.loadSlowestEmployers(slowViewer, 8);
+      const [slowEvent] = await eventsFor('request_id', slowViewer.requestId);
+      assert.deepEqual(who(slowEvent), WHO);
+      assert.deepEqual(slowEvent.subject_user_ids, slowest.map((row) => row.employerId), 'owners, in the list order');
+      assert.equal(slowEvent.result_count, slowest.length);
+      // The foreman's job is reported under the owner; the memberless login is
+      // its own row with no company. Equal rankings fall to the owner id.
+      assert.deepEqual(
+        only(slowEvent.subject_user_ids, [alpha.owner, memberless, f1]),
+        [alpha.owner, memberless].sort(),
+        'equal rows are ordered by owner id; the foreman is never a subject',
+      );
+      assert.equal(slowEvent.subject_user_ids.includes(gamma.owner), false, 'a test owner is not ranked');
+      const slowAlpha = listed(slowest, 'employerId', alpha.owner, 'Alpha (slowest)');
+      assert.deepEqual(
+        [slowAlpha.organizationId, slowAlpha.applications, slowAlpha.unanswered7d, slowAlpha.activeJobs],
+        [alpha.org, 3, 3, 4],
+      );
+      const slowMemberless = listed(slowest, 'employerId', memberless, 'the memberless login (slowest)');
+      assert.deepEqual([slowMemberless.organizationId, slowMemberless.applications, slowMemberless.activeJobs], [null, 3, 1]);
+      assert.deepEqual(leaks(slowest), [], 'no slowest field carries contact details');
+      assert.deepEqual(leaks(slowEvent), []);
+
+      // --- A failed read: the loader throws, one failed attempt, nothing else --
+      // The members query is refused to the console login; granted back in finally.
+      async function failsWith(grantTarget, run, surface, categories) {
+        const failViewer = await session.getCurrentAdminSession();
+        await su.query(`REVOKE EXECUTE ON FUNCTION ${grantTarget} FROM ${dbLogin}`);
+        try {
+          await assert.rejects(() => run(failViewer), /permission denied/);
+        } finally {
+          await su.query(`GRANT EXECUTE ON FUNCTION ${grantTarget} TO ${dbLogin}`);
+        }
+        const failEvents = await eventsFor('request_id', failViewer.requestId);
+        assert.equal(failEvents.length, 1, `exactly one record, and no read event (${surface})`);
+        assert.deepEqual(
+          [failEvents[0].kind, failEvents[0].outcome, failEvents[0].surface, failEvents[0].categories, failEvents[0].record_ids,
+            failEvents[0].subject_user_ids, failEvents[0].result_count, failEvents[0].db_login],
+          ['attempt', 'failed', surface, categories, [], [], 0, dbLogin],
+        );
+        assert.deepEqual(who(failEvents[0]), WHO);
+      }
+      await failsWith(
+        'public.admin_analytics_company_members(uuid)',
+        (v) => analytics.loadCompany(v, alpha.org),
+        'admin.analytics_company_members',
+        ['analytics', 'billing', 'profile'],
+      );
+      await failsWith(
+        'public.admin_analytics_companies(integer, uuid)',
+        (v) => analytics.loadCompanies(v),
+        'admin.analytics_companies',
+        ['analytics', 'billing'],
+      );
+      // Granted back: the page loads again.
+      const againViewer = await session.getCurrentAdminSession();
+      assert.equal((await analytics.loadCompany(againViewer, alpha.org)).members.length, 7);
+    } finally {
+      // What this step made, removed even if a check failed.
+      await su.query('DELETE FROM job_applications WHERE job_id = ANY($1::uuid[])', [created.jobs]);
+      await su.query('DELETE FROM jobs WHERE id = ANY($1::uuid[])', [created.jobs]);
+      await su.query('DELETE FROM subscriptions WHERE organization_id = ANY($1::uuid[])', [created.orgs]);
+      await su.query('DELETE FROM organization_invites WHERE organization_id = ANY($1::uuid[])', [created.orgs]);
+      await su.query('DELETE FROM organization_members WHERE organization_id = ANY($1::uuid[])', [created.orgs]);
+      await su.query('DELETE FROM organizations WHERE id = ANY($1::uuid[])', [created.orgs]);
+      await su.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [created.users]);
+    }
   });
 
   // --- A reveal is one read event with its reason -----------------------------
