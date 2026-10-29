@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
@@ -48,9 +49,14 @@ vi.mock('@/contexts/AuthContext', () => ({
         idToken: state.idToken,
     }),
 }));
-vi.mock('@/lib/api', () => ({ isLegalWallError: () => false }));
+vi.mock('@/lib/api', () => ({
+    isLegalWallError: () => false,
+    // The real guard checks the same name marker (lib/api.ts).
+    isMembershipBlockedError: (err: unknown) => err instanceof Error && err.name === 'MembershipBlockedError',
+}));
 
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { readMembershipCache, writeMembershipCache } from '@/lib/employer-membership-store';
 
 function Probe({ enabled, role }: { enabled?: boolean; role?: 'worker' | 'employer' }) {
     const { idToken } = useRequireAuth(
@@ -196,5 +202,103 @@ describe('useRequireAuth — the route\'s role', () => {
         render(<Probe />);
 
         expect(replace).not.toHaveBeenCalled();
+    });
+});
+
+describe('useRequireAuth — membership-blocked logins (Phase 3)', () => {
+    function blocked(reason: string, hasInvite: boolean, statusKnown = true): Error {
+        return Object.assign(new Error('membership_blocked'), { name: 'MembershipBlockedError', reason, hasInvite, statusKnown });
+    }
+
+    type Handler = (err: unknown, returnUrl: string) => void;
+    const captured: { current: Handler | null } = { current: null };
+    function HandlerProbe() {
+        const { handleLegalWall: handler } = useRequireAuth({ enabled: false });
+        useEffect(() => {
+            captured.current = handler;
+        }, [handler]);
+        return null;
+    }
+    const handleLegalWall = (err: unknown, returnUrl: string) => captured.current!(err, returnUrl);
+
+    it('a MembershipBlockedError routes to /employer/access?reason=…, with &invite=1 when hasInvite', () => {
+        state.pathname = '/employer/dashboard';
+        render(<HandlerProbe />);
+
+        handleLegalWall!(blocked('suspended', false), '/en/employer/dashboard');
+        expect(i18nReplace).toHaveBeenLastCalledWith('/employer/access?reason=suspended');
+
+        handleLegalWall!(blocked('no_organization', false), '/en/employer/dashboard');
+        expect(i18nReplace).toHaveBeenLastCalledWith('/employer/access?reason=no_organization');
+
+        handleLegalWall!(blocked('removed', true), '/en/employer/dashboard');
+        expect(i18nReplace).toHaveBeenLastCalledWith('/employer/access?reason=removed&invite=1');
+
+        // Not the legal wall's hand-off: nothing to come back to.
+        expect(sessionStorage.getItem('legalReturnUrl')).toBeNull();
+        // The locale-prefixing router, like the legal wall's hop.
+        expect(replace).not.toHaveBeenCalled();
+    });
+
+    it('a 403 that named no status sends no reason: the access screen waits for its own membership read', () => {
+        render(<HandlerProbe />);
+        handleLegalWall(blocked('suspended', false, false), '/en/employer/jobs');
+        expect(i18nReplace).toHaveBeenLastCalledWith('/employer/access');
+    });
+
+    it('routing a blocked login drops the cached membership', () => {
+        render(<HandlerProbe />);
+        writeMembershipCache({
+            epoch: 0,
+            promise: new Promise(() => {}),
+            value: { status: 'ready', role: 'owner', companyName: 'Acme', userId: 'u', organizationId: 'o' },
+            blockedRouted: false,
+        });
+        handleLegalWall(blocked('removed', false), '/en/employer/jobs');
+        expect(readMembershipCache(0)).toBeNull();
+    });
+
+    it.each([
+        '/en/employer/access',
+        '/es/auth/employer/invite',
+        // The locale-less forms too (next-intl's default locale may omit it).
+        '/employer/access',
+        '/auth/employer/invite',
+    ])('already on %s: a blocked error routes nowhere and keeps the cache (C1)', (pathname) => {
+        // The address bar at the moment of the redirect.
+        window.history.replaceState(null, '', pathname);
+        render(<HandlerProbe />);
+        const cached = {
+            epoch: 0,
+            promise: new Promise<never>(() => {}),
+            value: { status: 'ready', role: 'owner', companyName: 'Acme', userId: 'u', organizationId: 'o' } as const,
+            blockedRouted: false,
+        };
+        writeMembershipCache(cached);
+
+        expect(() => handleLegalWall(blocked('removed', true), pathname)).not.toThrow();
+
+        expect(i18nReplace).not.toHaveBeenCalled();
+        expect(replace).not.toHaveBeenCalled();
+        expect(readMembershipCache(0)).toBe(cached);
+    });
+
+    it('a page whose path only starts like the access screen is still routed', () => {
+        window.history.replaceState(null, '', '/en/employer/access-log');
+        render(<HandlerProbe />);
+        handleLegalWall(blocked('suspended', false), '/en/employer/access-log');
+        expect(i18nReplace).toHaveBeenLastCalledWith('/employer/access?reason=suspended');
+    });
+
+    it('the legal wall still applies on those pages', () => {
+        window.history.replaceState(null, '', '/en/employer/access');
+        render(<HandlerProbe />);
+        expect(() => handleLegalWall(new Error('boom'), '/employer/access')).toThrow('boom');
+    });
+
+    it('any other error is still re-thrown', () => {
+        render(<HandlerProbe />);
+        expect(() => handleLegalWall!(new Error('boom'), '/x')).toThrow('boom');
+        expect(i18nReplace).not.toHaveBeenCalled();
     });
 });

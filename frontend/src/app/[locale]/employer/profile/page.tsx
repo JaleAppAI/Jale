@@ -2,6 +2,8 @@
 import { useId, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
+import { useEmployerMembership, type EmployerMembership } from '@/hooks/useEmployerMembership';
+import { membershipRole } from '@/lib/employer-membership-store';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
@@ -31,6 +33,7 @@ import {
 } from '@/lib/api/employer';
 import { validateEmployerProfileFields, type EmployerProfileField } from '@/lib/employer-profile-form';
 import { loadEmployerProfileWithPendingFlush } from '@/lib/employer-profile-flush';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
 
 const FIELD_LABEL_KEY: Record<EmployerProfileField, string> = {
     company_name: 'field_company',
@@ -51,7 +54,56 @@ const COMPANY_SIZES: CompanySize[] = ['1-10', '11-50', '51-200', '200+'];
 /** See the identical note in `ProfileEditForm`: two different problems, two tones. */
 type FormFeedback = { tone: Extract<FeedbackTone, 'warning' | 'danger'>; text: string };
 
+/**
+ * Since Phase 3 both the GET and the PATCH answer with the caller's `role` and
+ * the company's name (`companyName`, the owner's `company_name`); a foreman's
+ * own row carries no company fields. Optional: an API from before omits them.
+ * The page replaces its data with the PATCH response, so both survive a save.
+ */
+type EmployerProfileView = EmployerProfileData & {
+    role?: 'owner' | 'foreman';
+    companyName?: string | null;
+};
+
+/** The fields a foreman may change (the API refuses any other with 403 owner_required). */
+const FOREMAN_FIELDS: readonly EmployerProfileField[] = ['contact_name', 'phone'];
+
+/**
+ * Whose settings these are, for the company fields: `'owner'` edits them,
+ * anyone else (`'foreman'`, or `null` while that is not known) sees them
+ * read-only.
+ *
+ * - `membership` null is the team flag off: Phase 2, every login the owner.
+ * - `ready` is the membership's role.
+ * - `blocked` is never the owner (the hook has already routed it away).
+ * - Otherwise (`loading`, `error`) the profile's own `role`, which the same
+ *   response carries; failing that, an `error`'s billing role (an unknown one
+ *   counting as the owner, as the nav does), and `loading` stays unknown.
+ */
+function companyRole(
+    membership: EmployerMembership | null,
+    profileRole: EmployerProfileView['role'],
+): 'owner' | 'foreman' | null {
+    if (membership === null) return 'owner';
+    if (membership.status === 'ready') return membershipRole(membership);
+    if (membership.status === 'blocked') return null;
+    if (profileRole === 'owner' || profileRole === 'foreman') return profileRole;
+    if (membership.status === 'error') return membershipRole(membership) ?? 'owner';
+    return null;
+}
+
 export default function EmployerProfilePage() {
+    // A component choice on a build-time flag, not a conditional hook: with the
+    // team flag off the membership hook never runs and the page is Phase 2's.
+    return isTeamManagementEnabled() ? <TeamAwareProfilePage /> : <ProfilePage membership={null} />;
+}
+
+function TeamAwareProfilePage() {
+    const membership = useEmployerMembership();
+    return <ProfilePage membership={membership} />;
+}
+
+function ProfilePage({ membership }: { membership: EmployerMembership | null }) {
     const { idToken } = useAuth();
     const t = useTranslations('employer.profile');
     const tAuth = useTranslations('auth.employer');
@@ -68,7 +120,7 @@ export default function EmployerProfilePage() {
         refreshError,
         retry,
         setData,
-    } = usePageData<EmployerProfileData>({
+    } = usePageData<EmployerProfileView>({
         fetcher: ({ token, signal }) => loadEmployerProfileWithPendingFlush(token, signal),
         legalReturnUrl: '/employer/profile',
     });
@@ -91,9 +143,20 @@ export default function EmployerProfilePage() {
     // 'auth' means the token gate has not opened yet: nothing has been asked
     // for, so the page owes the reader a skeleton rather than an empty screen.
     const showSkeleton = phase === 'auth' || phase === 'loading';
-    const companyLabel = profile
-        ? profile.company_name ?? profile.full_name ?? t('fallback_company')
-        : t('fallback_company');
+    /*
+     * Phase 3: only the owner edits the company. Anyone else sees its name,
+     * read-only, from the membership (or the profile's `companyName`), never
+     * from their own row's company fields -- and none of the others.
+     */
+    const companyReadOnly = companyRole(membership, profile?.role) !== 'owner';
+    const sharedCompanyName = membership?.status === 'ready'
+        ? membership.companyName
+        : profile?.companyName ?? null;
+    const companyLabel = companyReadOnly
+        ? sharedCompanyName || t('fallback_company')
+        : profile
+            ? profile.company_name ?? profile.full_name ?? t('fallback_company')
+            : t('fallback_company');
 
     /*
      * The facts card's chip-valued facts, already translated.
@@ -148,6 +211,7 @@ export default function EmployerProfilePage() {
                                 <div className="anim-fade-in px-5 py-5">
                                     <EmployerProfileForm
                                         initial={profile}
+                                        readOnlyCompany={companyReadOnly ? companyLabel : null}
                                         onCancel={() => setEditing(false)}
                                         onSave={handleSave}
                                     />
@@ -170,37 +234,50 @@ export default function EmployerProfilePage() {
                                         label and a `dt` tile label identically, so a
                                         repeated word renders as the same eyebrow twice. */}
                                     <FactsCard>
-                                        <FactsCard.Section label={t('section_company')}>
-                                            <FactsCard.Tiles>
-                                                <FactsCard.Tile
-                                                    label={t('field_company')}
-                                                    muted={!profile.company_name && !profile.full_name}
-                                                >
-                                                    {profile.company_name || profile.full_name || t('empty_company')}
-                                                </FactsCard.Tile>
-                                                <FactsCard.Tile
-                                                    label={t('field_company_size')}
-                                                    muted={!profile.company_size}
-                                                >
-                                                    {/* The sizes are ranges ("11-50"), so the tabular
-                                                        figures earn their place -- but only on a range. */}
-                                                    {profile.company_size ? (
-                                                        <span className="tabular-nums">{profile.company_size}</span>
-                                                    ) : (
-                                                        t('empty_company_size')
-                                                    )}
-                                                </FactsCard.Tile>
-                                                <FactsCard.Tile label={t('field_city')} muted={!profile.city}>
-                                                    {profile.city || t('empty_city')}
-                                                </FactsCard.Tile>
-                                                <FactsCard.Tile
-                                                    label={t('field_service_area')}
-                                                    muted={!profile.service_area}
-                                                >
-                                                    {profile.service_area || t('empty_service_area')}
-                                                </FactsCard.Tile>
-                                            </FactsCard.Tiles>
-                                        </FactsCard.Section>
+                                        {companyReadOnly ? (
+                                            <FactsCard.Section label={t('section_company')}>
+                                                <FactsCard.Tiles>
+                                                    <FactsCard.Tile label={t('field_company')} muted={!sharedCompanyName}>
+                                                        {sharedCompanyName || t('empty_company')}
+                                                    </FactsCard.Tile>
+                                                </FactsCard.Tiles>
+                                                <p className="mt-3 text-xs text-[var(--jale-ink-2)]">
+                                                    {t('foreman_company_hint')}
+                                                </p>
+                                            </FactsCard.Section>
+                                        ) : (
+                                            <FactsCard.Section label={t('section_company')}>
+                                                <FactsCard.Tiles>
+                                                    <FactsCard.Tile
+                                                        label={t('field_company')}
+                                                        muted={!profile.company_name && !profile.full_name}
+                                                    >
+                                                        {profile.company_name || profile.full_name || t('empty_company')}
+                                                    </FactsCard.Tile>
+                                                    <FactsCard.Tile
+                                                        label={t('field_company_size')}
+                                                        muted={!profile.company_size}
+                                                    >
+                                                        {/* The sizes are ranges ("11-50"), so the tabular
+                                                            figures earn their place -- but only on a range. */}
+                                                        {profile.company_size ? (
+                                                            <span className="tabular-nums">{profile.company_size}</span>
+                                                        ) : (
+                                                            t('empty_company_size')
+                                                        )}
+                                                    </FactsCard.Tile>
+                                                    <FactsCard.Tile label={t('field_city')} muted={!profile.city}>
+                                                        {profile.city || t('empty_city')}
+                                                    </FactsCard.Tile>
+                                                    <FactsCard.Tile
+                                                        label={t('field_service_area')}
+                                                        muted={!profile.service_area}
+                                                    >
+                                                        {profile.service_area || t('empty_service_area')}
+                                                    </FactsCard.Tile>
+                                                </FactsCard.Tiles>
+                                            </FactsCard.Section>
+                                        )}
 
                                         <FactsCard.Section label={t('section_contact')}>
                                             <FactsCard.Tiles>
@@ -225,45 +302,54 @@ export default function EmployerProfilePage() {
                                             </FactsCard.Tiles>
                                         </FactsCard.Section>
 
-                                        {/* `align="start"` because a tile's label sits ABOVE
+                                        {/* The hiring facts and the description are the
+                                            company's, so a non-owner does not see them.
+                                            Two conditionals, not one fragment: FactsCard
+                                            counts its direct children as sections.
+
+                                            `align="start"` because a tile's label sits ABOVE
                                             its value: right-aligned chips would drift off the
                                             label naming them. */}
-                                        <FactsCard.Section label={t('section_hiring')}>
-                                            <FactsCard.Tiles>
-                                                <FactsCard.Tile
-                                                    label={t('field_hiring_trades')}
-                                                    muted={hiringTradeLabels.length === 0}
-                                                >
-                                                    <BadgeList
-                                                        items={hiringTradeLabels}
-                                                        emptyLabel={t('empty_hiring_trades')}
-                                                        tone="info"
-                                                        align="start"
-                                                    />
-                                                </FactsCard.Tile>
-                                                <FactsCard.Tile
-                                                    label={t('field_job_types')}
-                                                    muted={jobTypeLabels.length === 0}
-                                                >
-                                                    <BadgeList
-                                                        items={jobTypeLabels}
-                                                        emptyLabel={t('empty_job_types')}
-                                                        align="start"
-                                                    />
-                                                </FactsCard.Tile>
-                                            </FactsCard.Tiles>
-                                        </FactsCard.Section>
+                                        {companyReadOnly ? null : (
+                                            <FactsCard.Section label={t('section_hiring')}>
+                                                <FactsCard.Tiles>
+                                                    <FactsCard.Tile
+                                                        label={t('field_hiring_trades')}
+                                                        muted={hiringTradeLabels.length === 0}
+                                                    >
+                                                        <BadgeList
+                                                            items={hiringTradeLabels}
+                                                            emptyLabel={t('empty_hiring_trades')}
+                                                            tone="info"
+                                                            align="start"
+                                                        />
+                                                    </FactsCard.Tile>
+                                                    <FactsCard.Tile
+                                                        label={t('field_job_types')}
+                                                        muted={jobTypeLabels.length === 0}
+                                                    >
+                                                        <BadgeList
+                                                            items={jobTypeLabels}
+                                                            emptyLabel={t('empty_job_types')}
+                                                            align="start"
+                                                        />
+                                                    </FactsCard.Tile>
+                                                </FactsCard.Tiles>
+                                            </FactsCard.Section>
+                                        )}
 
                                         {/* Kept even when empty, unlike a job's description:
                                             this is the employer's OWN profile, and
                                             "Description / No description added" is the
                                             prompt to write one. Muted so the placeholder
                                             does not read as a fact. */}
-                                        <FactsCard.Section label={t('field_description')}>
-                                            <FactsCard.Text muted={!profile.company_description}>
-                                                {profile.company_description || t('empty_description')}
-                                            </FactsCard.Text>
-                                        </FactsCard.Section>
+                                        {companyReadOnly ? null : (
+                                            <FactsCard.Section label={t('field_description')}>
+                                                <FactsCard.Text muted={!profile.company_description}>
+                                                    {profile.company_description || t('empty_description')}
+                                                </FactsCard.Text>
+                                            </FactsCard.Section>
+                                        )}
                                     </FactsCard>
                                 </div>
                             )}
@@ -286,9 +372,16 @@ export default function EmployerProfilePage() {
 
 function EmployerProfileForm(props: {
     initial: EmployerProfileData;
+    /**
+     * The company's name, shown read-only, when the reader is not the owner:
+     * then only the contact name and phone are fields, and only they are sent.
+     * Null is the owner's form, unchanged.
+     */
+    readOnlyCompany: string | null;
     onCancel: () => void;
     onSave: (patch: EmployerProfilePatch) => Promise<void>;
 }) {
+    const contactOnly = props.readOnlyCompany !== null;
     const t = useTranslations('employer.profile');
     const tAuth = useTranslations('auth.employer');
     const tCommon = useTranslations('common');
@@ -312,7 +405,7 @@ function EmployerProfileForm(props: {
         const missing = validateEmployerProfileFields({
             company_name: companyName, contact_name: contactName, phone,
             city, service_area: serviceArea, hiring_trades: hiringTrades, typical_job_types: typicalJobTypes,
-        });
+        }).filter((field) => !contactOnly || FOREMAN_FIELDS.includes(field));
         setMissingFields(missing);
         if (missing.length > 0) {
             setFeedback({
@@ -325,7 +418,10 @@ function EmployerProfileForm(props: {
         }
         setSaving(true);
         try {
-            await props.onSave({
+            await props.onSave(contactOnly ? {
+                contact_name: contactName.trim(),
+                phone: phone.trim(),
+            } : {
                 company_name: companyName.trim(),
                 contact_name: contactName.trim(),
                 phone: phone.trim(),
@@ -355,15 +451,21 @@ function EmployerProfileForm(props: {
 
     const requiredError = t('errors.required');
 
-    return (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <LabeledField
-                label={t('field_company')}
-                htmlFor={`${fieldId}-company`}
-                error={missingFields.includes('company_name') ? requiredError : undefined}
-            >
-                <Input id={`${fieldId}-company`} value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
-            </LabeledField>
+    const feedbackBlock = feedback && (
+        <div className="md:col-span-2">
+            <InlineFeedback tone={feedback.tone} onDismiss={() => setFeedback(null)}>
+                {feedback.text}
+            </InlineFeedback>
+        </div>
+    );
+    const actions = (
+        <div className="flex flex-wrap justify-end gap-2 md:col-span-2">
+            <Button variant="outline" onClick={props.onCancel} disabled={saving}>{t('cancel')}</Button>
+            <Button onClick={save} loading={saving} loadingLabel={tCommon('loading')}>{t('save')}</Button>
+        </div>
+    );
+    const contactFields = (
+        <>
             <LabeledField
                 label={t('field_contact')}
                 htmlFor={`${fieldId}-contact`}
@@ -378,6 +480,35 @@ function EmployerProfileForm(props: {
             >
                 <Input id={`${fieldId}-phone`} type="tel" className="tabular-nums" value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" />
             </LabeledField>
+        </>
+    );
+
+    if (contactOnly) {
+        return (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {/* Not a field: the company is the owner's to change. */}
+                <div className="flex flex-col gap-1.5 md:col-span-2">
+                    <p className={labelClasses}>{t('field_company')}</p>
+                    <p className="text-sm font-semibold text-[var(--jale-ink)]">{props.readOnlyCompany}</p>
+                    <p className="text-xs text-[var(--jale-ink-2)]">{t('foreman_company_hint')}</p>
+                </div>
+                {contactFields}
+                {feedbackBlock}
+                {actions}
+            </div>
+        );
+    }
+
+    return (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <LabeledField
+                label={t('field_company')}
+                htmlFor={`${fieldId}-company`}
+                error={missingFields.includes('company_name') ? requiredError : undefined}
+            >
+                <Input id={`${fieldId}-company`} value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+            </LabeledField>
+            {contactFields}
             {/* LocationPicker owns its own input and takes no id, so its label is
                 plain text rather than a <label> pointing at nothing. */}
             <StackedField
@@ -418,17 +549,8 @@ function EmployerProfileForm(props: {
                     <Textarea id={`${fieldId}-description`} rows={3} value={companyDescription} onChange={(e) => setCompanyDescription(e.target.value)} />
                 </LabeledField>
             </div>
-            {feedback && (
-                <div className="md:col-span-2">
-                    <InlineFeedback tone={feedback.tone} onDismiss={() => setFeedback(null)}>
-                        {feedback.text}
-                    </InlineFeedback>
-                </div>
-            )}
-            <div className="flex flex-wrap justify-end gap-2 md:col-span-2">
-                <Button variant="outline" onClick={props.onCancel} disabled={saving}>{t('cancel')}</Button>
-                <Button onClick={save} loading={saving} loadingLabel={tCommon('loading')}>{t('save')}</Button>
-            </div>
+            {feedbackBlock}
+            {actions}
         </div>
     );
 }

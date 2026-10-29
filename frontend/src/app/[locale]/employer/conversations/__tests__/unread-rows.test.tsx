@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import * as React from 'react';
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -125,6 +125,8 @@ vi.mock('@/lib/tutorials/use-tutorial', () => ({
 import { message, renderIntl } from '@/components/employer/__tests__/render-intl';
 import EmployerConversationsPage from '../page';
 import type { EmployerInboxResponse, InboxItem } from '@/lib/api/employer';
+import { startConversation } from '@/lib/api/employer';
+import { ApiError } from '@/lib/api/errors';
 
 function inboxItem(overrides: Partial<InboxItem> & { application_id: string }): InboxItem {
   return {
@@ -407,5 +409,65 @@ describe('the messages tutorial on the Messages board', () => {
     expect(tutorial.handle.runBeforeHost).not.toHaveBeenCalled();
 
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('test-token', 'conv-1', expect.anything()));
+  });
+});
+
+/*
+ * Phase 3: `POST /employer/conversations` answers 409 `job_move_conflict` when
+ * the owner reassigned the job while the conversation was being created.
+ * Nothing was sent; the board says so in its own words and re-reads both
+ * copies of the inbox. With the team flag off it is unchanged.
+ */
+describe('a first message to an applicant whose job just moved', () => {
+  const neverMessaged = inboxItem({
+    application_id: 'app-3',
+    worker_id: 'w-3',
+    worker_name: 'Luis Perez',
+    application_status: 'pending',
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function sendFirstMessage() {
+    vi.mocked(startConversation).mockReset();
+    vi.mocked(startConversation).mockRejectedValue(new ApiError(409, 'job_move_conflict'));
+    getInbox.mockResolvedValue({ ...inbox, items: [...inbox.items, neverMessaged] });
+
+    const user = userEvent.setup();
+    renderIntl(<EmployerConversationsPage />);
+    await waitFor(() => expect(rowFor('Luis Perez')).toBeInTheDocument());
+    await user.click(rowFor('Luis Perez'));
+    await user.type(
+      await screen.findByPlaceholderText(message('employer_messages.composer_placeholder')),
+      'Are you available Monday?',
+    );
+    await user.click(screen.getByRole('button', { name: message('employer_messages.send') }));
+    await waitFor(() => expect(startConversation).toHaveBeenCalled());
+  }
+
+  it('says the job was reassigned and re-reads the inbox', async () => {
+    vi.stubEnv('NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED', 'true');
+
+    await sendFirstMessage();
+
+    expect(await screen.findByText(message('employer_team.errors.job_move_conflict'))).toBeInTheDocument();
+    await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(2));
+    expect(refreshPolled).toHaveBeenCalled();
+    // Nothing was sent, so the employer's message is still there to resend.
+    expect(screen.getByPlaceholderText(message('employer_messages.composer_placeholder'))).toHaveValue(
+      'Are you available Monday?',
+    );
+  });
+
+  it('flag off: the same answer reads as before, and the inbox is not re-read', async () => {
+    await sendFirstMessage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: message('employer_messages.send') })).not.toHaveAttribute('aria-busy'),
+    );
+    expect(screen.queryByText(message('employer_team.errors.job_move_conflict'))).not.toBeInTheDocument();
+    expect(getInbox).toHaveBeenCalledTimes(1);
   });
 });

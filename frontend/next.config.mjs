@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import createNextIntlPlugin from 'next-intl/plugin';
 import { computeBuildId } from './scripts/build-id.mjs';
+import { securityHeaders } from './security-headers.mjs';
 
 const withNextIntl = createNextIntlPlugin();
 
@@ -26,6 +27,9 @@ const nextConfig = {
   env: {
     NEXT_PUBLIC_JALE_BUILD: jaleBuild,
   },
+  // Response headers on chosen pages, e.g. Referrer-Policy on pages whose
+  // address carries a secret token. Rules and reasons: security-headers.mjs.
+  headers: securityHeaders,
   // `experimental.optimizePackageImports` used to list '@hugeicons/react'. That
   // package (and '@hugeicons/core-free-icons', and 'tw-animate-css') is no
   // longer imported anywhere in src/, so the entry optimized nothing and the

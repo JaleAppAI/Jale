@@ -22,6 +22,10 @@ import { companyActiveJobCount } from '@/lib/plan-limit';
  *    `billing.otherMembersActiveJobs`, the jobs of members the list does not
  *    show. `companyActiveJobCount` computes it, the same way the post-a-job
  *    gate does.
+ *  - `templateCount` is the company's too, and the caller's to work out: with
+ *    the team flag on (Phase 3) the dashboard hands over
+ *    `companyTemplateCount(billing, listJobTemplates().length)`, i.e.
+ *    `billing.templateUsage` falling back to the list's length.
  *
  * A billing fetch that failed degrades to the plain count rather than hiding:
  * "3 active jobs" is still true, and still useful. The "View plan" link stays
@@ -33,11 +37,17 @@ export function PlanUsageMeter({
   billing,
   templateCount,
   loading = false,
+  viewPlan: showViewPlan = true,
 }: {
   activeCount: number;
   billing: EmployerBilling | null;
   templateCount: number | null;
   loading?: boolean;
+  /**
+   * The "View plan" link. Phase 3 turns it off for a foreman: the plan page is
+   * the owner's (Billing is not in a foreman's nav either).
+   */
+  viewPlan?: boolean;
 }) {
   const t = useTranslations('employer_dashboard');
 
@@ -53,21 +63,25 @@ export function PlanUsageMeter({
     );
   }
 
-  const viewPlan = (
+  const viewPlan = showViewPlan ? (
     <Link
       href="/employer/billing"
       className="rounded font-bold text-[var(--jale-blue-700)] hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
     >
       {t('usage.view_plan')}
     </Link>
-  );
+  ) : null;
 
   if (billing === null) {
     return (
       <div className={wrapper}>
         <span>{t('usage.jobs_plain', { used: activeCount })}</span>
-        <span aria-hidden="true">·</span>
-        {viewPlan}
+        {viewPlan ? (
+          <>
+            <span aria-hidden="true">·</span>
+            {viewPlan}
+          </>
+        ) : null}
       </div>
     );
   }
@@ -96,8 +110,12 @@ export function PlanUsageMeter({
         </>
       ) : null}
 
-      <span aria-hidden="true">·</span>
-      {viewPlan}
+      {viewPlan ? (
+        <>
+          <span aria-hidden="true">·</span>
+          {viewPlan}
+        </>
+      ) : null}
     </div>
   );
 }

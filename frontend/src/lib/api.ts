@@ -1,5 +1,6 @@
 import { ApiError, SESSION_REFRESH_UNAVAILABLE } from './api/errors';
 import { getAuthBridge, type RefreshOutcome } from './auth-bridge';
+import { isTeamManagementEnabled } from './feature-flags';
 import { recordApiError, recordApiErrorResponse, recordFetch } from './report/context';
 
 export class LegalWallError extends Error {
@@ -13,6 +14,66 @@ export class LegalWallError extends Error {
 export function isLegalWallError(err: unknown): err is LegalWallError {
     return err instanceof LegalWallError || (
         err instanceof Error && err.name === 'LegalWallError'
+    );
+}
+
+/** Why an employer login cannot use the company's account (Phase 3). */
+export type MembershipBlockedReason = 'suspended' | 'removed' | 'no_organization';
+
+/**
+ * An employer login the backend refuses because of its company membership,
+ * raised by `apiFetch` (team management flag on only) for:
+ *   - 403 `no_organization`: the login belongs to no company (an invite that
+ *     expired before it was accepted). The access screen offers "start my own
+ *     company".
+ *   - 403 `membership_inactive`: `membershipStatus` `removed` gives `removed`;
+ *     `suspended`, or no status at all, gives `suspended`. Only the membership
+ *     route itself (GET `/employer/team/membership`) always names the status
+ *     and says whether a re-invite is waiting (`hasInvite`); elsewhere the
+ *     status can be absent (`statusKnown: false`) and `hasInvite` is unknown,
+ *     so the access screen re-reads membership on arrival.
+ *
+ * `useRequireAuth().handleLegalWall` routes it to `/employer/access`. Like
+ * `LegalWallError`, it carries a `name` marker so `lib/api/errors` can
+ * recognise it without importing this module back.
+ */
+export class MembershipBlockedError extends Error {
+    readonly reason: MembershipBlockedReason;
+    readonly hasInvite: boolean;
+    /**
+     * False when a 403 `membership_inactive` named no status and `reason` is
+     * the `suspended` default: `handleLegalWall` then sends no reason, and the
+     * access screen shows its loading card until membership answers.
+     */
+    readonly statusKnown: boolean;
+
+    constructor(reason: MembershipBlockedReason, hasInvite = false, statusKnown = true) {
+        super('membership_blocked');
+        this.name = 'MembershipBlockedError';
+        this.reason = reason;
+        this.hasInvite = hasInvite;
+        this.statusKnown = statusKnown;
+        Object.setPrototypeOf(this, MembershipBlockedError.prototype);
+    }
+}
+
+export function isMembershipBlockedError(err: unknown): err is MembershipBlockedError {
+    return err instanceof MembershipBlockedError || (
+        err instanceof Error && err.name === 'MembershipBlockedError'
+    );
+}
+
+/** The `MembershipBlockedError` for a 403 body, or null for any other 403. */
+function membershipBlockedFromBody(body: unknown): MembershipBlockedError | null {
+    if (body === null || typeof body !== 'object') return null;
+    const { error, membershipStatus, hasInvite } = body as Record<string, unknown>;
+    if (error === 'no_organization') return new MembershipBlockedError('no_organization');
+    if (error !== 'membership_inactive') return null;
+    const statusKnown = membershipStatus === 'removed' || membershipStatus === 'suspended';
+    return new MembershipBlockedError(
+        membershipStatus === 'removed' ? 'removed' : 'suspended',
+        hasInvite === true,
+        statusKnown,
     );
 }
 
@@ -77,6 +138,9 @@ export async function apiFetch(
     } catch (err) {
         if (err instanceof ApiError) recordApiError(err.status, err.code);
         else if (isLegalWallError(err)) recordApiError(403, 'legal_required');
+        else if (isMembershipBlockedError(err)) {
+            recordApiError(403, err.reason === 'no_organization' ? 'no_organization' : 'membership_inactive');
+        }
         // A caller that aborted on purpose has not met a failure.
         else if (!options?.signal?.aborted) recordApiError(0);
         throw err;
@@ -205,6 +269,12 @@ async function sendApiRequest(
         // Clone before reading body so the original response remains usable by the caller.
         const body = await res.clone().json().catch(() => null) as { error?: string } | null;
         if (body?.error === 'legal_required') throw new LegalWallError();
+        // Phase 3. With the flag off the 403 reaches the caller exactly as in
+        // Phase 2: an orgless login is never sent to /employer/access.
+        if (isTeamManagementEnabled()) {
+            const blocked = membershipBlockedFromBody(body);
+            if (blocked) throw blocked;
+        }
     }
 
     return res;

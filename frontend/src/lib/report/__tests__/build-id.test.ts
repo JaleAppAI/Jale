@@ -82,6 +82,7 @@ describe('computeBuildId', () => {
     ['postcss.config.js', 'module.exports = { a: 1 };\n'],
     ['public/logo.svg', '<svg />\n'],
     ['src/app/new-page.tsx', 'export default null;\n'],
+    ['security-headers.mjs', 'export const a = 1;\n'],
   ])('changes when %s changes', (rel, content) => {
     const tree = makeTree();
     const before = computeBuildId(tree);

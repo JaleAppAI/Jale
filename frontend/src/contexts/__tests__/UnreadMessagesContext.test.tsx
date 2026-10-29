@@ -44,9 +44,11 @@ vi.mock('@/contexts/AuthContext', () => ({
 // `usePageData`'s auth gate, resolved. The real hook reads the ROLE's token
 // out of `useRequireAuth`; the suites for pages that use `usePageData` stub it
 // the same way rather than standing up a router.
+const { legalWall } = vi.hoisted(() => ({ legalWall: vi.fn() }));
 vi.mock('@/hooks/useRequireAuth', () => ({
     useRequireAuth: () => ({
         handleLegalWall: (err: unknown) => {
+            legalWall(err);
             throw err;
         },
         idToken: authState.idToken,
@@ -64,7 +66,9 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
 }));
 
 // Below the mocks on purpose (they hoist).
-import { UnreadMessagesProvider, useUnreadMessages } from '@/contexts/UnreadMessagesContext';
+import { INBOX_POLL_MS, UnreadMessagesProvider, useUnreadMessages } from '@/contexts/UnreadMessagesContext';
+import { MembershipBlockedError } from '@/lib/api';
+import { clearEmployerMembershipCache } from '@/lib/employer-membership-store';
 import type { EmployerInboxResponse, InboxItem } from '@/lib/api/employer';
 
 function inboxItem(overrides: Partial<InboxItem> & { application_id: string }): InboxItem {
@@ -154,6 +158,7 @@ beforeEach(() => {
     authState = { idToken: 'test-token', isAuthenticated: true, userType: 'employer' };
     getInbox.mockReset();
     markConversationRead.mockReset();
+    legalWall.mockReset();
     getInbox.mockResolvedValue(inbox());
     markConversationRead.mockResolvedValue({
         conversation_id: 'conv-1',
@@ -271,5 +276,52 @@ describe('the inbox poll', () => {
         });
         await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(3));
         visibility.mockRestore();
+    });
+});
+
+describe('a membership-blocked login (Phase 3, C1)', () => {
+    it('reads zero, routes nowhere, and stops polling until the membership may have changed', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        getInbox.mockRejectedValue(new MembershipBlockedError('removed', true));
+        renderProvider(<Probe />);
+        await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(1));
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(INBOX_POLL_MS * 4);
+        });
+        // A tab coming back does not ask again either.
+        await act(async () => {
+            document.dispatchEvent(new Event('visibilitychange'));
+            await Promise.resolve();
+        });
+
+        expect(getInbox).toHaveBeenCalledTimes(1);
+        // The page-level hooks route a blocked login; the global poll never does.
+        expect(legalWall).not.toHaveBeenCalled();
+        expect(screen.getByTestId('probe-count').textContent).toBe('0');
+
+        // An accept (or start-company) drops the cached membership: one fresh read, and polling resumes.
+        getInbox.mockResolvedValue(inbox());
+        act(() => clearEmployerMembershipCache());
+        expect(await countSettled()).toBe('3');
+        expect(getInbox).toHaveBeenCalledTimes(2);
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(INBOX_POLL_MS);
+        });
+        expect(getInbox).toHaveBeenCalledTimes(3);
+    });
+
+    it('a new session (another token) asks again', async () => {
+        getInbox.mockRejectedValue(new MembershipBlockedError('no_organization'));
+        const view = renderProvider(<Probe />);
+        await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(1));
+
+        getInbox.mockResolvedValue(inbox());
+        authState = { idToken: 'other-token', isAuthenticated: true, userType: 'employer' };
+        view.rerender(<UnreadMessagesProvider><Probe /></UnreadMessagesProvider>);
+
+        expect(await countSettled()).toBe('3');
+        expect(getInbox).toHaveBeenCalledTimes(2);
+        expect(legalWall).not.toHaveBeenCalled();
     });
 });

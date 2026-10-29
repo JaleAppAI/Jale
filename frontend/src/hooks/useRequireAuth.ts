@@ -4,8 +4,10 @@ import { useLocale } from 'next-intl';
 import { useRouter as useNextRouter } from 'next/navigation';
 import { usePathname, useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { isLegalWallError } from '@/lib/api';
-import { buildLoginUrl } from '@/lib/login-url';
+import { isLegalWallError, isMembershipBlockedError } from '@/lib/api';
+import { clearEmployerMembershipCache, membershipAccessPath } from '@/lib/employer-membership-store';
+import { buildLoginUrl, currentReturnPath } from '@/lib/login-url';
+import { locales } from '@/i18n/locales';
 
 type UserType = 'worker' | 'employer';
 
@@ -17,16 +19,17 @@ function roleFromPath(pathname: string): UserType | null {
 }
 
 /**
- * Where the login page should send the user back to, read from the address bar.
- *
- * NOT from next-intl's `usePathname`: that strips the locale, and a return URL
- * without one drops a Spanish-speaking worker into the English tree (the same
- * reason `AuthContext.onSessionExpired` reads `window.location`). Undefined
- * during SSR, where there is no address bar and no redirect to build.
+ * The two pages a blocked login has to be able to stay on: the access screen
+ * itself, and the invite page (where a removed or orgless login rejoins).
+ * Read from the address bar at the moment of the redirect (so
+ * `handleLegalWall` keeps one identity across navigations), with its leading
+ * locale stripped.
  */
-function currentReturnPath(): string | undefined {
-    if (typeof window === 'undefined') return undefined;
-    return `${window.location.pathname}${window.location.search}`;
+function isBlockedLoginHome(pathname: string): boolean {
+    const [, first, ...rest] = pathname.split('/');
+    const path = (locales as readonly string[]).includes(first) ? `/${rest.join('/')}` : pathname;
+    return path === '/employer/access' || path === '/employer/access/'
+        || path === '/auth/employer/invite' || path.startsWith('/auth/employer/invite/');
 }
 
 type UseRequireAuthOptions = {
@@ -90,17 +93,36 @@ export function useRequireAuth({ enabled = true, role }: UseRequireAuthOptions =
         // The door for THIS page's role, never the one the browser's other
         // session happens to belong to.
         const dest = requiredRole ?? userType ?? 'worker';
-        // With the page they were trying to reach, so signing in finishes
+        // With the page they were trying to reach (from the address bar, with
+        // its locale: `currentReturnPath`), so signing in finishes
         // the journey instead of restarting it. `buildLoginUrl` drops
         // anything that is not a safe same-origin path (`sanitizeReturnPath`),
         // which is why the URL is built there and not here.
         nextRouter.replace(buildLoginUrl(locale, dest, currentReturnPath()));
     }, [enabled, isLoading, isAuthenticated, roleMatches, requiredRole, userType, nextRouter, locale]);
 
+    /**
+     * The walls a request can hit, each a redirect rather than a message:
+     *   - the legal wall: accept the current terms, then come back;
+     *   - a blocked company membership (Phase 3; `apiFetch` raises it only with
+     *     the team flag on): the access screen for the reason, with `invite=1`
+     *     when a re-invite is waiting. A 403 that named no status sends no
+     *     reason, and the screen waits for its own membership read. The cached
+     *     membership is dropped: it no longer describes this login. No return
+     *     URL: there is nothing to come back to until the membership changes.
+     *     Already on the access screen or the invite page, nothing happens:
+     *     those are where a blocked login belongs, and the invite page is how
+     *     it rejoins (Milestone C review, C1).
+     * Anything else is re-thrown for the page to handle.
+     */
     const handleLegalWall = useCallback((err: unknown, returnUrl: string) => {
         if (isLegalWallError(err)) {
             sessionStorage.setItem('legalReturnUrl', returnUrl);
             router.replace('/legal/accept');
+        } else if (isMembershipBlockedError(err)) {
+            if (isBlockedLoginHome(window.location.pathname)) return;
+            clearEmployerMembershipCache();
+            router.replace(membershipAccessPath(err));
         } else {
             throw err;
         }

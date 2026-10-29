@@ -1,12 +1,14 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ReactNode } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePageData } from '@/hooks/usePageData';
+import { isMembershipBlockedError } from '@/lib/api';
 import { getInbox, markConversationRead } from '@/lib/api/employer';
 import type { EmployerInboxResponse, InboxItem } from '@/lib/api/employer';
 import type { ErrorKind } from '@/lib/api/errors';
+import { membershipCacheGeneration, subscribeMembershipCache } from '@/lib/employer-membership-store';
 
 /**
  * The employer's inbox, owned ONCE for the whole session, and the unread
@@ -123,10 +125,49 @@ export function UnreadMessagesProvider({ children }: { children: ReactNode }) {
      * is the same shape the drawer uses -- and it means no employer endpoint
      * is ever touched with a worker's session.
      */
-    const canFetch = isAuthenticated && userType === 'employer';
+    const isEmployer = isAuthenticated && userType === 'employer';
+
+    /*
+     * Phase 3 (team flag on): a removed, suspended or orgless login gets 403
+     * `membership_inactive` / `no_organization` from the inbox. That is not
+     * this provider's to route: it is mounted on EVERY page, including the
+     * two a blocked login must be able to use (`/employer/access` and the
+     * invite page, whose Join it would otherwise bounce away from). The
+     * page-level `usePageData` / `useEmployerMembership` on `/employer/*`
+     * already route it. So a blocked answer reads as "no inbox" (zero
+     * unread), and the poll stops for that session token until the
+     * membership may have changed -- every `clearEmployerMembershipCache()`
+     * (an accept, start-company, the access screen's re-read) -- or another
+     * session signs in.
+     */
+    const membershipGeneration = useSyncExternalStore(
+        subscribeMembershipCache,
+        membershipCacheGeneration,
+        membershipCacheGeneration,
+    );
+    const [blockedFor, setBlockedFor] = useState<{ token: string | null; generation: number } | null>(null);
+    const inboxBlocked = blockedFor !== null
+        && blockedFor.token === idToken
+        && blockedFor.generation === membershipGeneration;
+    const canFetch = isEmployer && !inboxBlocked;
+
+    /** Read inside callbacks that must not re-subscribe on every response. */
+    const idTokenRef = useRef(idToken);
+    idTokenRef.current = idToken;
 
     const inbox = usePageData<EmployerInboxResponse | null>({
-        fetcher: ({ token, signal }) => (canFetch ? getInbox(token, signal) : Promise.resolve(null)),
+        fetcher: async ({ token, signal }) => {
+            if (!canFetch) return null;
+            // The session and membership this request was asked under.
+            const asked = { token: idTokenRef.current, generation: membershipCacheGeneration() };
+            try {
+                return await getInbox(token, signal);
+            } catch (err) {
+                if (!isMembershipBlockedError(err)) throw err;
+                setBlockedFor(asked);
+                return null;
+            }
+        },
         // Mounted in the root layout, which renders the public marketing pages
         // too: the default would bounce every anonymous visitor to /auth.
         requireAuth: false,
@@ -139,8 +180,6 @@ export function UnreadMessagesProvider({ children }: { children: ReactNode }) {
     /** Read inside callbacks that must not re-subscribe on every response. */
     const dataRef = useRef(data);
     dataRef.current = data;
-    const idTokenRef = useRef(idToken);
-    idTokenRef.current = idToken;
 
     /*
      * Coming BACK to the tab refreshes immediately. `usePageData` skips ticks

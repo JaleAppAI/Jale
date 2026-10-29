@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { buildLoginUrl, sanitizeReturnPath } from '../login-url';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildLoginUrl, currentReturnPath, sanitizeReturnPath } from '../login-url';
 
 // Built from char codes rather than escape sequences so the payloads below are
 // unambiguous in the source (an invisible literal tab in a string literal is
@@ -101,5 +101,21 @@ describe('buildLoginUrl', () => {
   it('omits the query entirely when no return path is given', () => {
     expect(buildLoginUrl('en', 'employer')).toBe('/en/auth/employer');
     expect(buildLoginUrl('en', 'employer').includes('?')).toBe(false);
+  });
+});
+
+describe('currentReturnPath', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('is the address bar\'s path and query, locale included', () => {
+    vi.stubGlobal('window', { location: { pathname: '/es/employer/jobs/abc', search: '?tab=candidates' } });
+    expect(currentReturnPath()).toBe('/es/employer/jobs/abc?tab=candidates');
+  });
+
+  it('is undefined with no window (SSR)', () => {
+    expect(typeof window).toBe('undefined');
+    expect(currentReturnPath()).toBeUndefined();
   });
 });

@@ -4,12 +4,15 @@ import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { Icon } from '@/components/ui/icon';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useEmployerMembership } from '@/hooks/useEmployerMembership';
+import { isTeamManagementEnabled } from '@/lib/feature-flags';
 import { UnreadBadge } from './UnreadBadge';
 import {
     employerPrimaryNav,
-    employerBillingNav,
-    employerSettingsNav,
+    employerSidebarSecondaryNav,
+    employerNavRole,
     workerPrimaryNav,
+    isEmployerNavItemVisible,
     isNavItemActive,
     type NavItem,
     type ShellRole,
@@ -258,15 +261,37 @@ function WorkerNav({ navLabel, pathname, attentionCount }: { navLabel: string; p
     );
 }
 
-function EmployerNav({
-    t,
-    pathname,
-    unreadCount,
-}: {
+type EmployerNavProps = {
     t: ReturnType<typeof useTranslations>;
     pathname: string;
     unreadCount: number;
-}) {
+};
+
+/**
+ * Team flag off: Phase 2's nav, drawn without the membership hook at all, so
+ * no membership request is made. Flag on: the role-aware nav. A component
+ * choice, not a conditional hook call -- the flag is fixed at build time.
+ */
+function EmployerNav(props: EmployerNavProps) {
+    return isTeamManagementEnabled() ? (
+        <RoleAwareEmployerNav {...props} />
+    ) : (
+        <EmployerNavItems {...props} role="owner" teamEnabled={false} />
+    );
+}
+
+function RoleAwareEmployerNav(props: EmployerNavProps) {
+    const membership = useEmployerMembership();
+    return <EmployerNavItems {...props} role={employerNavRole(membership)} teamEnabled />;
+}
+
+function EmployerNavItems({
+    t,
+    pathname,
+    unreadCount,
+    role,
+    teamEnabled,
+}: EmployerNavProps & { role: 'owner' | 'foreman' | null; teamEnabled: boolean }) {
     return (
         <>
             <NavSectionLabel>{t('nav.main')}</NavSectionLabel>
@@ -280,16 +305,16 @@ function EmployerNav({
                         badgeCount={item.key === 'messages' ? unreadCount : 0}
                     />
                 ))}
-                <NavLink
-                    item={employerBillingNav}
-                    active={isNavItemActive(employerBillingNav, pathname)}
-                    label={t(employerBillingNav.labelKey)}
-                />
-                <NavLink
-                    item={employerSettingsNav}
-                    active={isNavItemActive(employerSettingsNav, pathname)}
-                    label={t(employerSettingsNav.labelKey)}
-                />
+                {employerSidebarSecondaryNav
+                    .filter((item) => isEmployerNavItemVisible(item, role, teamEnabled))
+                    .map((item) => (
+                        <NavLink
+                            key={item.key}
+                            item={item}
+                            active={isNavItemActive(item, pathname)}
+                            label={t(item.labelKey)}
+                        />
+                    ))}
             </div>
         </>
     );
