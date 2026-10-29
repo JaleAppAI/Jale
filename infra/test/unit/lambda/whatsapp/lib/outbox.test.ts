@@ -12,6 +12,7 @@ import {
   AmbiguousTwilioSendError,
   drainJobAlertOutbox,
   drainWorkerIntentOutbox,
+  normalizeTemplateVariable,
   sendTwilioWhatsAppMessage,
   sendPendingAdminOutbox,
   sendPendingOutbox,
@@ -1289,5 +1290,92 @@ describe('sendPendingAdminOutbox', () => {
       expect(sentForm().get('ContentSid')).toBe('HX_admin_v2_es');
       expect(JSON.parse(sentForm().get('ContentVariables') as string)).toEqual({ '1': 'Una linea', '2': 'extra' });
     });
+  });
+
+  describe('template variable cleaning (Meta refuses newlines, tabs and runs of 5+ spaces)', () => {
+    const row = (vars: Record<string, string>) => ({
+      body: null,
+      content_template: 'admin_support_reply_v2_es',
+      content_variables: vars,
+    });
+
+    it('normalises every ContentVariables value on a template send', async () => {
+      await sendTwilioWhatsAppMessage(
+        `whatsapp:${NUMBER}`,
+        row({ '1': 'Acme\nCo', '2': 'Plomero     senior', '3': '\tTab\r\nand  two ', __fallback_body: 'x' }),
+      );
+      expect(JSON.parse(sentForm().get('ContentVariables') as string)).toEqual({
+        '1': 'Acme Co', '2': 'Plomero senior', '3': 'Tab and two',
+      });
+    });
+
+    it('sends "-" for an empty or whitespace-only variable', async () => {
+      await sendTwilioWhatsAppMessage(`whatsapp:${NUMBER}`, row({ '1': 'Acme', '2': '', '3': ' \n ' }));
+      expect(JSON.parse(sentForm().get('ContentVariables') as string)).toEqual({
+        '1': 'Acme', '2': '-', '3': '-',
+      });
+    });
+
+    it('normalises variable "1" on the window-closed template-only send', async () => {
+      await sendTwilioWhatsAppMessage(
+        `whatsapp:${NUMBER}`,
+        row({ '1': 'Acme\nCo     Ltd', '2': 'ignored' }),
+        { sessionWindowOpen: false },
+      );
+      expect(JSON.parse(sentForm().get('ContentVariables') as string)).toEqual({ '1': 'Acme Co Ltd' });
+    });
+
+    it('keeps newlines in a free-form fallback body (it is a plain Body, not a template variable)', async () => {
+      await sendTwilioWhatsAppMessage(
+        `whatsapp:${NUMBER}`,
+        row({ '1': 'a', __fallback_body: 'Line one\n\nLine two     spaced' }),
+        { sessionWindowOpen: true },
+      );
+      expect(sentForm().get('Body')).toBe('Line one\n\nLine two     spaced');
+      expect(sentForm().get('ContentVariables')).toBeNull();
+    });
+
+    it('sends an unmapped template as a plain Body with the fallback newlines kept', async () => {
+      secretWith({});
+      await sendTwilioWhatsAppMessage(
+        `whatsapp:${NUMBER}`,
+        row({ '1': 'a', __fallback_body: 'Line one\n\nLine two' }),
+      );
+      expect(sentForm().get('Body')).toBe('Line one\n\nLine two');
+      expect(sentForm().get('ContentSid')).toBeNull();
+      expect(sentForm().get('ContentVariables')).toBeNull();
+    });
+
+    it('never puts the fallback body into ContentVariables', async () => {
+      await sendTwilioWhatsAppMessage(`whatsapp:${NUMBER}`, row({ '1': 'a', __fallback_body: 'A\nB' }));
+      expect(JSON.parse(sentForm().get('ContentVariables') as string)).toEqual({ '1': 'a' });
+    });
+  });
+});
+
+describe('normalizeTemplateVariable', () => {
+  it('maps \\r \\n \\t to spaces, caps runs of spaces, trims, and never returns empty', () => {
+    expect(normalizeTemplateVariable('Acme\nCo')).toBe('Acme Co');
+    expect(normalizeTemplateVariable('a\tb\r\nc')).toBe('a b c');
+    expect(normalizeTemplateVariable('a      b')).toBe('a b');
+    expect(normalizeTemplateVariable('  padded  ')).toBe('padded');
+    expect(normalizeTemplateVariable('')).toBe('-');
+    expect(normalizeTemplateVariable(' \n\t ')).toBe('-');
+  });
+
+  it('collapses spaces, NBSP and U+2028 the same way the label formatter does', () => {
+    expect(normalizeTemplateVariable('Acme     Co')).toBe('Acme Co');
+    expect(normalizeTemplateVariable('Acme\u2028Co\u00A0\u00A0Ltd')).toBe('Acme Co Ltd');
+  });
+
+  it('handles null, undefined and numbers from loosely typed JSONB values', () => {
+    expect(normalizeTemplateVariable(null)).toBe('-');
+    expect(normalizeTemplateVariable(undefined)).toBe('-');
+    expect(normalizeTemplateVariable(42)).toBe('42');
+    expect(normalizeTemplateVariable(0)).toBe('0');
+  });
+
+  it('leaves an emoji and ordinary text untouched', () => {
+    expect(normalizeTemplateVariable('🚧 Ana (Acme 🏗)')).toBe('🚧 Ana (Acme 🏗)');
   });
 });

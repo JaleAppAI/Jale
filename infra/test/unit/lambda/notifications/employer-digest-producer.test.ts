@@ -1089,8 +1089,8 @@ describe('employer-digest-producer', () => {
       ]);
       const [, first] = nudgeCalls()[0];
       expect(first.subject).toBe('Add start details for Ana · Agregue los detalles de inicio para Ana');
-      expect(first.bodyText).toContain('Ana is hired for Glazier. Add a start date and where to report.');
-      expect(first.bodyText).toContain('Contrató a Ana para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.');
+      expect(first.bodyText).toContain('Ana was hired for Glazier. Add a start date and where to report.');
+      expect(first.bodyText).toContain('Se contrató a Ana para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.');
       expect(first.bodyText).toContain(`${BASE_URL}/en/employer/applicants`);
       expect(first.bodyText).toContain(`${BASE_URL}/es/employer/applicants`);
       expect(nudgeCalls()[1][1].bodyText).toContain('Ana asked for their start details for Glazier.');

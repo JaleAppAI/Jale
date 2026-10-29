@@ -6,7 +6,7 @@ import { checkCompliance } from '../legal/check-compliance';
 import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 import { applyMemberAccess } from '../lib/member-access';
-import { dbBusyResponse, isAssigneeRefusal, isRetryableDbBusy, isTeamManagementEnabled, removeResponse } from '../lib/org-team';
+import { dbBusyResponse, isAssigneeRefusal, isOrgJobMovedRefusal, isRetryableDbBusy, isTeamManagementEnabled, removeResponse } from '../lib/org-team';
 import { isUuid } from '../lib/uuid';
 
 /**
@@ -24,18 +24,24 @@ import { isUuid } from '../lib/uuid';
  *      assignee is active, so billing's restore must not resume it; Open
  *      decision 2). 135's foreign key moves each job's conversations in the
  *      same statement. jobs.created_by_user_id (the poster) is never written.
- *      hire_contact_name / hire_contact_phone keep naming the removed
- *      foreman; renaming the contact is Phase 4's.
- *   4. 134's org_team_remove_member removes the target (it re-takes the same
+ *   4. When jobs moved (never on an empty move: the definer refuses an empty
+ *      list), 138's jale_cap.org_job_moved(ids, target, assignee, true) leaves
+ *      the "conversation moved" notice in each open thread and re-points the
+ *      hire contacts that named the removed foreman to the assignee. It runs
+ *      before the removal, while the foreman is still a member. Its refusal
+ *      (P0001, DETAIL org_job_moved_refused) is a bug: ROLLBACK, 500
+ *      internal_error and a structured log line. A deadlock with a concurrent
+ *      worker write (40P01) is the retryable 503 busy.
+ *   5. 134's org_team_remove_member removes the target (it re-takes the same
  *      lock and refuses with has_jobs if a job still names them).
- *   5. After COMMIT, with the client released, the target's Cognito user is
+ *   6. After COMMIT, with the client released, the target's Cognito user is
  *      disabled. A Cognito failure never undoes the removal: the answer is
  *      still 200 with accessUpdated false, and the member-access sync repairs
  *      it.
  *
  * Moving changes jobs.employer_id, part of the (id, employer_id) key 135
  * added, so each moved row takes FOR UPDATE: the transaction is kept short
- * and does nothing after the move but the removal.
+ * and does nothing after the move but the notices and the removal.
  */
 
 const CORS_HEADERS = corsHeaders();
@@ -72,6 +78,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const { userId, reassignTo } = parsed;
 
   let client: PoolClient | undefined;
+  let organizationId: string | undefined;
   let removedSub: string | null = null;
   let movedJobs = 0;
   try {
@@ -97,6 +104,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return employerActorFailureResponse(actorResult, CORS_HEADERS);
     }
     const { actor } = actorResult;
+    organizationId = actor.organizationId;
     if (actor.role !== 'owner') {
       await client.query('ROLLBACK');
       return response(403, { error: 'owner_required' });
@@ -138,7 +146,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     );
     movedJobs = moved.rows.length;
 
-    // 4. The removal itself.
+    // 4. The thread notices and the hire contacts, for the jobs that moved.
+    if (movedJobs > 0) {
+      await client.query(
+        'SELECT jale_cap.org_job_moved($1::uuid[], $2::uuid, $3::uuid, true)',
+        [moved.rows.map((r) => r.id), userId, reassignTo],
+      );
+    }
+
+    // 5. The removal itself.
     const removeRes = await client.query<{ outcome: string; cognito_sub: string | null }>(
       'SELECT outcome, cognito_sub FROM jale_cap.org_team_remove_member($1)',
       [userId],
@@ -159,8 +175,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
     }
     if (isAssigneeRefusal(err)) return response(409, { error: 'invalid_assignee' });
+    if (isOrgJobMovedRefusal(err)) {
+      console.error(JSON.stringify({ event: 'org_job_moved_refused', handler: 'employer-team-member-remove', userId, reassignTo, organizationId }));
+      return response(500, { error: 'internal_error' });
+    }
     if (isRetryableDbBusy(err)) {
-      // A lock or statement timeout: nothing was moved or removed. Retryable.
+      // A lock or statement timeout, or a deadlock: nothing was moved or removed. Retryable.
       console.warn('employer-team-member-remove busy:', (err as { code: string }).code);
       return dbBusyResponse(CORS_HEADERS);
     }
@@ -171,7 +191,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     client = undefined;
   }
 
-  // 5. After COMMIT, the client released: sign the removed member out. A
+  // 6. After COMMIT, the client released: sign the removed member out. A
   // removed member with no cognito_sub has no Cognito user to disable, so
   // nothing is left to converge and accessUpdated stays true.
   let accessUpdated = true;

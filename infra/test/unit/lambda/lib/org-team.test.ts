@@ -15,6 +15,7 @@ import {
   dbBusyResponse,
   isAssigneeRefusal,
   isJobMoveRace,
+  isOrgJobMovedRefusal,
   isRetryableDbBusy,
   isMembershipConflict,
   isTeamManagementEnabled,
@@ -119,6 +120,22 @@ describe('isAssigneeRefusal', () => {
   });
 });
 
+describe('isOrgJobMovedRefusal', () => {
+  const pg = (code: string, detail?: string) => Object.assign(new Error('org_job_moved: refused'), { code, detail });
+
+  it('P0001 with DETAIL org_job_moved_refused is the refusal; nothing else is', () => {
+    expect(isOrgJobMovedRefusal(pg('P0001', 'org_job_moved_refused'))).toBe(true);
+    expect(isOrgJobMovedRefusal(pg('P0001'))).toBe(false);
+    expect(isOrgJobMovedRefusal(pg('P0001', 'something_else'))).toBe(false);
+    expect(isOrgJobMovedRefusal(pg('42501', 'org_job_moved_refused'))).toBe(false);
+    expect(isOrgJobMovedRefusal(pg('42501', 'assignee_inactive'))).toBe(false);
+    expect(isOrgJobMovedRefusal(pg('22023'))).toBe(false);
+    expect(isOrgJobMovedRefusal(null)).toBe(false);
+    expect(isOrgJobMovedRefusal(undefined)).toBe(false);
+    expect(isOrgJobMovedRefusal('org_job_moved_refused')).toBe(false);
+  });
+});
+
 describe('isMembershipConflict', () => {
   const pgError = (code: string, constraint?: string) => Object.assign(new Error('duplicate key'), { code, constraint });
 
@@ -162,13 +179,14 @@ describe('isJobMoveRace', () => {
 describe('isRetryableDbBusy', () => {
   const pgError = (code: unknown) => Object.assign(new Error('x'), { code });
 
-  it('a lock wait past lock_timeout (55P03) and a statement past statement_timeout (57014) are busy', () => {
+  it('a lock wait past lock_timeout (55P03), a statement past statement_timeout (57014) and a deadlock victim (40P01) are busy', () => {
     expect(isRetryableDbBusy(pgError('55P03'))).toBe(true);
     expect(isRetryableDbBusy(pgError('57014'))).toBe(true);
+    expect(isRetryableDbBusy(pgError('40P01'))).toBe(true);
   });
 
-  it('nothing else is: other SQLSTATEs, a deadlock, no code, a non-error', () => {
-    for (const code of ['40P01', '40001', '23505', '42501', 'P0001', '55P0', '57014 ', 57014, undefined]) {
+  it('nothing else is: other SQLSTATEs, a serialization failure, no code, a non-error', () => {
+    for (const code of ['40001', '23505', '42501', 'P0001', '55P0', '57014 ', 57014, undefined]) {
       expect(isRetryableDbBusy(pgError(code))).toBe(false);
     }
     expect(isRetryableDbBusy(null)).toBe(false);

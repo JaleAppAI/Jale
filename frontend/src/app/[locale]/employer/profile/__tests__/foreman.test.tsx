@@ -265,6 +265,61 @@ describe('employer profile -- a foreman', () => {
         expect(screen.getByLabelText(K.serviceArea)).toBeInTheDocument();
     });
 
+    /*
+     * Phase 4: the contact name is what applicants see on the job ("Contact:
+     * {name}") and what heads WhatsApp messages, so the field says so, for the
+     * owner and the foreman alike.
+     */
+    describe('the contact-name hint', () => {
+        const hint = (locale: 'en' | 'es' = 'en') => message('employer.profile.contact_name_hint', locale);
+
+        it('shows under the contact field to an owner, linked to the input', () => {
+            state.membership = { ...FOREMAN, role: 'owner' } as EmployerMembership;
+            seed = OWNER_ROW;
+            renderIntl(<EmployerProfilePage />);
+            expect(screen.queryByText(hint())).toBeNull();
+
+            startEditing();
+            expect(screen.getByText(hint())).toBeInTheDocument();
+            const describedBy = screen.getByLabelText(K.contact).getAttribute('aria-describedby');
+            expect(describedBy).toBeTruthy();
+            expect(document.getElementById(describedBy!)).toHaveTextContent(hint());
+        });
+
+        it('shows under the contact field to a foreman', () => {
+            renderIntl(<EmployerProfilePage />);
+            startEditing();
+            expect(screen.getByText(hint())).toBeInTheDocument();
+        });
+
+        it('references both the hint and the required error from the input when the name is missing', async () => {
+            renderIntl(<EmployerProfilePage />);
+            startEditing();
+            const input = screen.getByLabelText(K.contact);
+            // No error yet: the hint alone.
+            expect(input.getAttribute('aria-describedby')!.split(' ')).toHaveLength(1);
+
+            fireEvent.change(input, { target: { value: ' ' } });
+            fireEvent.click(screen.getByRole('button', { name: K.save }));
+            await waitFor(() => expect(screen.getByText(message('employer.profile.errors.required'))).toBeInTheDocument());
+
+            const ids = screen.getByLabelText(K.contact).getAttribute('aria-describedby')!.split(' ');
+            expect(ids).toHaveLength(2);
+            const texts = ids.map((id) => document.getElementById(id)?.textContent);
+            expect(texts).toContain(hint());
+            expect(texts).toContain(message('employer.profile.errors.required'));
+        });
+
+        it('is in Spanish, addressed with usted', () => {
+            state.membership = { ...FOREMAN, role: 'owner' } as EmployerMembership;
+            seed = OWNER_ROW;
+            renderIntl(<EmployerProfilePage />, 'es');
+            fireEvent.click(screen.getByRole('button', { name: message('employer.profile.edit_button', 'es') }));
+            expect(hint('es')).toBe('Los trabajadores que se postulan a sus trabajos ven este nombre.');
+            expect(screen.getByText(hint('es'))).toBeInTheDocument();
+        });
+    });
+
     it('flag off: exactly Phase 2, and no membership hook', () => {
         vi.stubEnv('NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED', 'false');
         renderIntl(<EmployerProfilePage />);

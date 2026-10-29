@@ -314,6 +314,21 @@ describe('listEmployerInbox', () => {
       expect(preview).not.toMatch(/direction/);
     });
 
+    // Phase 4: a system row (a job-move notice, "worker ended the
+    // conversation") is never the preview. A thread with only system rows has
+    // no preview, as a thread with no messages has none.
+    it('previews the newest NON-system message', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([]));
+      await listEmployerInbox(client, [EMPLOYER]);
+      const [sql] = mockQuery.mock.calls[0];
+      const preview = sql.slice(sql.indexOf('last_msg.body'), sql.indexOf(') last_msg'));
+      expect(preview).toMatch(/jcm\.sender_type <> 'system'/);
+      // The unread badge's sibling LATERAL is unchanged: still direction only.
+      const badge = sql.slice(sql.indexOf('SELECT jcm.created_at'), sql.indexOf(') last_inbound'));
+      expect(badge).toMatch(/jcm\.direction = 'inbound'/);
+      expect(badge).not.toMatch(/sender_type/);
+    });
+
     // Both are inbox INPUT, not inbox output: the employer UI has no use for
     // either, and every field in this response is a field the frontend type
     // has to mirror.

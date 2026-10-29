@@ -48,8 +48,8 @@ const EN_BUTTON = 'Add start details';
 const ES_BUTTON = 'Agregar detalles de inicio';
 const EN_ASK = 'Add a start date and where to report.';
 const ES_ASK = 'Agregue una fecha de inicio y el lugar donde debe presentarse.';
-const EN_WHY = 'You are receiving this because you hired a worker on Jale.';
-const ES_WHY = 'Está recibiendo este correo porque contrató a un trabajador en Jale.';
+const EN_WHY = 'You are receiving this because a worker was hired on one of your jobs on Jale.';
+const ES_WHY = 'Recibe este mensaje porque se contrató a un trabajador en uno de sus trabajos en Jale.';
 const C = EMAIL_COLORS;
 
 function clip(value: string, max: number): string {
@@ -69,13 +69,13 @@ export function hireDetailsNudgeLines(model: HireDetailsNudgeModel): { en: strin
   const job = clip(model.jobTitle, MAX_TITLE_CHARS);
   if (model.kind === 'remind') {
     return {
-      en: `${first ?? 'Your new hire'} asked for their start details for ${job}. ${EN_ASK}`,
-      es: `${first ?? 'Su nuevo trabajador'} pidió sus detalles de inicio para ${job}. ${ES_ASK}`,
+      en: `${first ?? 'A new hire'} asked for their start details for ${job}. ${EN_ASK}`,
+      es: `${first ?? 'Un nuevo trabajador'} pidió sus detalles de inicio para ${job}. ${ES_ASK}`,
     };
   }
   return {
-    en: first ? `${first} is hired for ${job}. ${EN_ASK}` : `You hired a worker for ${job}. ${EN_ASK}`,
-    es: first ? `Contrató a ${first} para ${job}. ${ES_ASK}` : `Contrató a un trabajador para ${job}. ${ES_ASK}`,
+    en: first ? `${first} was hired for ${job}. ${EN_ASK}` : `A worker was hired for ${job}. ${EN_ASK}`,
+    es: first ? `Se contrató a ${first} para ${job}. ${ES_ASK}` : `Se contrató a un trabajador para ${job}. ${ES_ASK}`,
   };
 }
 
@@ -83,7 +83,7 @@ export function hireDetailsNudgeSubject(model: HireDetailsNudgeModel): string {
   const first = nudgeFirstName(model.workerName);
   return first
     ? `Add start details for ${first} · Agregue los detalles de inicio para ${first}`
-    : 'Add start details for your new hire · Agregue los detalles de inicio para su nuevo trabajador';
+    : 'Add start details for a new hire · Agregue los detalles de inicio de un nuevo trabajador';
 }
 
 export function renderHireDetailsNudgeEmail(model: HireDetailsNudgeModel): RenderedHireDetailsNudge {

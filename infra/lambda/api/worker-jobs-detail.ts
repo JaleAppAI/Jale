@@ -3,6 +3,7 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { computeRemaining, detailsStatusFor } from '../lib/application-requirements';
 import { remainingView, snapshotFromRow } from '../lib/application-stage-view';
+import { collapseWhitespace } from '../lib/employer-contact-label';
 import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -46,6 +47,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // employer_display_name() flips a transaction-local employer_profiles read
     // flag until COMMIT (migration 031). The queries after this one touch only
     // worker_documents and job_applications — keep it that way.
+    //
+    // The `CASE WHEN EXISTS (... job_applications ...) THEN
+    // jale_cap.employer_contact_name(...) END AS contact_name` below is the
+    // contact-name applicant gate: any application row, whatever its status,
+    // shows the name. Revisit it together with 070's job visibility when a
+    // withdraw/block feature lands (070's header: "A future withdraw/block
+    // feature needs a carve-out here").
     const jobRes = await client.query(
       `SELECT j.id, j.title, j.location, j.pay, j.job_type, CASE WHEN j.status = 'paused' THEN 'closed' ELSE j.status END AS status, j.description, j.required_docs, j.created_at,
               j.pay_min, j.pay_max, j.pay_interval, j.start_date, j.expected_duration, j.shift_schedule,
@@ -58,7 +66,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               j.public_listing_enabled, j.city_key,
               j.required_fields, j.optional_fields, j.optional_docs,
               j.pre_application_prompts,
-              employer_display_name(j.employer_id) AS company_name
+              employer_display_name(j.employer_id) AS company_name,
+              CASE WHEN EXISTS (SELECT 1 FROM job_applications ja WHERE ja.job_id = j.id AND ja.worker_id = $2)
+                   THEN jale_cap.employer_contact_name(j.employer_id) END AS contact_name
        FROM jobs j
        WHERE j.id = $1
          AND (
@@ -181,6 +191,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         pre_application_prompts: parsePreApplicationPromptList(job.pre_application_prompts),
         // Shift choices (131, contract K2.2): always an array, never null.
         shift_periods: Array.isArray(job.shift_periods) ? job.shift_periods : [],
+        // Phase 4: the person at the company who answers this worker. The
+        // SELECT yields it only when THIS worker has an application row
+        // (whatever its status, a withdrawn one included); null otherwise,
+        // and null when the employer set no name. Whitespace-cleaned so a
+        // pasted newline never reaches the page.
+        contact_name: typeof job.contact_name === 'string' ? (collapseWhitespace(job.contact_name) || null) : null,
         already_applied,
         application_status,
         missing_docs,

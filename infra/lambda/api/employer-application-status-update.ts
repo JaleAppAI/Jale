@@ -5,12 +5,17 @@ import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { parseHireGateError } from '../lib/application-requirements';
 import { enqueueApplicationStageNotification } from '../lib/application-stage-notify';
+import { loadEmployerContactLabel } from '../lib/employer-contact-label';
 import { checkCompliance } from '../legal/check-compliance';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const DEFAULT_FRONTEND_BASE_URL = 'https://jaleapp.ai';
-/** employer_display_name() itself COALESCEs to this (031:61). */
+/**
+ * Defensive guard only: `loadEmployerContactLabel` already falls back to
+ * 'Empleador' (employer_display_name() itself COALESCEs to it, 031:61), so the
+ * label is never empty.
+ */
 const EMPLOYER_NAME_FALLBACK = 'Empleador';
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -284,11 +289,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // nothing employer-adjacent may run after it -- including the visibility
     // re-read above, which is why that block stays ahead of this one.
     if (notifiable && (changed || resend)) {
-      const companyRes = await client.query(
-        `SELECT employer_display_name($1) AS company_name`,
-        [job.employer_id],
-      );
-      const companyName: string = companyRes.rows?.[0]?.company_name ?? EMPLOYER_NAME_FALLBACK;
+      // The job's responsible person (jobs.employer_id), not the caller:
+      // "{contact} ({company})", or the company alone when there is no
+      // contact. The label is stored in the intent payload, so a deferred
+      // intent re-renders with the same name.
+      const companyName: string =
+        (await loadEmployerContactLabel(client, job.employer_id)) || EMPLOYER_NAME_FALLBACK;
       const applicationId: string = result.rows[0].application_id;
 
       // A RESEND needs no bypass option here. The claim dedupes on

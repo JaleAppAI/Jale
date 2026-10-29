@@ -474,6 +474,7 @@ export const handler = async (_event?: unknown, context?: RemainingTime): Promis
           // be missed by both (up to about a day's window) or mailed to both.
           // The owner's company digest sees every member's job either way. A
           // real fix needs a per-job watermark; out of scope here.
+          // Accepted in Phase 4: the owner's company digest covers every member's job (Open decision 7).
           const ranked = await listEmployerCandidates(client, job.id, { limit: 100, includeContact: true });
           // shouldEnqueueRerank / sourceHash intentionally unused -- see the
           // module header.

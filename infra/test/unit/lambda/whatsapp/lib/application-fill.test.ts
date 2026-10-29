@@ -172,7 +172,7 @@ const SQL = {
   defaultsSelect: /SELECT answers FROM worker_application_defaults WHERE worker_id = \$1/,
   defaultsUpsert: /INSERT INTO worker_application_defaults/,
   seedAnswersSelect: /SELECT application_answers FROM job_applications WHERE id = \$1/,
-  company: /SELECT employer_display_name\(/,
+  company: /jale_cap\.employer_contact_name\(.*employer_display_name\(/s,
   savepoint: /^\s*SAVEPOINT (\S+)/,
   releaseSavepoint: /^\s*RELEASE SAVEPOINT (\S+)/,
   rollbackSavepoint: /^\s*ROLLBACK TO SAVEPOINT (\S+)/,
@@ -205,6 +205,10 @@ interface FakeDb {
   /** findContinueOtherOffer's candidate rows. */
   otherApps: { id: string; title: string }[];
   company: string;
+  /** The job's responsible person's contact_name (jale_cap.employer_contact_name), or null. */
+  contact: string | null;
+  /** true: the label read finds no job row (the job is gone). */
+  companyRowMissing?: boolean;
   /** Override for the merge UPDATE's `RETURNING length(...) AS total` --
    * the post-merge column size the engine's SAVEPOINT guard compares against
    * MAX_ANSWERS_JSON_LENGTH (16384). Defaults to the real serialized size. */
@@ -259,6 +263,7 @@ function freshFake(): FakeDb {
     defaultsWritten: [],
     otherApps: [],
     company: COMPANY,
+    contact: null,
     savepoints: new Map(),
   };
 }
@@ -379,7 +384,9 @@ function installDbFake(): void {
       const fixture = fake.apps.get(String(args[0]));
       return fixture?.row ? ok([{ application_answers: fixture.row.application_answers }]) : ok();
     }
-    if (SQL.company.test(text)) return ok([{ company: fake.company }]);
+    if (SQL.company.test(text)) {
+      return fake.companyRowMissing ? ok() : ok([{ contact: fake.contact, company: fake.company }]);
+    }
 
     // ── document writes ──────────────────────────────────────────────────
     if (SQL.copyNonCert.test(text) || SQL.copyCert.test(text)) {
@@ -990,6 +997,75 @@ describe('armFill', () => {
     expect(ctx.jobId).toBe(JOB_ID);
   });
 
+  it("names the job's responsible person in the intro: '{contact} ({company})'", async () => {
+    setApp({ required_fields: ['work_authorization', 'date_available'] });
+    fake.company = 'Acme';
+    fake.contact = 'Fer Gómez';
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(allReplies(deps)).toContain(
+      fillMessage('intro', 'en', { company: 'Fer Gómez (Acme)', n_fields: '2', n_docs: '0' }),
+    );
+    expect(allReplies(deps).join('\n')).toContain('Fer Gómez (Acme) wants to move forward');
+    // The lookup keys on the JOB's employer, one query.
+    const lookups = mockQuery.mock.calls.filter(([text]) => SQL.company.test(String(text)));
+    expect(lookups).toHaveLength(1);
+    expect(lookups[0][1]).toEqual([JOB_ID]);
+  });
+
+  it('an owner with no contact name keeps the company alone in the intro', async () => {
+    setApp({ required_fields: ['work_authorization'] });
+    fake.company = 'Acme';
+    fake.contact = null;
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(allReplies(deps)).toContain(
+      fillMessage('intro', 'en', { company: 'Acme', n_fields: '1', n_docs: '0' }),
+    );
+  });
+
+  it.each([
+    ['a contact and the Empleador placeholder company', 'Juan', 'Empleador', 'Juan'],
+    ['neither a contact nor a company name', null, 'Empleador', 'Empleador'],
+  ])('the intro for %s reads "%s"/"%s" -> "%s"', async (_label, contact, company, expected) => {
+    setApp({ required_fields: ['work_authorization'] });
+    fake.company = company;
+    fake.contact = contact;
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(allReplies(deps)).toContain(
+      fillMessage('intro', 'en', { company: expected, n_fields: '1', n_docs: '0' }),
+    );
+    expect(allReplies(deps).join('\n')).not.toContain('Empleador)');
+  });
+
+  it('the intro falls back to "Empleador" when the label read finds no job row', async () => {
+    setApp({ required_fields: ['work_authorization'] });
+    fake.companyRowMissing = true;
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(allReplies(deps)).toContain(
+      fillMessage('intro', 'en', { company: 'Empleador', n_fields: '1', n_docs: '0' }),
+    );
+    expect(allReplies(deps).join('\n')).not.toContain('Jale');
+  });
+
   it('announces the profile check BEFORE reading the defaults row, not after (transparency decision)', async () => {
     setApp({ required_fields: ['work_authorization', 'date_available'] });
     fake.defaults = { work_authorization: true };
@@ -1284,6 +1360,32 @@ describe('handleFillMessage — fill_confirm (all pre-filled)', () => {
       expect(ctx.stateContext.fill_confirm).toBeNull();
     },
   );
+
+  it("the completion names the job's responsible person: '{contact} ({company})'", async () => {
+    const ctx = confirmCtx();
+    fake.company = 'Acme';
+    fake.contact = 'Fer Gómez';
+    const deps = makeDeps(ctx);
+
+    await handleFillMessage(client, ctx, incomingMsg('LISTO'), deps);
+
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: 'Fer Gómez (Acme)' }));
+    expect(lastReply(deps)).toContain('we sent your details to Fer Gómez (Acme).');
+  });
+
+  it.each([
+    ['a contact and the Empleador placeholder company', 'Juan', 'Empleador', 'Juan'],
+    ['neither a contact nor a company name', null, 'Empleador', 'Empleador'],
+  ])('the completion for %s reads "%s"/"%s" -> "%s"', async (_label, contact, company, expected) => {
+    const ctx = confirmCtx();
+    fake.company = company;
+    fake.contact = contact;
+    const deps = makeDeps(ctx);
+
+    await handleFillMessage(client, ctx, incomingMsg('LISTO'), deps);
+
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: expected }));
+  });
 
   it('an unrecognized reply repeats the confirm prompt exactly ONCE', async () => {
     const ctx = confirmCtx();
