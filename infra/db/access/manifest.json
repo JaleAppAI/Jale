@@ -5379,7 +5379,7 @@
       "security": "definer",
       "search_path": "pg_catalog, pg_temp",
       "arguments": "",
-      "returns": "TABLE(employer_id uuid, display_name text, plan_code text, status text, current_period_end timestamp with time zone, cancel_at_period_end boolean)",
+      "returns": "TABLE(employer_id uuid, display_name text, plan_code text, status text, current_period_end timestamp with time zone, cancel_at_period_end boolean, organization_id uuid, members_active bigint, seats_used bigint, seats_pending bigint, seats_suspended bigint, seat_limit integer)",
       "execute": [
         "jale_admin_console"
       ],

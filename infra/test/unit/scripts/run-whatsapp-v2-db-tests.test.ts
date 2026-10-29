@@ -78,6 +78,11 @@ const EXCLUDED: Readonly<Record<string, string>> = {
     + 'dropping its roles and database between the builds, and reads JALE_TEST_UPGRADE_DATABASE_URL, so it '
     + "needs a bare cluster (bootstrap-testbed.sh --bare) rather than the migrated bed. The database job's "
     + 'standard leg runs it alone with --suite.',
+  'test/unit/db/migrations/admin-analytics-139-upgrade.test.ts':
+    'It creates jale_admin itself, applies the chain through 138, seeds companies, a memberless login, a subscription, '
+    + 'jobs and applications, then applies 139 (a broken copy, a rolled-back rehearsal with a foreman, then the real file) '
+    + 'and reads JALE_TEST_UPGRADE_DATABASE_URL, so it needs a bare cluster (bootstrap-testbed.sh --bare) '
+    + "rather than the migrated bed. The database job's standard leg runs it alone with --suite.",
   'test/unit/db/helpers/login-pool.test.ts':
     'Not a database suite: unit tests of helpers/login-pool.ts. It sets the URL variable to a '
     + 'fake loopback value to exercise the helper and never connects, so it runs with the other '

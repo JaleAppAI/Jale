@@ -28,6 +28,11 @@ function weekStarts(count, now = new Date()) {
 }
 const wave = (i, base, swing) => Math.max(0, Math.round(base + swing * Math.sin(i * 1.3) + i * (swing / 8)));
 const long = () => mode() === 'long';
+const ORG_ROOFING = '00000000-0000-4000-8000-0000000000a1';
+const ORG_LONG = '00000000-0000-4000-8000-0000000000a2';
+const ORG_PLUMBING = '00000000-0000-4000-8000-0000000000a3';
+const ORG_FREE = '00000000-0000-4000-8000-0000000000a4';
+const ORG_OVER = '00000000-0000-4000-8000-0000000000a5';
 
 export const DEFAULT_ANALYTICS_RANGE = '30d';
 export const DEFAULT_FUNNEL_WEEKS = 8;
@@ -63,8 +68,10 @@ export const getMessageTraffic = loader('getMessageTraffic', (weeks) =>
 export const loadPayingEmployers = loader('loadPayingEmployers', () =>
   long()
     ? [
-        { employerId: '00000000-0000-4000-8000-000000000e01', displayName: 'Example Roofing Co', planCode: 'starter', status: 'active', currentPeriodEnd: '2026-11-01T00:00:00.000Z', cancelAtPeriodEnd: false },
-        { employerId: '00000000-0000-4000-8000-000000000e02', displayName: 'A very long example employer name that wraps on phones', planCode: 'pro', status: 'past_due', currentPeriodEnd: '2026-10-20T00:00:00.000Z', cancelAtPeriodEnd: true },
+        { employerId: '00000000-0000-4000-8000-000000000e01', displayName: 'Example Roofing Co', planCode: 'employer_pro', status: 'active', currentPeriodEnd: '2026-11-01T00:00:00.000Z', cancelAtPeriodEnd: false, organizationId: ORG_ROOFING, membersActive: 4, seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: 3 },
+        { employerId: '00000000-0000-4000-8000-000000000e02', displayName: 'A very long example employer name that wraps on phones', planCode: 'pro', status: 'past_due', currentPeriodEnd: '2026-10-20T00:00:00.000Z', cancelAtPeriodEnd: true, organizationId: ORG_LONG, membersActive: 1, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: null },
+        // An unnamed company: the label adds the first four characters of the id.
+        { employerId: '3fa10000-0000-4000-8000-000000000e08', displayName: 'Empleador', planCode: 'pro', status: 'trialing', currentPeriodEnd: '2026-11-05T00:00:00.000Z', cancelAtPeriodEnd: false, organizationId: ORG_FREE, membersActive: 1, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: 3 },
       ]
     : []);
 export const getPayingWeekly = loader('getPayingWeekly', (weeks) => {
@@ -150,7 +157,62 @@ export const getEmployerWeekly = loader('getEmployerWeekly', (weeks) => {
   return [...weekStarts(weeks).map((weekStart, i) => ({ weekStart, activeJobs: null, ...figures(i) })), { weekStart: null, activeJobs: long() ? 64 : 0, ...figures(3) }];
 });
 export const loadSlowestEmployers = loader('loadSlowestEmployers', () =>
-  long() ? [{ employerId: '00000000-0000-4000-8000-000000000e03', displayName: 'Example Plumbing', applications: 14, unanswered7d: 6, firstResponseP50Hours: 72.5, activeJobs: 3 }] : []);
+  long()
+    ? [
+        { employerId: '00000000-0000-4000-8000-000000000e03', displayName: 'Example Plumbing', applications: 14, unanswered7d: 6, firstResponseP50Hours: 72.5, activeJobs: 3, organizationId: ORG_PLUMBING },
+        { employerId: '00000000-0000-4000-8000-000000000e05', displayName: 'Memberless Painting', applications: 9, unanswered7d: 2, firstResponseP50Hours: 30, activeJobs: 1, organizationId: null },
+      ]
+    : []);
+// Phase 5: companies. One row per seat-meter case: 2 of 3 with pending and suspended,
+// no seats on the plan, over the limit on a plan with none, and an unknown limit.
+export const COMPANIES_LIMIT = 100;
+const company = (organizationId, ownerId, displayName, seats, extra = {}) => ({
+  organizationId, ownerId, displayName, createdAt: '2026-09-01T10:00:00.000Z', planCode: 'employer_pro', planStatus: 'active',
+  membersActive: 1 + seats.seatsUsed, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: 3, activeJobs: 2, ...seats, ...extra,
+});
+const COMPANY_ROWS = () => [
+  company(ORG_ROOFING, '00000000-0000-4000-8000-000000000e01', 'Example Roofing Co', { seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: 3 }),
+  company(ORG_FREE, '00000000-0000-4000-8000-000000000e06', 'Free Plan Framing', { seatsUsed: 0, seatLimit: 0 }, { planCode: 'employer_free', planStatus: null }),
+  company(ORG_OVER, '00000000-0000-4000-8000-000000000e07', 'Empleador', { seatsUsed: 3, seatLimit: 0 }),
+  // No plan at all: the catalog lost its free row (139 keeps the company listed).
+  company(ORG_LONG, '00000000-0000-4000-8000-000000000e02', 'A very long example employer name that wraps on phones', { seatsUsed: 4, seatLimit: null }, { planCode: null, planStatus: null }),
+];
+export const loadCompanies = loader('loadCompanies', () => {
+  if (!long()) return [];
+  const rows = COMPANY_ROWS();
+  return globalThis.__adminCheck?.fe4CompaniesFull
+    ? Array.from({ length: COMPANIES_LIMIT }, (_, i) => ({ ...rows[i % rows.length], organizationId: `00000000-0000-4000-8000-0000000c${String(i).padStart(4, '0')}` }))
+    : rows;
+});
+// globalThis.__adminCheck.fe4Company picks the shape:
+//   'found' (default): a company with an active, a suspended-for-billing, a suspended and a removed foreman;
+//   'owner-only': a past-due company holding only its owner;  'free': a free-plan company (no plan status, no seats);
+//   'empty': a company with no member rows;  'missing': the real loader's not_found shape;
+//   'no-plan': no eligible subscription and no free plan in the catalog (plan code null).
+// Like the real loader, an id that is not a uuid is not found.
+const OWNER = { userId: '00000000-0000-4000-8000-000000000e01', displayName: 'Example Roofing Co Owner', role: 'owner', status: 'active', billingSuspended: false, joinedAt: '2026-09-01T10:00:00.000Z', statusChangedAt: null, activeJobs: 2 };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const loadCompany = loader('loadCompany', (_session, organizationId) => {
+  const check = globalThis.__adminCheck;
+  check.fe4CompanyLoads = [...(check.fe4CompanyLoads ?? []), organizationId];
+  const shape = check.fe4Company ?? 'found';
+  if (shape === 'missing' || !UUID.test(organizationId)) return { company: null, members: [] };
+  const [base] = COMPANY_ROWS();
+  if (shape === 'owner-only') return { company: { ...base, planStatus: 'past_due', seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, membersActive: 1 }, members: [OWNER] };
+  if (shape === 'free') return { company: { ...base, planCode: 'employer_free', planStatus: null, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: 0, membersActive: 1 }, members: [OWNER] };
+  if (shape === 'empty') return { company: base, members: [] };
+  if (shape === 'no-plan') return { company: { ...base, planCode: null, planStatus: null, seatsUsed: 0, seatsPending: 0, seatsSuspended: 0, seatLimit: null, membersActive: 1 }, members: [OWNER] };
+  return {
+    company: base,
+    members: [
+      OWNER,
+      { userId: '00000000-0000-4000-8000-000000000f01', displayName: 'Rosa Mendez', role: 'foreman', status: 'active', billingSuspended: false, joinedAt: '2026-09-05T10:00:00.000Z', statusChangedAt: '2026-09-10T10:00:00.000Z', activeJobs: 1 },
+      { userId: '00000000-0000-4000-8000-000000000f02', displayName: null, role: 'foreman', status: 'suspended', billingSuspended: true, joinedAt: '2026-09-06T10:00:00.000Z', statusChangedAt: '2026-09-20T10:00:00.000Z', activeJobs: 0 },
+      { userId: '00000000-0000-4000-8000-000000000f03', displayName: '   ', role: 'foreman', status: 'removed', billingSuspended: false, joinedAt: '2026-09-07T10:00:00.000Z', statusChangedAt: '2026-09-21T10:00:00.000Z', activeJobs: 0 },
+      { userId: '00000000-0000-4000-8000-000000000f04', displayName: 'Luis Ortega', role: 'foreman', status: 'suspended', billingSuspended: false, joinedAt: '2026-09-08T10:00:00.000Z', statusChangedAt: null, activeJobs: 3 },
+    ],
+  };
+});
 export const loadStaleJobs = loader('loadStaleJobs', (_session, days) =>
   long()
     ? Array.from({ length: days === 7 ? 30 : 6 }, (_, i) => ({ jobId: `00000000-0000-4000-8000-0000000001${String(i).padStart(2, '0')}`, title: `Example job ${i + 1}`, employerId: '00000000-0000-4000-8000-000000000e04', displayName: 'Example Builders', postedAt: '2026-08-01T00:00:00.000Z', lastEmployerActionAt: i % 2 ? '2026-08-01T00:00:00.000Z' : '2026-09-01T00:00:00.000Z', daysIdle: days + i, waitingApplicants: i, lastApplicationAt: i % 3 ? '2026-09-20T00:00:00.000Z' : null }))

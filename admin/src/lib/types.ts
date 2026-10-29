@@ -161,6 +161,40 @@ export type PayingEmployer = {
   status: string;
   currentPeriodEnd?: string;
   cancelAtPeriodEnd: boolean;
+  organizationId: string;
+  membersActive: number;
+  seatsUsed: number;
+  seatsPending: number;
+  seatsSuspended: number;
+  seatLimit: number | null;
+};
+
+// Phase 5: a company is one employer organization (its owner and foremen).
+export type CompanySummary = {
+  organizationId: string;
+  ownerId: string;
+  displayName: string;
+  createdAt: string;
+  // null: no eligible subscription and no active free plan in the catalog.
+  planCode: string | null;
+  planStatus: string | null;
+  membersActive: number;
+  seatsUsed: number;
+  seatsPending: number;
+  seatsSuspended: number;
+  seatLimit: number | null;
+  activeJobs: number;
+};
+
+export type CompanyMember = {
+  userId: string;
+  displayName: string | null;
+  role: 'owner' | 'foreman';
+  status: 'active' | 'suspended' | 'removed';
+  billingSuspended: boolean;
+  joinedAt: string;
+  statusChangedAt: string | null;
+  activeJobs: number;
 };
 
 // Roadmap 2a: the worker onboarding funnel (migration 113).
@@ -253,6 +287,7 @@ export type SlowestEmployer = {
   unanswered7d: number;
   firstResponseP50Hours: number | null;
   activeJobs: number;
+  organizationId: string | null;
 };
 
 export type StaleJob = {

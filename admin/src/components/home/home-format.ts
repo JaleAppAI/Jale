@@ -97,7 +97,7 @@ export function keyMetricTiles(m: HomeMetrics): KeyMetricTile[] {
       tone: m.signupsThisWeek > 0 ? 'positive' : 'neutral',
     },
     {
-      label: 'Paying employers',
+      label: 'Paying companies',
       value: formatCount(m.payingEmployers),
       hint: `+${formatCount(m.payingThisWeek)} this week`,
       tone: m.payingThisWeek > 0 ? 'positive' : 'neutral',

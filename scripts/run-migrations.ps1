@@ -196,6 +196,7 @@ $MigrationFiles = @(
     '136_retire_per_person_billing.sql'
     '137_user_tutorial_settings.sql'
     '138_org_worker_naming.sql'
+    '139_admin_analytics_by_company.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

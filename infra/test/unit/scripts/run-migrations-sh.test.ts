@@ -3087,6 +3087,28 @@ describe('run-migrations.sh --report, against the fakes', () => {
     expect(readLines(h, 'ssm-comments.log')).toEqual([]);
   });
 
+  // The tracked release reports (infra/db/reports) are run on release day
+  // with --report, so each must pass the file check, and is sent exactly as
+  // checked, its comment lines left empty.
+  const TRACKED_REPORTS_DIR = path.join(repoRoot, 'infra', 'db', 'reports');
+  const trackedReports = fs.existsSync(TRACKED_REPORTS_DIR)
+    ? fs.readdirSync(TRACKED_REPORTS_DIR).filter((n) => n.endsWith('.sql')).sort()
+    : [];
+  it('has the tracked release reports, 139\'s precheck among them', () => {
+    expect(trackedReports).toContain('precheck-139.sql');
+  });
+  it.each(trackedReports)('accepts the tracked report infra/db/reports/%s and sends it without its comments', (name) => {
+    const text = fs.readFileSync(path.join(TRACKED_REPORTS_DIR, name), 'utf8');
+    writeReport(h, text);
+    const r = runScript(h, ['--report', REPORT_FILE]);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    const payload = fs.readFileSync(path.join(h.state, 'ssm', '3.sh'), 'utf8');
+    const sent = reportPayloadSql(payload);
+    expect(sent).toBe(text.split('\n').map((l) => (/^\s*--/.test(l) ? '' : l)).join('\n'));
+    expect(sent).not.toContain('--');
+  });
+
   it('refuses a file that does not exist before any AWS call', () => {
     const r = runScript(h, ['--report', 'no-such-report.sql']);
     expect(r.status).toBe(2);

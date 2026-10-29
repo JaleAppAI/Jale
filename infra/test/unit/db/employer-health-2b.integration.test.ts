@@ -865,6 +865,7 @@ maybeDescribe('2b employer health (114)', () => {
     ]);
     expect(await cols('SELECT * FROM admin_analytics_slowest_employers(1)')).toEqual([
       'employer_id', 'display_name', 'applications', 'unanswered_7d', 'first_response_p50_hours', 'active_jobs',
+      'organization_id',
     ]);
     expect(await cols('SELECT * FROM admin_analytics_stale_jobs()')).toEqual([
       'job_id', 'title', 'employer_id', 'display_name', 'posted_at', 'last_employer_action_at',

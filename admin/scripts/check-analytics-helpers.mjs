@@ -131,27 +131,83 @@ assert.deepEqual(
   { bucketStart: '2026-08-25T00:00:00.000Z', jobMessagesOut: 4, jobMessagesIn: 2, jobMessagesFailed: 1, waInbound: 10, waOutbound: 8, waFailed: 0 },
 );
 
+const ORG_1 = '00000000-0000-4000-8000-0000000000a1';
 assert.deepEqual(
   analytics.mapPayingEmployerRow({
     employer_id: '00000000-0000-0000-0000-000000000001',
     display_name: 'IT Analytics Co', plan_code: 'pro_monthly', status: 'active',
     current_period_end: new Date('2026-09-15T00:00:00.000Z'), cancel_at_period_end: false,
+    organization_id: ORG_1, members_active: '3', seats_used: '2', seats_pending: '1', seats_suspended: '0', seat_limit: 5,
   }),
   {
     employerId: '00000000-0000-0000-0000-000000000001', displayName: 'IT Analytics Co',
     planCode: 'pro_monthly', status: 'active',
     currentPeriodEnd: '2026-09-15T00:00:00.000Z', cancelAtPeriodEnd: false,
+    organizationId: ORG_1, membersActive: 3, seatsUsed: 2, seatsPending: 1, seatsSuspended: 0, seatLimit: 5,
   },
 );
-assert.equal(
-  analytics.mapPayingEmployerRow({
+{
+  const noLimit = analytics.mapPayingEmployerRow({
     employer_id: '00000000-0000-0000-0000-000000000002',
     display_name: 'Empleador', plan_code: 'pro_monthly', status: 'trialing',
     current_period_end: null, cancel_at_period_end: true,
-  }).currentPeriodEnd,
-  undefined,
-  'null period end maps to undefined',
+    organization_id: ORG_1, members_active: 1, seats_used: 0, seats_pending: 0, seats_suspended: 0, seat_limit: null,
+  });
+  assert.equal(noLimit.currentPeriodEnd, undefined, 'null period end maps to undefined');
+  assert.equal(noLimit.seatLimit, null, 'a plan without a seat limit stays null');
+  assert.equal(noLimit.membersActive, 1);
+}
+
+// ---- Phase 5: companies ----
+assert.equal(analytics.COMPANIES_LIMIT, 100);
+const companyRow = {
+  organization_id: ORG_1, owner_id: '00000000-0000-0000-0000-000000000001', display_name: 'IT Analytics Co',
+  created_at: new Date('2026-09-01T10:00:00.000Z'), plan_code: 'employer_pro', plan_status: 'active',
+  members_active: '3', seats_used: '2', seats_pending: '1', seats_suspended: '1', seat_limit: 5, active_jobs: '4',
+};
+assert.deepEqual(analytics.mapCompanySummaryRow(companyRow), {
+  organizationId: ORG_1, ownerId: '00000000-0000-0000-0000-000000000001', displayName: 'IT Analytics Co',
+  createdAt: '2026-09-01T10:00:00.000Z', planCode: 'employer_pro', planStatus: 'active',
+  membersActive: 3, seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: 5, activeJobs: 4,
+});
+assert.deepEqual(
+  analytics.mapCompanySummaryRow({ ...companyRow, plan_code: 'employer_free', plan_status: null, seat_limit: null }),
+  {
+    organizationId: ORG_1, ownerId: '00000000-0000-0000-0000-000000000001', displayName: 'IT Analytics Co',
+    createdAt: '2026-09-01T10:00:00.000Z', planCode: 'employer_free', planStatus: null,
+    membersActive: 3, seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: null, activeJobs: 4,
+  },
+  'a free company has no plan status, and a missing limit stays null',
 );
+// 139 keeps a company listed when the catalog lost its free row: no plan at all.
+assert.deepEqual(
+  analytics.mapCompanySummaryRow({ ...companyRow, plan_code: null, plan_status: null, seat_limit: null }),
+  {
+    organizationId: ORG_1, ownerId: '00000000-0000-0000-0000-000000000001', displayName: 'IT Analytics Co',
+    createdAt: '2026-09-01T10:00:00.000Z', planCode: null, planStatus: null,
+    membersActive: 3, seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: null, activeJobs: 4,
+  },
+  'a NULL plan code maps to null, never to a string',
+);
+const memberRow = {
+  user_id: '00000000-0000-0000-0000-0000000000b1', display_name: 'Rosa Mendez', role: 'foreman', status: 'suspended',
+  billing_suspended: true, joined_at: new Date('2026-09-02T10:00:00.000Z'),
+  status_changed_at: new Date('2026-09-20T10:00:00.000Z'), active_jobs: '2',
+};
+assert.deepEqual(analytics.mapCompanyMemberRow(memberRow), {
+  userId: '00000000-0000-0000-0000-0000000000b1', displayName: 'Rosa Mendez', role: 'foreman', status: 'suspended',
+  billingSuspended: true, joinedAt: '2026-09-02T10:00:00.000Z', statusChangedAt: '2026-09-20T10:00:00.000Z', activeJobs: 2,
+});
+assert.deepEqual(
+  analytics.mapCompanyMemberRow({ ...memberRow, display_name: null, role: 'owner', status: 'active', billing_suspended: false, status_changed_at: null }),
+  {
+    userId: '00000000-0000-0000-0000-0000000000b1', displayName: null, role: 'owner', status: 'active',
+    billingSuspended: false, joinedAt: '2026-09-02T10:00:00.000Z', statusChangedAt: null, activeJobs: 2,
+  },
+  'a member with no name and no status change keeps both as null',
+);
+assert.throws(() => analytics.mapCompanyMemberRow({ ...memberRow, role: 'admin' }), /Unexpected member role/);
+assert.throws(() => analytics.mapCompanyMemberRow({ ...memberRow, status: 'banned' }), /Unexpected member status/);
 
 // ---- 2a: onboarding funnel ----
 assert.equal(analytics.parseFunnelWeeks('13'), 13);
@@ -303,18 +359,29 @@ assert.deepEqual(
   analytics.mapSlowestEmployerRow({
     employer_id: '7f3a9c2e-0000-4000-8000-000000000001', display_name: 'Empleador',
     applications: '5', unanswered_7d: '3', first_response_p50_hours: null, active_jobs: '2',
+    organization_id: null,
   }),
   {
     employerId: '7f3a9c2e-0000-4000-8000-000000000001', displayName: 'Empleador',
     applications: 5, unanswered7d: 3, firstResponseP50Hours: null, activeJobs: 2,
+    organizationId: null,
   },
 );
 assert.equal(
   analytics.mapSlowestEmployerRow({
     employer_id: '7f3a9c2e-0000-4000-8000-000000000002', display_name: 'Pinturas MX',
     applications: '4', unanswered_7d: '0', first_response_p50_hours: '12.5', active_jobs: '1',
+    organization_id: ORG_1,
   }).firstResponseP50Hours,
   12.5,
+);
+assert.equal(
+  analytics.mapSlowestEmployerRow({
+    employer_id: '7f3a9c2e-0000-4000-8000-000000000002', display_name: 'Pinturas MX',
+    applications: '4', unanswered_7d: '0', first_response_p50_hours: '12.5', active_jobs: '1',
+    organization_id: ORG_1,
+  }).organizationId,
+  ORG_1,
 );
 const staleJob = analytics.mapStaleJobRow({
   job_id: '0b1c2d3e-0000-4000-8000-000000000003', title: 'Ayudante de pintor',
@@ -1108,12 +1175,12 @@ assert.deepEqual(
   { employers: 280, digestOn: 34, digestOnWithEmail: 29 },
 );
 for (const [employers, digestOn, digestOnWithEmail, line] of [
-  [280, 34, 29, 'Digest on for 12% of employers (34 of 280) · 29 of them have an email address'],
-  [0, 0, 0, 'Digest on for — of employers (0 of 0)'],
-  [280, 0, 0, 'Digest on for 0% of employers (0 of 280)'],
-  [300, 1, 1, 'Digest on for <1% of employers (1 of 300) · 1 of them has an email address'],
-  [1200, 1199, 0, 'Digest on for >99% of employers (1,199 of 1,200) · 0 of them have an email address'],
-  [5, 5, 5, 'Digest on for 100% of employers (5 of 5) · 5 of them have an email address'],
+  [280, 34, 29, 'Digest on for 12% of employer logins (34 of 280) · 29 of them have an email address'],
+  [0, 0, 0, 'Digest on for — of employer logins (0 of 0)'],
+  [280, 0, 0, 'Digest on for 0% of employer logins (0 of 280)'],
+  [300, 1, 1, 'Digest on for <1% of employer logins (1 of 300) · 1 of them has an email address'],
+  [1200, 1199, 0, 'Digest on for >99% of employer logins (1,199 of 1,200) · 0 of them have an email address'],
+  [5, 5, 5, 'Digest on for 100% of employer logins (5 of 5) · 5 of them have an email address'],
 ]) {
   assert.equal(digest.adoptionLine({ employers, digestOn, digestOnWithEmail }), line, `adoptionLine(${digestOn} of ${employers})`);
 }
@@ -1265,12 +1332,49 @@ const fe4Paying = [
 ];
 assert.deepEqual(health.payingChart({ weeks: fe4Paying, approximateBefore: null }), {
   labels: ['Oct 5', 'Oct 12'], partialLast: true,
-  series: [{ key: 'newPaying', label: 'New paying employers', color: 'chart-1', values: [3, 2] }],
+  series: [{ key: 'newPaying', label: 'New paying companies', color: 'chart-1', values: [3, 2] }],
 });
-assert.deepEqual(health.payingHeadline(fe4Paying), { value: '10%', note: 'of employers are paying (20 of 210)' });
-assert.deepEqual(health.payingHeadline([]), { value: '—', note: 'of employers are paying' });
+assert.deepEqual(health.payingHeadline(fe4Paying), { value: '10%', note: 'of companies are paying (20 of 210)' });
+assert.deepEqual(health.payingHeadline([]), { value: '—', note: 'of companies are paying' });
 assert.equal(health.approximateNote(null), null);
 assert.equal(health.approximateNote(fe4W[0]), 'Weeks before Sep 28 are approximate: subscription history starts then, so earlier churn is under-counted.');
+
+// Phase 5: the seat meter (Companies panel, company page, paying list).
+const seat = (seatsUsed, seatsPending, seatsSuspended, seatLimit) => ({ seatsUsed, seatsPending, seatsSuspended, seatLimit });
+assert.equal(health.seatMeterText(seat(2, 1, 1, 3)), '2 of 3 seats · 1 pending · 1 suspended');
+assert.equal(health.seatMeterText(seat(2, 0, 0, 3)), '2 of 3 seats', 'pending and suspended parts appear only when non-zero');
+assert.equal(health.seatMeterText(seat(2, 0, 1, 3)), '2 of 3 seats · 1 suspended');
+assert.equal(health.seatMeterText(seat(0, 2, 0, 3)), '0 of 3 seats · 2 pending');
+assert.equal(health.seatMeterText(seat(0, 0, 0, 0)), 'No seats on this plan');
+assert.equal(health.seatMeterText(seat(3, 0, 0, 0)), '3 of 0 seats', 'foremen on a plan with no seats are an over-limit case');
+assert.equal(health.seatMeterText(seat(0, 0, 1, 0)), '0 of 0 seats · 1 suspended', 'a suspended foreman is still a foreman on a plan with no seats');
+assert.equal(health.seatMeterText(seat(4, 0, 0, null)), '4 seats', 'no known limit: just the seats held');
+assert.equal(health.seatMeterText(seat(4, 1, 0, null)), '4 seats · 1 pending');
+assert.equal(health.seatsOverLimit(seat(3, 0, 0, 0)), true);
+assert.equal(health.seatsOverLimit(seat(2, 1, 0, 3)), false, 'used + pending equal to the limit is full, not over');
+assert.equal(health.seatsOverLimit(seat(3, 1, 0, 3)), true, 'a pending invite counts toward the limit');
+assert.equal(health.seatsOverLimit(seat(0, 0, 5, 0)), false, 'suspended foremen hold no seat');
+assert.equal(health.seatsOverLimit(seat(9, 9, 0, null)), false, 'no known limit: never over');
+// A member with no name (null, empty or blank) is "Unnamed"; a name is shown as typed.
+assert.equal(health.memberLabel(null), 'Unnamed');
+assert.equal(health.memberLabel(''), 'Unnamed');
+assert.equal(health.memberLabel('   '), 'Unnamed');
+assert.equal(health.memberLabel(' Rosa Mendez '), ' Rosa Mendez ', 'the name is shown as typed');
+// The plan status in words: the enum is never shown raw.
+assert.equal(health.planStatusLabel('past_due'), 'Past due');
+assert.equal(health.planStatusLabel('active'), 'Active');
+assert.equal(health.planStatusLabel('trialing'), 'Trialing');
+assert.equal(health.planStatusLabel('some_new_state'), 'Some new state', 'an unknown status is still readable');
+assert.equal(health.planStatusLabel(null), '—', 'a free company has no plan status');
+// The plan code in words, as the catalog (034's billing_plans) names it.
+assert.equal(health.planLabel('employer_pro'), 'Pro');
+assert.equal(health.planLabel('employer_free'), 'Free');
+assert.equal(health.planLabel('worker_free'), 'Worker free');
+assert.equal(health.planLabel(null), 'No plan (catalog)', 'no plan at all says so (the catalog lost its free row)');
+assert.equal(health.planLabel('employer_team_annual'), 'employer_team_annual', 'a code the catalog does not name is shown as it is');
+assert.equal(health.planLabel('constructor'), 'constructor', 'an object key is not a known code');
+assert.equal(health.planLabel('  '), '—', 'a blank code is a dash');
+assert.equal(health.companyHref('00000000-0000-4000-8000-0000000000a1'), '/analytics/employers/00000000-0000-4000-8000-0000000000a1');
 
 // #18, #3, #8, #4
 const fe4Tpl = health.templateReuseChart({ weeks: [{ weekStart: fe4W[2], partial: true, jobs: 0, fromTemplate: 0, employersUsingTemplates: 0, templatesSaved: 0 }], collectingSince: fe4W[2] });
@@ -1357,7 +1461,7 @@ assert.deepEqual(
 assert.equal(ops.rankingTile({ buckets: [], jobsOlderThan24h: 1, fallbackShare: null, fallbackJobs: 0, rankedJobs: 0, jobsWithApplicationsButNoRanking: 0 }).value, '1 job');
 
 // #13
-assert.deepEqual(digest.digestHeadline({ employers: 280, digestOn: 34, digestOnWithEmail: 29 }), { value: '10%', note: 'of employers get the digest (29 of 280)' });
+assert.deepEqual(digest.digestHeadline({ employers: 280, digestOn: 34, digestOnWithEmail: 29 }), { value: '10%', note: 'of employer logins get the digest (29 of 280)' });
 assert.deepEqual(digest.digestHeadline({ employers: 0, digestOn: 0, digestOnWithEmail: 0 }).value, '—');
 const fe4Sends = digest.splitDigestSends([
   { weekStart: fe4W[2], emailed: 1, sent: 1, failed: 0, unknown: 0, inProgress: 0, employersReached: 1 },
