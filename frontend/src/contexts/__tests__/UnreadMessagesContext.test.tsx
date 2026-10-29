@@ -315,6 +315,11 @@ describe('a membership-blocked login (Phase 3, C1)', () => {
         getInbox.mockRejectedValue(new MembershipBlockedError('no_organization'));
         const view = renderProvider(<Probe />);
         await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(1));
+        // Being CALLED is not being blocked: the refusal has to land before the
+        // session changes, or it becomes the late-refusal case in the next test.
+        await act(async () => {
+            await getInbox.mock.results[0].value.catch(() => {});
+        });
 
         getInbox.mockResolvedValue(inbox());
         authState = { idToken: 'other-token', isAuthenticated: true, userType: 'employer' };
@@ -322,6 +327,35 @@ describe('a membership-blocked login (Phase 3, C1)', () => {
 
         expect(await countSettled()).toBe('3');
         expect(getInbox).toHaveBeenCalledTimes(2);
+        expect(legalWall).not.toHaveBeenCalled();
+    });
+
+    it('a refusal that lands after the session changed does not block the new one', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        let refuse: (err: unknown) => void = () => {};
+        getInbox.mockImplementationOnce(() => new Promise((_, reject) => { refuse = reject; }));
+        const view = renderProvider(<Probe />);
+        await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(1));
+
+        getInbox.mockResolvedValue(inbox());
+        authState = { idToken: 'other-token', isAuthenticated: true, userType: 'employer' };
+        view.rerender(<UnreadMessagesProvider><Probe /></UnreadMessagesProvider>);
+        await act(async () => {
+            refuse(new MembershipBlockedError('no_organization'));
+            await vi.advanceTimersByTimeAsync(0);
+        });
+
+        // The refusal was asked under the old token, so it blocks nothing now.
+        // Nothing re-asks at once (a token change alone never reloads), but
+        // the poll keeps running and the next tick reads the new session's inbox.
+        expect(screen.getByTestId('probe-count').textContent).toBe('0');
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(INBOX_POLL_MS);
+        });
+        expect(await countSettled()).toBe('3');
+        expect(getInbox).toHaveBeenCalledTimes(2);
+        expect(getInbox.mock.calls[0][0]).toBe('test-token');
+        expect(getInbox.mock.calls[1][0]).toBe('other-token');
         expect(legalWall).not.toHaveBeenCalled();
     });
 });
