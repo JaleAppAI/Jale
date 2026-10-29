@@ -25,6 +25,7 @@
  */
 import type { PoolClient } from 'pg';
 import { workerApplicationUrl } from './worker-application-url';
+import { formatEmployerContactLabel } from '../../lib/employer-contact-label';
 import { randomUUID } from 'crypto';
 import { REQUIRED_FIELD_TYPES, DOC_TYPES, type PayInterval } from '../../lib/job-fields';
 import { EDUCATION_LEVELS } from '../../lib/application-answers';
@@ -927,7 +928,11 @@ interface ContinueOtherOffer {
 }
 
 /**
- * The employer's display name for a job, for the `intro`/`completion` copy.
+ * The name the fill prompts (`intro`/`completion`) use for a job: its
+ * responsible person's label, "{contact} ({company})" (`jobs.employer_id`,
+ * the same person the application notices name), or the company alone when
+ * that person has no contact name. See `formatEmployerContactLabel`.
+ *
  * `employer_display_name` (031) is a SECURITY DEFINER lookup: it flips a
  * transaction-local `app.employer_name_lookup` GUC that widens
  * `employer_profiles` reads until COMMIT. That widening is INERT for this
@@ -935,13 +940,19 @@ interface ContinueOtherOffer {
  * (031's header) -- which is why the WhatsApp lane may call it mid-turn
  * where an API handler (worker-jobs-detail.ts:44-46) must keep it last
  * before COMMIT. Same precedent as conversation-router.ts:566.
+ * `jale_cap.employer_contact_name` (138) is granted to jale_whatsapp.
  */
 async function loadJobCompanyName(client: PoolClient, jobId: string): Promise<string> {
-  const res = await client.query<{ company: string }>(
-    `SELECT employer_display_name(j.employer_id) AS company FROM jobs j WHERE j.id = $1`,
+  const res = await client.query<{ contact: string | null; company: string | null }>(
+    `SELECT jale_cap.employer_contact_name(j.employer_id) AS contact,
+            employer_display_name(j.employer_id) AS company
+       FROM jobs j WHERE j.id = $1`,
     [jobId],
   );
-  return res.rows[0]?.company ?? 'Jale';
+  const row = res.rows[0];
+  // No job row: the label rule's own fallback (`formatEmployerContactLabel`).
+  if (!row) return 'Empleador';
+  return formatEmployerContactLabel({ contactName: row.contact, companyName: row.company });
 }
 
 /**

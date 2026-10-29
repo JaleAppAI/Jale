@@ -244,6 +244,9 @@ describe('employer-application-status-update', () => {
   // the celebration never fires for a real hire.
   it('stamps hired_at on the move into hired, and keeps the FIRST one on a re-hire', async () => {
     mockQuery.mockImplementation((q: string) => {
+      if (q.includes('employer_display_name')) {
+        return Promise.resolve({ rowCount: 1, rows: [{ contact: null, company: 'NB Construction' }] });
+      }
       if (q.includes('FROM jobs')) {
         return Promise.resolve({ rowCount: 1, rows: [{ id: JOB_ID, number_of_workers_needed: 3, workers_hired: 0 }] });
       }
@@ -359,7 +362,7 @@ describe('employer-application-status-update', () => {
         return Promise.resolve({ rows: [{ status: statusAfter }] });
       }
       if (q.includes('employer_display_name')) {
-        return Promise.resolve({ rowCount: 1, rows: [{ company_name: 'NB Construction' }] });
+        return Promise.resolve({ rowCount: 1, rows: [{ contact: null, company: 'NB Construction' }] });
       }
       if (q.includes('UPDATE job_applications')) {
         return Promise.resolve({
@@ -473,7 +476,7 @@ describe('employer-application-status-update', () => {
         });
       }
       if (q.includes('employer_display_name')) {
-        return Promise.resolve({ rowCount: 1, rows: [{ company_name: 'NB Construction' }] });
+        return Promise.resolve({ rowCount: 1, rows: [{ contact: null, company: 'NB Construction' }] });
       }
       if (q.includes('UPDATE job_applications')) {
         if (opts.updateError) return Promise.reject(opts.updateError);
@@ -572,6 +575,24 @@ describe('employer-application-status-update', () => {
     expect(mockNotify).not.toHaveBeenCalled();
   });
 
+  it('the hire-gate 409 never runs the label query', async () => {
+    const gateError = Object.assign(new Error('new row violates check constraint'), {
+      code: '23514',
+      constraint: 'job_applications_hire_requirements_check',
+      detail: JSON.stringify({ fields: ['start_date'], docs: [], certifications: [] }),
+    });
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested', appStatusRequested: 'hired', updateError: gateError,
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired' }) }));
+
+    expect(res.statusCode).toBe(409);
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('employer_display_name'), expect.anything());
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('employer_contact_name'), expect.anything());
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
   it('still 500s and rolls back on a CHECK violation that is not the hire gate', async () => {
     const otherError = Object.assign(new Error('nope'), {
       code: '23514',
@@ -623,6 +644,61 @@ describe('employer-application-status-update', () => {
       .toBeLessThan(mockNotify.mock.invocationCallOrder[0]);
     expect(mockQuery.mock.invocationCallOrder[commitCall])
       .toBeGreaterThan(mockNotify.mock.invocationCallOrder[0]);
+  });
+
+  it("hiring on a foreman's job names the foreman, not the owner who acts: companyName is '{contact} ({company})'", async () => {
+    // The caller is the company owner; the job's employer_id is the foreman.
+    mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, [OWNER_ID, EMPLOYER_ID]));
+    const base = makeStageQueryMock({
+      appStatusBefore: 'details_requested', appStatusRequested: 'hired',
+    });
+    mockQuery.mockImplementation((q: string) => (
+      q.includes('employer_display_name')
+        ? Promise.resolve({ rowCount: 1, rows: [{ contact: 'Fer Gómez', company: 'Acme' }] })
+        : base(q)
+    ));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ kind: 'hired', companyName: 'Fer Gómez (Acme)' });
+    // The job's responsible person (jobs.employer_id), not the acting owner.
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('jale_cap.employer_contact_name($1)'), [EMPLOYER_ID],
+    );
+    expect(mockQuery).not.toHaveBeenCalledWith(
+      expect.stringContaining('employer_display_name'), [OWNER_ID],
+    );
+  });
+
+  it('requesting details on an owner job with no contact name keeps the company alone', async () => {
+    const base = makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    });
+    mockQuery.mockImplementation((q: string) => (
+      q.includes('employer_display_name')
+        ? Promise.resolve({ rowCount: 1, rows: [{ contact: null, company: 'Acme' }] })
+        : base(q)
+    ));
+
+    await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ kind: 'details_requested', companyName: 'Acme' });
+  });
+
+  it('a company with no name set and a contact reads the contact alone, never "Juan (Empleador)"', async () => {
+    const base = makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    });
+    mockQuery.mockImplementation((q: string) => (
+      q.includes('employer_display_name')
+        ? Promise.resolve({ rowCount: 1, rows: [{ contact: 'Juan', company: 'Empleador' }] })
+        : base(q)
+    ));
+
+    await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ companyName: 'Juan' });
   });
 
   it('enqueues with kind hired when the employer hires the worker', async () => {
