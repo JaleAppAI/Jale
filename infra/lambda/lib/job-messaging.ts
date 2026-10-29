@@ -4,6 +4,7 @@ import type { EmployerActor } from './employer-actor';
 import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError, TwilioTemplateInvalidError } from '../whatsapp/lib/outbox';
 import { createReleaseRenderer } from '../whatsapp/lib/onboarding-renderers';
 import type { PreferredLanguage } from '../whatsapp/lib/onboarding-types';
+import { cleanLabelPart, formatEmployerContactLabel, loadEmployerContactLabel } from './employer-contact-label';
 import {
   claimMessageFrom,
   claimWorkerIntent,
@@ -28,10 +29,16 @@ type ConversationAccessRow = {
   application_id: string;
   status: 'open' | 'closed';
   worker_phone: string | null;
-  company_name: string | null;
+  /** The acting user's worker-facing label, "{contact} ({company})". */
+  sender_label: string;
   job_title: string | null;
   last_worker_message_at: Date | string | null;
   worker_thread_number: number | null;
+};
+
+type ConversationAccessQueryRow = Omit<ConversationAccessRow, 'sender_label'> & {
+  sender_contact: string | null;
+  sender_company: string | null;
 };
 
 export type ConversationSummary = {
@@ -86,13 +93,20 @@ type OpenThreadRow = {
   id: string;
   application_id: string;
   job_title: string;
+  /** The responsible person's contact name (jale_cap.employer_contact_name). */
+  contact_name: string | null;
+  /** The company (employer_display_name). */
   company: string;
   worker_thread_number: number | null;
 };
 
+// The picker names each conversation's responsible person. Both halves of
+// the label come back with the row, so a picker costs one query, not one per
+// thread; the label itself is built in TS (formatEmployerContactLabel).
 const OPEN_THREAD_SELECT = `
   SELECT jc.id, jc.application_id, jc.worker_thread_number,
          j.title AS job_title,
+         jale_cap.employer_contact_name(jc.employer_id) AS contact_name,
          employer_display_name(jc.employer_id) AS company
     FROM job_conversations jc
     JOIN jobs j ON j.id = jc.job_id`;
@@ -128,25 +142,26 @@ function resumeTemplateName(lang: string | null | undefined): string {
   return `employer_message_resume_${templateLang(lang)}`;
 }
 
-function buildInviteFallback(companyName: string, jobTitle: string, lang: string | null | undefined): string {
+function buildInviteFallback(senderLabel: string, jobTitle: string, lang: string | null | undefined): string {
   return templateLang(lang) === 'en'
-    ? `${companyName} sent you a message about ${jobTitle}. Reply here to open the conversation.`
-    : `${companyName} te envio un mensaje sobre ${jobTitle}. Responde aqui para abrir la conversacion.`;
+    ? `${senderLabel} sent you a message about ${jobTitle}. Reply here to open the conversation.`
+    : `${senderLabel} te envio un mensaje sobre ${jobTitle}. Responde aqui para abrir la conversacion.`;
 }
 
-function sanitizeHeaderInput(value: string | null | undefined, max = 40): string {
-  return (value ?? '').replace(/[\r\n\t]/g, ' ').trim().slice(0, max) || 'Empleador';
-}
-
+/**
+ * The first line of every employer message relayed as free text. The label
+ * is taken as it is: formatEmployerContactLabel already cleaned and clipped
+ * it, and clipping it again would drop its closing parenthesis. The job
+ * title keeps its 50-character clip, by code points.
+ */
 function buildContextHeader(
-  companyName: string | null,
+  senderLabel: string,
   jobTitle: string | null,
   threadNumber: number | null,
 ): string {
-  const co = sanitizeHeaderInput(companyName);
-  const jt = sanitizeHeaderInput(jobTitle, 50);
+  const jt = cleanLabelPart(jobTitle, 50) || 'Trabajo';
   const num = threadNumber != null ? ` (#${threadNumber})` : '';
-  return `🏢 ${co} — ${jt}${num}\n`;
+  return `🏢 ${senderLabel || 'Empleador'} — ${jt}${num}\n`;
 }
 
 /**
@@ -173,15 +188,19 @@ async function inActorTransaction<T>(
 }
 
 // The conversation's employer is the job's responsible person, who need not
-// be the caller: an owner acts on a foreman's thread. Their users row is
-// LEFT-joined because the caller may not read it (users is FORCE RLS); the
-// company name then falls back to the job's.
+// be the caller: an owner acts on a foreman's thread. The message is the
+// caller's, so the worker sees the caller's label ($3, the acting user, whom
+// 118's trigger also stamps as the message's sender_user_id). Both names
+// come through definers: another member's users and employer_profiles rows
+// are not the caller's to read. The company is the owner's, one name across
+// the whole company, 'Empleador' when never set.
 async function loadConversationForEmployer(
   client: PoolClient,
   conversationId: string,
   scopeUserIds: string[],
+  actorUserId: string,
 ): Promise<ConversationAccessRow | null> {
-  const result = await client.query<ConversationAccessRow>(
+  const result = await client.query<ConversationAccessQueryRow>(
     `SELECT
        jc.id,
        jc.job_id,
@@ -190,21 +209,23 @@ async function loadConversationForEmployer(
        jc.application_id,
        jc.status,
        COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, ''), NULLIF(wp.phone, '')) AS worker_phone,
-       COALESCE(ep.company_name, employer.full_name, j.company, 'Jale') AS company_name,
+       jale_cap.employer_contact_name($3) AS sender_contact,
+       employer_display_name($3) AS sender_company,
        j.title AS job_title,
        jc.last_worker_message_at,
        jc.worker_thread_number
      FROM job_conversations jc
      JOIN jobs j ON j.id = jc.job_id
-     LEFT JOIN users employer ON employer.id = jc.employer_id
      JOIN users u ON u.id = jc.worker_id
      LEFT JOIN worker_profiles wp ON wp.user_id = jc.worker_id
-     LEFT JOIN employer_profiles ep ON ep.user_id = jc.employer_id
      WHERE jc.id = $1
        AND jc.employer_id = ANY($2::uuid[])`,
-    [conversationId, scopeUserIds],
+    [conversationId, scopeUserIds, actorUserId],
   );
-  return result.rows[0] ?? null;
+  const row = result.rows[0];
+  if (!row) return null;
+  const { sender_contact: contactName, sender_company: companyName, ...rest } = row;
+  return { ...rest, sender_label: formatEmployerContactLabel({ contactName, companyName }) };
 }
 
 async function queueWorkerInviteTemplate(
@@ -217,7 +238,7 @@ async function queueWorkerInviteTemplate(
   const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
   if (!whatsappNumber) throw new Error('worker_whatsapp_unavailable');
 
-  const companyName = conversation.company_name ?? 'Jale';
+  const senderLabel = conversation.sender_label;
   const jobTitle = conversation.job_title ?? 'this job';
   // message_id ties this invite to the employer's message row so an
   // unambiguous send failure marks it 'failed' in the employer UI. Success
@@ -232,11 +253,11 @@ async function queueWorkerInviteTemplate(
       whatsappNumber,
       templateName,
       JSON.stringify({
-        '1': companyName,
+        '1': senderLabel,
         '2': jobTitle,
         '5': `conversation:open:${conversation.id}`,
         '6': `conversation:decline:${conversation.id}`,
-        [FALLBACK_BODY_KEY]: buildInviteFallback(companyName, jobTitle, workerLanguage),
+        [FALLBACK_BODY_KEY]: buildInviteFallback(senderLabel, jobTitle, workerLanguage),
       }),
     ],
   );
@@ -251,7 +272,7 @@ async function queueEmployerFreeformMessage(
   const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
   if (!whatsappNumber) throw new Error('worker_whatsapp_unavailable');
 
-  const header = buildContextHeader(conversation.company_name, conversation.job_title, conversation.worker_thread_number);
+  const header = buildContextHeader(conversation.sender_label, conversation.job_title, conversation.worker_thread_number);
   await client.query(
     `INSERT INTO job_message_outbox
         (conversation_id, message_id, whatsapp_number, send_kind, body)
@@ -286,6 +307,7 @@ export async function listEmployerConversations(
        SELECT body
        FROM job_conversation_messages jcm
        WHERE jcm.conversation_id = jc.id
+         AND jcm.sender_type <> 'system'
        ORDER BY jcm.created_at DESC
        LIMIT 1
      ) last_msg ON true
@@ -325,6 +347,7 @@ export async function getEmployerConversationDetail(
        SELECT body
        FROM job_conversation_messages jcm
        WHERE jcm.conversation_id = jc.id
+         AND jcm.sender_type <> 'system'
        ORDER BY jcm.created_at DESC
        LIMIT 1
      ) last_msg ON true
@@ -356,23 +379,26 @@ export async function createApplicantConversation(
 ): Promise<{ conversationId: string }> {
   // The job must be in the caller's scope. Its employer_id -- the job's
   // responsible person, not necessarily the caller -- owns the conversation.
-  // The employer's users row is LEFT-joined: the caller may not read another
-  // member's row (users is FORCE RLS).
-  const access = await client.query<ConversationAccessRow>(
+  // No employer row is joined: the caller may not read another member's
+  // users row (FORCE RLS), and the name the worker sees is the caller's
+  // label, loaded with the conversation when the first message is queued.
+  const access = await client.query<{
+    job_id: string;
+    employer_id: string;
+    worker_id: string;
+    application_id: string;
+    worker_phone: string | null;
+  }>(
     `SELECT
        j.id AS job_id,
        j.employer_id,
        ja.worker_id,
        ja.id AS application_id,
-       COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, ''), NULLIF(wp.phone, '')) AS worker_phone,
-       COALESCE(ep.company_name, employer.full_name, j.company, 'Jale') AS company_name,
-       j.title AS job_title
+       COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, ''), NULLIF(wp.phone, '')) AS worker_phone
      FROM jobs j
      JOIN job_applications ja ON ja.job_id = j.id
-     LEFT JOIN users employer ON employer.id = j.employer_id
      JOIN users u ON u.id = ja.worker_id
      LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
-     LEFT JOIN employer_profiles ep ON ep.user_id = j.employer_id
      WHERE j.id = $1
        AND j.employer_id = ANY($2::uuid[])
        AND ja.worker_id = $3`,
@@ -457,9 +483,11 @@ async function claimEmployerChatIntent(
   messageId: string,
   language: PreferredLanguage,
 ): Promise<void> {
-  const companyName = conversation.company_name;
+  // The payload keeps its shape; companyName carries the sender's label, so
+  // a deferred intent re-renders with the name of the person who wrote.
+  const companyName = conversation.sender_label;
   const jobTitle = conversation.job_title;
-  const rendered = companyName !== null && jobTitle !== null
+  const rendered = jobTitle !== null
     ? await releaseRenderer.render({
       kind: 'employer_chat_single',
       workerId: conversation.worker_id,
@@ -493,7 +521,7 @@ export async function queueConversationMessageFromEmployer(
   closedWindowTemplate: 'invite' | 'resume' = 'resume',
   options?: { forceCanSendFreeform?: boolean },
 ): Promise<{ messageId: string; queuedAsTemplate: boolean }> {
-  const conversation = await loadConversationForEmployer(client, conversationId, actor.scopeUserIds);
+  const conversation = await loadConversationForEmployer(client, conversationId, actor.scopeUserIds, actor.userId);
   if (!conversation || conversation.status !== 'open') throw new Error('conversation_not_found');
 
   const canSendFreeform = (options?.forceCanSendFreeform ?? false) || isWorkerReplyWindowOpen(conversation.last_worker_message_at);
@@ -688,7 +716,7 @@ export async function recordWorkerConversationReply(
       threads: rows.map((r) => ({
         conversationId: r.id,
         jobTitle: r.job_title,
-        companyName: r.company,
+        companyName: formatEmployerContactLabel({ contactName: r.contact_name, companyName: r.company }),
         threadNumber: r.worker_thread_number,
       })),
     });
@@ -749,13 +777,12 @@ export async function recordWorkerConversationReply(
     [target.application_id],
   );
 
-  const pending = await client.query<{ id: string; body: string }>(
+  const pending = await client.query<PendingEmployerMessage>(
     pendingEmployerMessagesSql(), [target.id],
   );
   const whatsappNumber = normalizeWhatsappNumber(from);
   if (whatsappNumber) {
     await queueWaitingEmployerMessages(client, target.id, whatsappNumber, pending.rows, {
-      company: target.company,
       jobTitle: target.job_title,
       threadNumber: target.worker_thread_number,
     });
@@ -763,30 +790,51 @@ export async function recordWorkerConversationReply(
   return { status: 'routed', conversationId: target.id };
 }
 
+type PendingEmployerMessage = {
+  id: string;
+  body: string;
+  /** Who wrote it: sender_user_id, or the conversation's employer for rows from before 118. */
+  sender_user_id: string;
+};
+
 function pendingEmployerMessagesSql(): string {
-  return `SELECT id, body
-     FROM job_conversation_messages
-     WHERE conversation_id = $1
-       AND sender_type = 'employer'
-       AND status = 'waiting_worker_reply'
-     ORDER BY created_at ASC`;
+  return `SELECT m.id, m.body, COALESCE(m.sender_user_id, jc.employer_id) AS sender_user_id
+     FROM job_conversation_messages m
+     JOIN job_conversations jc ON jc.id = m.conversation_id
+     WHERE m.conversation_id = $1
+       AND m.sender_type = 'employer'
+       AND m.status = 'waiting_worker_reply'
+     ORDER BY m.created_at ASC`;
 }
 
+/**
+ * Queues the employer messages that waited for the worker's reply. Each one
+ * is headed with ITS OWN writer's label (an owner and a foreman may both have
+ * written while the worker was away), loaded once per distinct writer.
+ */
 async function queueWaitingEmployerMessages(
   client: PoolClient,
   conversationId: string,
   whatsappNumber: string,
-  messages: Array<{ id: string; body: string }>,
-  headerData?: { company: string | null; jobTitle: string | null; threadNumber: number | null },
+  messages: PendingEmployerMessage[],
+  headerData: { jobTitle: string | null; threadNumber: number | null },
 ): Promise<number> {
-  const header = headerData
-    ? buildContextHeader(headerData.company, headerData.jobTitle, headerData.threadNumber)
-    : '';
+  const labels = new Map<string, string>();
   for (const message of messages) {
+    let label = labels.get(message.sender_user_id);
+    if (label === undefined) {
+      label = await loadEmployerContactLabel(client, message.sender_user_id);
+      labels.set(message.sender_user_id, label);
+    }
+    const header = buildContextHeader(label, headerData.jobTitle, headerData.threadNumber);
+    // created_at is clock_timestamp(), not the column's now() default: every
+    // row of this loop is written in one transaction, so now() would give
+    // them one timestamp and the send (ORDER BY created_at) could deliver
+    // them in any order. clock_timestamp() keeps the messages' own order.
     await client.query(
       `INSERT INTO job_message_outbox
-          (conversation_id, message_id, whatsapp_number, send_kind, body)
-       VALUES ($1, $2, $3, 'freeform', $4)`,
+          (conversation_id, message_id, whatsapp_number, send_kind, body, created_at)
+       VALUES ($1, $2, $3, 'freeform', $4, clock_timestamp())`,
       [conversationId, message.id, whatsappNumber, `${header}${message.body}`],
     );
     await client.query(
@@ -831,11 +879,9 @@ async function openWorkerConversation(
     application_id: string;
     worker_thread_number: number | null;
     job_title: string | null;
-    company: string | null;
   }>(
     `SELECT jc.id, jc.application_id, jc.worker_thread_number,
-            j.title AS job_title,
-            employer_display_name(jc.employer_id) AS company
+            j.title AS job_title
      FROM job_conversations jc
      JOIN jobs j ON j.id = jc.job_id
      WHERE ${filter}
@@ -868,12 +914,11 @@ async function openWorkerConversation(
   const whatsappNumber = normalizeWhatsappNumber(from);
   if (!whatsappNumber) return { found: true, queuedMessages: 0, conversationId: row.id };
 
-  const pending = await client.query<{ id: string; body: string }>(
+  const pending = await client.query<PendingEmployerMessage>(
     pendingEmployerMessagesSql(),
     [row.id],
   );
   const queuedMessages = await queueWaitingEmployerMessages(client, row.id, whatsappNumber, pending.rows, {
-    company: row.company,
     jobTitle: row.job_title,
     threadNumber: row.worker_thread_number,
   });

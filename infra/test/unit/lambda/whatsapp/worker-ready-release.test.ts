@@ -38,6 +38,8 @@ interface ChatSourceRow {
   conversation_status: string;
   job_title: string;
   company_name: string;
+  /** The sender's contact name (Phase 4); omitted reads as none. */
+  contact_name?: string | null;
   // All three default to the "still eligible" value when omitted, so
   // existing test fixtures that predate these predicates keep passing
   // unchanged.
@@ -1526,6 +1528,65 @@ describe('releaseWorkerReady', () => {
 
       expect(finalIntents.get('ec-1')?.status).toBe('released');
       expect(requests.some((r) => r.kind === 'employer_chat_single')).toBe(true);
+    });
+  });
+
+  // Phase 4: the released copy names the person who wrote the message,
+  // "{contact} ({company})", read at release time from the message's sender
+  // (the conversation's employer for rows from before 118). A payload queued
+  // before the deploy, holding the bare company, releases the same way.
+  describe('employer_chat names the person who wrote', () => {
+    const chatIntent = () => [
+      intentRow({
+        id: 'ec-1', category: 'employer_chat', owner_service: 'job-messaging',
+        source_type: 'job_conversation_message', source_id: 'msg-1', priority: 40,
+        payload: { conversationId: 'conv-1', companyName: 'Acme', jobTitle: 'Plomero' },
+      }),
+    ];
+
+    it("reads both names of the message's sender in the chat reload, falling back to the conversation's employer", async () => {
+      const chats = [{
+        message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
+        job_title: 'Plomero', contact_name: 'Fer Gómez', company_name: 'Acme',
+      }];
+      const { client, calls } = scriptedClient({ eventStatus: 'processing', intents: chatIntent(), chats });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      const reload = calls.find((c) => /FROM job_conversation_messages jcm/.test(c.sql))!;
+      const text = reload.sql.replace(/\s+/g, ' ');
+      expect(text).toContain('jale_cap.employer_contact_name(COALESCE(jcm.sender_user_id, jc.employer_id)) AS contact_name');
+      expect(text).toContain('employer_display_name(COALESCE(jcm.sender_user_id, jc.employer_id)) AS company_name');
+    });
+
+    it("a payload queued before the deploy renders with the sender's label", async () => {
+      const chats = [{
+        message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
+        job_title: 'Plomero', contact_name: 'Fer Gómez', company_name: 'Acme',
+      }];
+      const { client, outboxRows } = scriptedClient({ eventStatus: 'processing', intents: chatIntent(), chats, preferredLanguage: 'en' });
+      const { render, requests } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      const single = requests.find((r) => r.kind === 'employer_chat_single') as Extract<ReleaseRenderRequest, { kind: 'employer_chat_single' }>;
+      expect(single.companyName).toBe('Fer Gómez (Acme)');
+      expect(outboxRows.some((r) => r.intentId === 'ec-1')).toBe(true);
+    });
+
+    it("an owner with no company name and contact 'Juan' is 'Juan'; no contact is the company alone", async () => {
+      for (const [contact, company, label] of [['Juan', 'Empleador', 'Juan'], [null, 'Acme', 'Acme']] as const) {
+        const chats = [{
+          message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
+          job_title: 'Plomero', contact_name: contact, company_name: company,
+        }];
+        const { client } = scriptedClient({ eventStatus: 'processing', intents: chatIntent(), chats });
+        const { render, requests } = recordingRenderer();
+        await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+        const single = requests.find((r) => r.kind === 'employer_chat_single') as Extract<ReleaseRenderRequest, { kind: 'employer_chat_single' }>;
+        expect(single.companyName).toBe(label);
+      }
     });
   });
 

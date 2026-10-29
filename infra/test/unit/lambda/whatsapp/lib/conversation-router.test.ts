@@ -1342,3 +1342,93 @@ describe('handlePickerResponse — close_reason branch', () => {
     expect(closeWorkerConversation).not.toHaveBeenCalled();
   });
 });
+
+// Phase 4: every picker names the conversation's responsible person,
+// "{contact} ({company})"; a label is shown as it is (never re-clipped, its
+// hyphens kept), and any raw part is whitespace-cleaned onto one line.
+describe('pickers name the responsible person (employer organizations, Phase 4)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const lines = (text: string) => text.split('\n');
+
+  it('CHATS: one query selects both names; the lines read "{contact} ({company})", hyphens kept, a newline flattened', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [
+        { id: 'conv-a', job_title: 'Plomero', contact_name: 'Fer Gómez', company: 'Acme', worker_thread_number: 1 },
+        { id: 'conv-b', job_title: 'Techador', contact_name: null, company: 'A-1 Roofing', worker_thread_number: 2 },
+        { id: 'conv-c', job_title: 'Pintor\nde casas', contact_name: null, company: 'Acme\nNorte', worker_thread_number: 3 },
+      ], rowCount: 3 });
+    await tryConversationRelay(client, { ...baseConv, user_id: WORKER }, { ...msg, body: 'CHATS' }, deps);
+
+    const sql = String(mockQuery.mock.calls[1][0]).replace(/\s+/g, ' ');
+    expect(sql).toContain('jale_cap.employer_contact_name(jc.employer_id) AS contact_name');
+    expect(sql).toContain('employer_display_name(jc.employer_id) AS company');
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+
+    const sent = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(lines(sent)).toEqual([
+      'Tus conversaciones abiertas:',
+      '1. Fer Gómez (Acme) — Plomero',
+      '2. A-1 Roofing — Techador',
+      '3. Acme Norte — Pintor de casas',
+      'Responde con el número.',
+    ]);
+    const stored = (deps.updateConversation as jest.Mock).mock.calls[0][2].state_context.pending_picker.threads;
+    expect(stored.map((t: any) => t.companyName)).toEqual(['Fer Gómez (Acme)', 'A-1 Roofing', 'Acme Norte']);
+  });
+
+  it('auto-focus after a closed thread names the survivor by its label', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [
+        { id: 'conv-b', job_title: 'Plomero', contact_name: 'Fer Gómez', company: 'Acme', worker_thread_number: 2 },
+      ], rowCount: 1 });
+    (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce({ status: 'focus_closed' });
+    await relayWorkerFreeText(client, { ...baseConv, focused_job_conversation_id: 'old' }, msg, WORKER, deps);
+    const notices = (queueOutboxText as jest.Mock).mock.calls.map((c: any[]) => c[3] as string);
+    expect(notices).toContain('Ahora respondes a Fer Gómez (Acme). Escribe tu mensaje.');
+  });
+
+  it('the reply picker shows each label whole: hyphens kept, a 70-character label not cut', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
+    const long = `${'a'.repeat(30)} (${'c'.repeat(40)})`;
+    (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce({
+      status: 'ambiguous',
+      threads: [
+        { conversationId: CONV_A, jobTitle: 'Plomero', companyName: 'Fer Gómez (Acme)', threadNumber: 1 },
+        { conversationId: CONV_B, jobTitle: 'Re-roof', companyName: 'A-1 Roofing', threadNumber: 2 },
+        { conversationId: 'conv-c', jobTitle: 'Pintor', companyName: long, threadNumber: 3 },
+      ],
+    });
+    await relayWorkerFreeText(client, baseConv, msg, WORKER, deps);
+    const sent = lines((queueOutboxText as jest.Mock).mock.calls[0][3] as string);
+    expect(sent.slice(1)).toEqual([
+      '1. Fer Gómez (Acme) — Plomero',
+      '2. A-1 Roofing — Re-roof',
+      `3. ${long} — Pintor`,
+    ]);
+  });
+
+  it('a pick names the chosen label; a name stored before the deploy with a newline shows on one line', async () => {
+    // A fresh conversation row per pick: a pick clears the stored picker.
+    const conv = (language: string) => ({
+      ...baseConv,
+      language,
+      state_context: { pending_picker: {
+        kind: 'disambiguation',
+        threads: [
+          { conversationId: CONV_A, jobTitle: 'Plomero', companyName: 'A-1 Roofing', threadNumber: 1 },
+          { conversationId: CONV_B, jobTitle: 'Plomero', companyName: 'Acme\n\tNorte', threadNumber: 2 },
+        ],
+      }},
+    });
+    await handlePickerResponse(client, conv('es'), { ...msg, body: '1' }, WORKER, deps);
+    await handlePickerResponse(client, conv('en'), { ...msg, body: '2' }, WORKER, deps);
+    const sent = (queueOutboxText as jest.Mock).mock.calls.map((c: any[]) => c[3] as string);
+    expect(sent).toEqual([
+      'Ahora respondes a A-1 Roofing. Escribe tu mensaje.',
+      'Now replying to Acme Norte. Send your message.',
+    ]);
+  });
+});
