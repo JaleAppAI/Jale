@@ -433,4 +433,77 @@ describe('worker-jobs-detail', () => {
       }
     });
   });
+
+  // Phase 4: an applicant sees which person at the company is responsible for
+  // the job. The SQL gates on THIS worker's application row; the handler only
+  // cleans and normalises what comes back.
+  describe('contact_name', () => {
+    const respondWith = (job: Record<string, unknown>) => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+        if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
+        if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [] });
+      });
+    };
+    const base = { id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D', required_docs: [], created_at: 'ts', company_name: 'Acme' };
+
+    it('asks for the contact only when this worker has an application row, via the definer', async () => {
+      respondWith({ ...base, contact_name: 'Fer Gómez' });
+      await handler(baseEvent);
+      const call = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM jobs'))!;
+      const sql = String(call[0]).replace(/\s+/g, ' ');
+      expect(sql).toContain(
+        'CASE WHEN EXISTS (SELECT 1 FROM job_applications ja WHERE ja.job_id = j.id AND ja.worker_id = $2) '
+        + 'THEN jale_cap.employer_contact_name(j.employer_id) END AS contact_name',
+      );
+      // $2 is the internal user id the handler resolved, the one its 404 gate also uses.
+      expect(call[1]).toEqual(['job-1', 'worker-id']);
+    });
+
+    it("returns the contact name to an applicant of a foreman's job", async () => {
+      respondWith({ ...base, contact_name: 'Fer Gómez' });
+      const res = await handler(baseEvent);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).contact_name).toBe('Fer Gómez');
+    });
+
+    it('returns null for a worker who has not applied (the CASE yields NULL)', async () => {
+      respondWith({ ...base, contact_name: null });
+      const res = await handler(baseEvent);
+      expect(JSON.parse(res.body).contact_name).toBeNull();
+    });
+
+    it('returns null when the employer has no contact, or the key is absent', async () => {
+      for (const row of [{ ...base, contact_name: '   ' }, { ...base, contact_name: '' }, { ...base }]) {
+        respondWith(row);
+        const res = await handler(baseEvent);
+        expect(JSON.parse(res.body).contact_name).toBeNull();
+      }
+    });
+
+    it('still returns it to a worker whose application is not_interested (any status counts as applied)', async () => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+        if (q.includes('FROM jobs')) return Promise.resolve({ rows: [{ ...base, contact_name: 'Fer Gómez' }] });
+        if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [{ status: 'not_interested' }] });
+        return Promise.resolve({ rows: [] });
+      });
+      const res = await handler(baseEvent);
+      const body = JSON.parse(res.body);
+      expect(body.already_applied).toBe(true);
+      expect(body.application_status).toBe('not_interested');
+      expect(body.contact_name).toBe('Fer Gómez');
+      // The gate is row existence: the EXISTS subquery filters on no status.
+      const sql = String(mockQuery.mock.calls.find(([q]) => String(q).includes('FROM jobs'))![0]).replace(/\s+/g, ' ');
+      const exists = sql.slice(sql.indexOf('CASE WHEN EXISTS'), sql.indexOf('AS contact_name'));
+      expect(exists).not.toMatch(/status/);
+    });
+
+    it('collapses stray whitespace in the name', async () => {
+      respondWith({ ...base, contact_name: '  Fer \n  Gómez\t' });
+      const res = await handler(baseEvent);
+      expect(JSON.parse(res.body).contact_name).toBe('Fer Gómez');
+    });
+  });
 });

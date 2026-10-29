@@ -470,8 +470,19 @@ function EmployerProfileForm(props: {
                 label={t('field_contact')}
                 htmlFor={`${fieldId}-contact`}
                 error={missingFields.includes('contact_name') ? requiredError : undefined}
+                errorId={`${fieldId}-contact-error`}
             >
-                <Input id={`${fieldId}-contact`} value={contactName} onChange={(e) => setContactName(e.target.value)} autoComplete="name" />
+                <Input
+                    id={`${fieldId}-contact`}
+                    value={contactName}
+                    onChange={(e) => setContactName(e.target.value)}
+                    autoComplete="name"
+                    aria-describedby={[
+                        `${fieldId}-contact-hint`,
+                        missingFields.includes('contact_name') ? `${fieldId}-contact-error` : null,
+                    ].filter(Boolean).join(' ')}
+                />
+                <p id={`${fieldId}-contact-hint`} className="text-xs text-[var(--jale-ink-2)]">{t('contact_name_hint')}</p>
             </LabeledField>
             <LabeledField
                 label={t('field_phone')}
@@ -562,18 +573,21 @@ function LabeledField({
     label,
     htmlFor,
     error,
+    errorId,
     children,
 }: {
     label: string;
     htmlFor: string;
     error?: string;
+    /** Lets the control point `aria-describedby` at the error as well as its hint. */
+    errorId?: string;
     children: ReactNode;
 }) {
     return (
         <div className="flex flex-col gap-1.5">
             <label className={labelClasses} htmlFor={htmlFor}>{label}</label>
             {children}
-            {error && <p className="text-xs font-semibold text-[var(--jale-danger)]">{error}</p>}
+            {error && <p id={errorId} className="text-xs font-semibold text-[var(--jale-danger)]">{error}</p>}
         </div>
     );
 }

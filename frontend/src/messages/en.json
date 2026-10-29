@@ -503,7 +503,8 @@
         "required": "Required.",
         "missing_summary": "Please add: {fields}"
       },
-      "foreman_company_hint": "Only your company's owner can change these."
+      "foreman_company_hint": "Only your company's owner can change these.",
+      "contact_name_hint": "Workers who apply to your jobs see this name."
     },
     "digest": {
       "title": "Notifications",
@@ -1393,6 +1394,7 @@
     }
   },
   "worker_job_detail": {
+    "contact": "Contact: {name}",
     "back": "← Back to jobs",
     "required_docs": "Required documents",
     "pay_range": "Pay range",
