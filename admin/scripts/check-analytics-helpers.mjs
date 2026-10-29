@@ -131,27 +131,73 @@ assert.deepEqual(
   { bucketStart: '2026-08-25T00:00:00.000Z', jobMessagesOut: 4, jobMessagesIn: 2, jobMessagesFailed: 1, waInbound: 10, waOutbound: 8, waFailed: 0 },
 );
 
+const ORG_1 = '00000000-0000-4000-8000-0000000000a1';
 assert.deepEqual(
   analytics.mapPayingEmployerRow({
     employer_id: '00000000-0000-0000-0000-000000000001',
     display_name: 'IT Analytics Co', plan_code: 'pro_monthly', status: 'active',
     current_period_end: new Date('2026-09-15T00:00:00.000Z'), cancel_at_period_end: false,
+    organization_id: ORG_1, members_active: '3', seats_used: '2', seats_pending: '1', seats_suspended: '0', seat_limit: 5,
   }),
   {
     employerId: '00000000-0000-0000-0000-000000000001', displayName: 'IT Analytics Co',
     planCode: 'pro_monthly', status: 'active',
     currentPeriodEnd: '2026-09-15T00:00:00.000Z', cancelAtPeriodEnd: false,
+    organizationId: ORG_1, membersActive: 3, seatsUsed: 2, seatsPending: 1, seatsSuspended: 0, seatLimit: 5,
   },
 );
-assert.equal(
-  analytics.mapPayingEmployerRow({
+{
+  const noLimit = analytics.mapPayingEmployerRow({
     employer_id: '00000000-0000-0000-0000-000000000002',
     display_name: 'Empleador', plan_code: 'pro_monthly', status: 'trialing',
     current_period_end: null, cancel_at_period_end: true,
-  }).currentPeriodEnd,
-  undefined,
-  'null period end maps to undefined',
+    organization_id: ORG_1, members_active: 1, seats_used: 0, seats_pending: 0, seats_suspended: 0, seat_limit: null,
+  });
+  assert.equal(noLimit.currentPeriodEnd, undefined, 'null period end maps to undefined');
+  assert.equal(noLimit.seatLimit, null, 'a plan without a seat limit stays null');
+  assert.equal(noLimit.membersActive, 1);
+}
+
+// ---- Phase 5: companies ----
+assert.equal(analytics.COMPANIES_LIMIT, 100);
+const companyRow = {
+  organization_id: ORG_1, owner_id: '00000000-0000-0000-0000-000000000001', display_name: 'IT Analytics Co',
+  created_at: new Date('2026-09-01T10:00:00.000Z'), plan_code: 'employer_pro', plan_status: 'active',
+  members_active: '3', seats_used: '2', seats_pending: '1', seats_suspended: '1', seat_limit: 5, active_jobs: '4',
+};
+assert.deepEqual(analytics.mapCompanySummaryRow(companyRow), {
+  organizationId: ORG_1, ownerId: '00000000-0000-0000-0000-000000000001', displayName: 'IT Analytics Co',
+  createdAt: '2026-09-01T10:00:00.000Z', planCode: 'employer_pro', planStatus: 'active',
+  membersActive: 3, seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: 5, activeJobs: 4,
+});
+assert.deepEqual(
+  analytics.mapCompanySummaryRow({ ...companyRow, plan_code: 'employer_free', plan_status: null, seat_limit: null }),
+  {
+    organizationId: ORG_1, ownerId: '00000000-0000-0000-0000-000000000001', displayName: 'IT Analytics Co',
+    createdAt: '2026-09-01T10:00:00.000Z', planCode: 'employer_free', planStatus: null,
+    membersActive: 3, seatsUsed: 2, seatsPending: 1, seatsSuspended: 1, seatLimit: null, activeJobs: 4,
+  },
+  'a free company has no plan status, and a missing limit stays null',
 );
+const memberRow = {
+  user_id: '00000000-0000-0000-0000-0000000000b1', display_name: 'Rosa Mendez', role: 'foreman', status: 'suspended',
+  billing_suspended: true, joined_at: new Date('2026-09-02T10:00:00.000Z'),
+  status_changed_at: new Date('2026-09-20T10:00:00.000Z'), active_jobs: '2',
+};
+assert.deepEqual(analytics.mapCompanyMemberRow(memberRow), {
+  userId: '00000000-0000-0000-0000-0000000000b1', displayName: 'Rosa Mendez', role: 'foreman', status: 'suspended',
+  billingSuspended: true, joinedAt: '2026-09-02T10:00:00.000Z', statusChangedAt: '2026-09-20T10:00:00.000Z', activeJobs: 2,
+});
+assert.deepEqual(
+  analytics.mapCompanyMemberRow({ ...memberRow, display_name: null, role: 'owner', status: 'active', billing_suspended: false, status_changed_at: null }),
+  {
+    userId: '00000000-0000-0000-0000-0000000000b1', displayName: null, role: 'owner', status: 'active',
+    billingSuspended: false, joinedAt: '2026-09-02T10:00:00.000Z', statusChangedAt: null, activeJobs: 2,
+  },
+  'a member with no name and no status change keeps both as null',
+);
+assert.throws(() => analytics.mapCompanyMemberRow({ ...memberRow, role: 'admin' }), /Unexpected member role/);
+assert.throws(() => analytics.mapCompanyMemberRow({ ...memberRow, status: 'banned' }), /Unexpected member status/);
 
 // ---- 2a: onboarding funnel ----
 assert.equal(analytics.parseFunnelWeeks('13'), 13);
@@ -303,18 +349,29 @@ assert.deepEqual(
   analytics.mapSlowestEmployerRow({
     employer_id: '7f3a9c2e-0000-4000-8000-000000000001', display_name: 'Empleador',
     applications: '5', unanswered_7d: '3', first_response_p50_hours: null, active_jobs: '2',
+    organization_id: null,
   }),
   {
     employerId: '7f3a9c2e-0000-4000-8000-000000000001', displayName: 'Empleador',
     applications: 5, unanswered7d: 3, firstResponseP50Hours: null, activeJobs: 2,
+    organizationId: null,
   },
 );
 assert.equal(
   analytics.mapSlowestEmployerRow({
     employer_id: '7f3a9c2e-0000-4000-8000-000000000002', display_name: 'Pinturas MX',
     applications: '4', unanswered_7d: '0', first_response_p50_hours: '12.5', active_jobs: '1',
+    organization_id: ORG_1,
   }).firstResponseP50Hours,
   12.5,
+);
+assert.equal(
+  analytics.mapSlowestEmployerRow({
+    employer_id: '7f3a9c2e-0000-4000-8000-000000000002', display_name: 'Pinturas MX',
+    applications: '4', unanswered_7d: '0', first_response_p50_hours: '12.5', active_jobs: '1',
+    organization_id: ORG_1,
+  }).organizationId,
+  ORG_1,
 );
 const staleJob = analytics.mapStaleJobRow({
   job_id: '0b1c2d3e-0000-4000-8000-000000000003', title: 'Ayudante de pintor',

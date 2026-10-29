@@ -85,6 +85,8 @@ for (const surface of [
   'admin.analytics_paying_employers', 'admin.access_history', 'admin.session', 'admin.sessions_revoke',
   // The Employers analytics lists that name employers.
   'admin.analytics_slowest_employers', 'admin.analytics_stale_jobs',
+  // Phase 5: the Companies panel and a company's members.
+  'admin.analytics_companies', 'admin.analytics_company_members',
   // The problem-report inbox's surfaces, registered with the audit codes.
   'admin.reports_list', 'admin.report_detail', 'admin.report_contact_reveal', 'admin.report_screenshot',
   'admin.report_status', 'admin.report_note', 'admin.report_settings',
