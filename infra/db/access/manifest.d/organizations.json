@@ -6,7 +6,7 @@
     },
     "jale_cap_org_team": {
       "created_by": "133",
-      "reason": "Owns the team-invite definers (jale_cap.org_team_*): under the company lock it creates, re-sends and revokes a company's invites and queues their email, answers the public invite lookup, makes an accepting login a foreman, and purges sent invite mail (133); removes a foreman with no job left, lists the company's members and pending invites for its owner, answers the caller's own membership and the Cognito state each foreman should have (134). Its policies are open; each function's own caller check (the company's active owner, the invite's token, the caller's own login or confirmed email, or jale_billing's company and time keys) is the boundary, as for 128's enforcer."
+      "reason": "Owns the team-invite definers (jale_cap.org_team_*): under the company lock it creates, re-sends and revokes a company's invites and queues their email, answers the public invite lookup, makes an accepting login a foreman, and purges sent invite mail (133); removes a foreman with no job left, lists the company's members and pending invites for its owner, answers the caller's own membership and the Cognito state each foreman should have (134); names the person workers see for an employer login and, after an owner moves jobs, writes the move notice in their open conversations and re-points hire contacts that named a removed holder (138). Its policies are open; each function's own caller check (the company's active owner, the invite's token, the caller's own login or confirmed email, jale_billing's company and time keys, or, for the move, the active owner of both holders with every job on the new one) is the boundary, as for 128's enforcer."
     }
   },
   "tables": {
@@ -353,6 +353,22 @@
       "execute": ["jale_billing"],
       "created_by": "134",
       "reason": "The Cognito state each foreman should have (enabled when active, or removed with a live re-invite of the company), by company or changed since a time (newest first, at most p_limit), for the billing processor and the catch-up sync to apply after COMMIT; owners are never listed."
+    },
+    "jale_cap.employer_contact_name(uuid)": {
+      "owner": "jale_cap_org_team", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_user_id uuid",
+      "returns": "text",
+      "execute": ["jale_api", "jale_whatsapp"],
+      "created_by": "138",
+      "reason": "The person workers see for an employer login: the trimmed employer_profiles.contact_name, NULL when blank or without a profile. Read by the worker-facing request and WhatsApp paths (whose logins cannot read another employer's profile) for message headers, template variables and the job's contact line; nothing else of the profile is returned. STABLE (called per row). Its owner calls it from org_job_moved."
+    },
+    "jale_cap.org_job_moved(uuid[], uuid, uuid, boolean)": {
+      "owner": "jale_cap_org_team", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_job_ids uuid[], p_from uuid, p_to uuid, p_removed boolean",
+      "returns": "integer",
+      "execute": ["jale_api"],
+      "created_by": "138",
+      "reason": "After an owner's reassign or remove-with-reassign moves jobs (same transaction, under the company lock), writes one outbound system notice in each open conversation of the jobs naming the new holder, and on a removal re-points hire contacts that named the old holder (by name or phone digits) to the new holder's contact name with no phone, re-dating those details. Not idempotent: callers pass only the ids their UPDATE ... RETURNING moved and skip the call when none moved. Refused (P0001, DETAIL org_job_moved_refused) unless the caller is the active owner of the company both holders are current members of and every job names the new holder."
     }
   },
   "table_additions": {
@@ -478,6 +494,13 @@
       "reason": "Company owners act on every member's jobs (migration 119), and their digest reads them (135); the team definers' owner reads them (134)."
     },
     "public.job_applications": {
+      "access": {
+        "jale_cap_org_team": {
+          "select": ["id", "job_id", "hire_contact_name", "hire_contact_phone", "hire_details_updated_at"],
+          "update": ["hire_contact_name", "hire_contact_phone", "hire_details_updated_at"],
+          "reason": "org_job_moved re-points hire contacts that named a removed holder to the new holder, and re-dates those details (138)."
+        }
+      },
       "policies": {
         "applications_org_owner_select": {
           "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
@@ -514,11 +537,27 @@
           "using": "(job_id IN ( SELECT jobs.id\n   FROM jobs\n  WHERE (jobs.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
           "with_check": null,
           "reason": "The owner's digest reads the applications on every member's jobs: 119's applications_org_owner_select for the digest login (135)."
+        },
+        "job_applications_cap_org_team_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
+          "using": "true", "with_check": null,
+          "reason": "org_job_moved reads the moved jobs' hire contacts; its caller check (the active owner of both holders, every job on the new one) is the boundary (138)."
+        },
+        "job_applications_cap_org_team_update": {
+          "command": "UPDATE", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
+          "using": "true", "with_check": "true",
+          "reason": "org_job_moved re-points the moved jobs' hire contacts on a removal; the same caller check is the boundary (138)."
         }
       },
-      "reason": "Company owners act on the applications to every member's jobs (migration 119), and their digest reads them (135)."
+      "reason": "Company owners act on the applications to every member's jobs (migration 119), and their digest reads them (135); the team definers' owner re-points hire contacts after a removal (138)."
     },
     "public.job_conversations": {
+      "access": {
+        "jale_cap_org_team": {
+          "select": ["id", "job_id", "status"],
+          "reason": "org_job_moved finds the open conversations of the moved jobs (138)."
+        }
+      },
       "policies": {
         "job_conversations_org_owner_all": {
           "command": "ALL", "permissive": true, "to": ["jale_api"], "origin": "existing",
@@ -531,11 +570,22 @@
           "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
           "with_check": null,
           "reason": "employer_claim_worker_intent reads a member's conversation for the company owner."
+        },
+        "job_conversations_cap_org_team_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
+          "using": "true", "with_check": null,
+          "reason": "org_job_moved reads the moved jobs' conversations; its caller check is the boundary (138)."
         }
       },
-      "reason": "Company owners act on every member's conversations (migration 119)."
+      "reason": "Company owners act on every member's conversations (migration 119); the team definers' owner finds a moved job's open conversations (138)."
     },
     "public.job_conversation_messages": {
+      "access": {
+        "jale_cap_org_team": {
+          "insert": ["conversation_id", "sender_type", "direction", "body", "status", "created_at"],
+          "reason": "org_job_moved writes the move notice in each open conversation of the moved jobs, dated by clock_timestamp() so it sorts after messages that committed during the move (138)."
+        }
+      },
       "policies": {
         "job_messages_org_owner_all": {
           "command": "ALL", "permissive": true, "to": ["jale_api"], "origin": "existing",
@@ -548,9 +598,14 @@
           "using": "(conversation_id IN ( SELECT jc.id\n   FROM job_conversations jc\n  WHERE (jc.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
           "with_check": null,
           "reason": "employer_claim_worker_intent reads a message in a member's conversation for the company owner."
+        },
+        "job_conversation_messages_cap_org_team_insert": {
+          "command": "INSERT", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
+          "using": null, "with_check": "((sender_type = 'system'::text) AND (direction = 'outbound'::text))",
+          "reason": "Only an outbound system row, the move notice; org_job_moved's caller check picks the conversations (138)."
         }
       },
-      "reason": "Company owners act on the messages in every member's conversations (migration 119)."
+      "reason": "Company owners act on the messages in every member's conversations (migration 119); the team definers' owner writes the move notice (138)."
     },
     "public.job_message_outbox": {
       "policies": {
@@ -717,18 +772,18 @@
     "public.employer_profiles": {
       "access": {
         "jale_cap_org_team": {
-          "select": ["user_id", "contact_name"],
-          "reason": "org_team_members names each member by their own contact name first (134)."
+          "select": ["user_id", "contact_name", "phone"],
+          "reason": "org_team_members names each member by their own contact name first (134); employer_contact_name returns it, and org_job_moved matches a removed holder's phone against hire contacts (138)."
         }
       },
       "policies": {
         "employer_profiles_cap_org_team_select": {
           "command": "SELECT", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
           "using": "true", "with_check": null,
-          "reason": "The team list reads the contact names of the owner's company's members; its caller check (the active owner) is the boundary (134)."
+          "reason": "The team list reads the contact names of the owner's company's members; its caller check (the active owner) is the boundary (134). employer_contact_name reads any employer's contact name, and org_job_moved the old holder's phone, under the same policy (138)."
         }
       },
-      "reason": "The team definers' owner reads members' contact names (134)."
+      "reason": "The team definers' owner reads members' contact names (134), and their phones for the move (138)."
     },
     "public.email_outbox": {
       "access": {

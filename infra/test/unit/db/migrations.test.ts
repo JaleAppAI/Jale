@@ -175,6 +175,7 @@ describe('database migrations', () => {
       '135',
       '136',
       '137',
+      '138',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5817,6 +5818,144 @@ describe('database migrations', () => {
       expect(check).toContain("(SELECT count(*) FROM pg_policy p WHERE 'jale_cap_hire_nudges'::regrole::oid = ANY (p.polroles)) <> 7");
       expect(check).toContain("AND pg_get_expr(p.polqual, p.polrelid) = pg_get_expr(t.polqual, t.polrelid)) THEN");
       expect(check).toContain("WHERE m.roleid IN ('jale_cap_hire_nudges'::regrole, 'jale_rls_relationship_reader'::regrole)\n                AND (m.set_option OR m.inherit_option))");
+      expect(sql).not.toContain('polrelid::regclass::text');
+    });
+  });
+
+  // Phase 4: the contact-name reader and the job-move definer. The DB pins
+  // are in org-worker-naming-138.integration.test.ts.
+  describe('138 org worker naming', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '138_org_worker_naming.sql'), 'utf8');
+    const code = sql.replace(/--.*$/gm, '');
+    const lastAt = sql.indexOf('-- ── 2. Last: profiles, applications, conversations, messages');
+    const selfCheckAt = sql.indexOf('-- ── 3. Self-check');
+    const bodyOf = (name: string): string => {
+      const start = sql.indexOf(`CREATE FUNCTION jale_cap.${name}(`);
+      expect(start).toBeGreaterThan(0);
+      return sql.slice(start, sql.indexOf('\n$fn$;\n', start));
+    };
+
+    it('is one transaction, forward-only, after 137; its code is ASCII but for the notice\'s plain UTF-8 accent', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 138_org_worker_naming.sql\n'
+        + '-- Run manually AFTER 137_user_tutorial_settings.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql.indexOf('-- ── 0. Preconditions'));
+      // A plain literal, as 094's are; no U& escape.
+      expect(code.replace(/ó/g, '')).toMatch(/^[\x00-\x7F]*$/);
+      expect(code).not.toContain("U&'");
+      // The header names the rare deadlock the move handlers retry.
+      expect(sql).toContain('which the move handlers answer as retryable (Task 6).');
+    });
+
+    it('refuses a replay, and needs 134 and 135', () => {
+      expect(sql).toContain("RAISE EXCEPTION 'migration 138: already applied (jale_cap.org_job_moved exists); it is not re-runnable';");
+      expect(sql).toContain("RAISE EXCEPTION 'migration 138: apply 135 first (job_conversations_job_employer_fkey is missing)';");
+      expect(sql).toContain("WHERE p.oid = to_regprocedure('jale_cap.org_team_remove_member(uuid)')");
+      expect(sql.indexOf("'migration 138: apply 135 first")).toBeLessThan(sql.indexOf("'migration 138: already applied"));
+      expect(sql).toContain("(SELECT count(*) FROM pg_policy p WHERE 'jale_cap_org_team'::regrole::oid = ANY (p.polroles)) <> 14");
+    });
+
+    it('creates two jale_cap definers with the pinned search_path, and no row lock anywhere', () => {
+      expect(sql.match(/^CREATE FUNCTION /gm)).toHaveLength(2);
+      expect(sql).not.toMatch(/CREATE OR REPLACE FUNCTION|DROP FUNCTION|ALTER TABLE/);
+      for (const name of ['employer_contact_name', 'org_job_moved']) {
+        const body = bodyOf(name);
+        expect([name, body]).toEqual([name, expect.stringContaining('SECURITY DEFINER SET search_path = pg_catalog, pg_temp\n')]);
+        expect([name, body]).toEqual([name, expect.stringContaining('#variable_conflict use_column')]);
+      }
+      expect(sql).toContain('CREATE FUNCTION jale_cap.employer_contact_name(p_user_id UUID)\nRETURNS TEXT\n'
+        + 'LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp\n');
+      expect(bodyOf('org_job_moved')).not.toMatch(/\b(STABLE|IMMUTABLE)\b/);
+      expect(sql).toContain('CREATE FUNCTION jale_cap.org_job_moved(p_job_ids UUID[], p_from UUID, p_to UUID, p_removed BOOLEAN)\nRETURNS INTEGER\n');
+      // CREATE POLICY ... FOR UPDATE names a command, not a row lock.
+      const noPolicies = code.replace(/^CREATE POLICY [^;]+;$/gm, '');
+      expect(noPolicies).not.toMatch(/\bFOR\s+(NO\s+KEY\s+)?UPDATE\b/i);
+      expect(noPolicies).not.toMatch(/\bFOR\s+(KEY\s+)?SHARE\b/i);
+      expect(sql).not.toMatch(/SKIP LOCKED|NOWAIT/i);
+    });
+
+    it('employer_contact_name returns the trimmed contact name and writes nothing', () => {
+      const body = bodyOf('employer_contact_name');
+      expect(body).toContain("SELECT NULLIF(pg_catalog.btrim(ep.contact_name), '') INTO v_name\n    FROM public.employer_profiles ep\n   WHERE ep.user_id = p_user_id;");
+      expect(body).not.toMatch(/\b(UPDATE|INSERT|DELETE)\s+(INTO\s+|FROM\s+)?public\./);
+    });
+
+    it('org_job_moved refuses first (P0001 org_job_moved_refused), then writes the notice, then re-points on a removal only', () => {
+      const body = bodyOf('org_job_moved').replace(/--.*$/gm, '');
+      const refuse = body.indexOf("USING ERRCODE = 'P0001', DETAIL = 'org_job_moved_refused';");
+      const notice = body.indexOf('INSERT INTO public.job_conversation_messages (conversation_id, sender_type, direction, body, status, created_at)');
+      const repoint = body.indexOf('UPDATE public.job_applications ja');
+      expect(refuse).toBeGreaterThan(0);
+      expect(notice).toBeGreaterThan(refuse);
+      expect(repoint).toBeGreaterThan(notice);
+      expect(body).toContain("WHERE m.user_id = v_caller::uuid AND m.role = 'owner' AND m.status = 'active';");
+      expect(body).toContain("WHERE m.organization_id = v_org AND m.user_id IN (p_from, p_to) AND m.status <> 'removed';");
+      expect(body).toContain('IF v_org IS NULL OR p_from = p_to OR v_members <> 2 OR v_moved <> pg_catalog.cardinality(v_jobs) THEN');
+      expect(body).toContain("'Conversación transferida a ' || COALESCE(v_to_name, 'otro miembro')\n"
+        + "           || ' / Conversation moved to ' || COALESCE(v_to_name, 'another member'),\n"
+        + "         'sent', pg_catalog.clock_timestamp()");
+      expect(body).toContain("WHERE jc.job_id = ANY (v_jobs) AND jc.status = 'open';");
+      expect(body).toContain('IF p_removed AND v_to_name IS NOT NULL THEN');
+      expect(body).toContain('SET hire_contact_name = v_to_name, hire_contact_phone = NULL, hire_details_updated_at = pg_catalog.now()');
+      // Only the listed jobs' applications; phones match on the last 10 digits when both have 10.
+      expect(body).toContain('WHERE a.job_id = ANY (v_jobs)) d\n     WHERE ja.id = d.id\n');
+      expect(body).toContain('AND pg_catalog."right"(d.digits, 10) = pg_catalog."right"(v_from_phone, 10))');
+      expect(body).toContain('AND d.digits = v_from_phone));');
+      expect(body).toContain("v_to_name := NULLIF(pg_catalog.btrim(pg_catalog.\"left\"(\n"
+        + "                 pg_catalog.btrim(pg_catalog.regexp_replace(jale_cap.employer_contact_name(p_to), '\\s+', ' ', 'g')), 80)), '');");
+      expect(body.match(/USING ERRCODE = 'invalid_parameter_value'/g)).toHaveLength(1);
+      expect(body.match(/^\s*(UPDATE|INSERT INTO) public\./gm)).toHaveLength(2);
+    });
+
+    it('grants EXECUTE before the transfer and opens and closes the jale_cap_org_team window once', () => {
+      expect(sql.split("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_cap_org_team', current_user")).toHaveLength(2);
+      expect(sql.split("'REVOKE %I FROM %I GRANTED BY %I', 'jale_cap_org_team', current_user, current_user")).toHaveLength(2);
+      const firstTransfer = sql.indexOf('OWNER TO jale_cap_org_team;');
+      for (const grant of [
+        'GRANT EXECUTE ON FUNCTION jale_cap.employer_contact_name(uuid) TO jale_api, jale_whatsapp;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_job_moved(uuid[], uuid, uuid, boolean) TO jale_api;',
+      ]) {
+        expect(sql.indexOf(grant)).toBeGreaterThan(0);
+        expect(sql.indexOf(grant)).toBeLessThan(firstTransfer);
+      }
+      expect(sql.match(/^GRANT EXECUTE /gm)).toHaveLength(2);
+      expect(sql.match(/^REVOKE ALL ON FUNCTION jale_cap\.\w+\([^)]*\) FROM PUBLIC;$/gm)).toHaveLength(2);
+      expect(sql.match(/^ALTER FUNCTION jale_cap\.\w+\([^)]*\) OWNER TO jale_cap_org_team;$/gm)).toHaveLength(2);
+    });
+
+    it('opens four policies for exactly the owner, last, parents before children', () => {
+      expect(lastAt).toBeGreaterThan(sql.indexOf('OWNER TO jale_cap_org_team;'));
+      expect(selfCheckAt).toBeGreaterThan(lastAt);
+      const earlier = sql.slice(0, lastAt);
+      expect(earlier).not.toMatch(/^(GRANT (SELECT|INSERT|UPDATE)|CREATE POLICY)/m);
+      const last = sql.slice(lastAt, selfCheckAt);
+      expect(last.match(/^(GRANT|CREATE POLICY)[^;]+;$/gm)).toEqual([
+        'GRANT SELECT (phone) ON public.employer_profiles TO jale_cap_org_team;',
+        'GRANT SELECT (id, job_id, hire_contact_name, hire_contact_phone, hire_details_updated_at),\n'
+          + '      UPDATE (hire_contact_name, hire_contact_phone, hire_details_updated_at)\n  ON public.job_applications TO jale_cap_org_team;',
+        'CREATE POLICY job_applications_cap_org_team_select ON public.job_applications AS PERMISSIVE FOR SELECT TO jale_cap_org_team USING (true);',
+        'CREATE POLICY job_applications_cap_org_team_update ON public.job_applications AS PERMISSIVE FOR UPDATE TO jale_cap_org_team USING (true) WITH CHECK (true);',
+        'GRANT SELECT (id, job_id, status) ON public.job_conversations TO jale_cap_org_team;',
+        'CREATE POLICY job_conversations_cap_org_team_select ON public.job_conversations AS PERMISSIVE FOR SELECT TO jale_cap_org_team USING (true);',
+        'GRANT INSERT (conversation_id, sender_type, direction, body, status, created_at) ON public.job_conversation_messages TO jale_cap_org_team;',
+        "CREATE POLICY job_conversation_messages_cap_org_team_insert ON public.job_conversation_messages AS PERMISSIVE FOR INSERT TO jale_cap_org_team\n  WITH CHECK (sender_type = 'system' AND direction = 'outbound');",
+      ]);
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(4);
+      expect(sql).not.toMatch(/^(ALTER|DROP) POLICY/m);
+    });
+
+    it('self-checks the functions, eighteen owner policies, the column rights and the closed window', () => {
+      const check = sql.slice(selfCheckAt);
+      expect(check).toContain("(SELECT count(*) FROM pg_policy p WHERE 'jale_cap_org_team'::regrole::oid = ANY (p.polroles)) <> 18");
+      expect(check).toContain("'job_conversations:id:SELECT', 'job_conversations:job_id:SELECT', 'job_conversations:status:SELECT'");
+      expect(check).toContain("'job_applications:hire_details_updated_at:SELECT', 'job_applications:hire_details_updated_at:UPDATE'");
+      expect(check).toContain("'job_conversation_messages:created_at:INSERT'");
+      // employer_contact_name is STABLE ('s'), org_job_moved VOLATILE ('v').
+      expect(check).toContain("('employer_contact_name', 'p_user_id uuid', 'text', ARRAY['jale_api', 'jale_whatsapp'], 's'),");
+      expect(check).toContain("('org_job_moved', 'p_job_ids uuid[], p_from uuid, p_to uuid, p_removed boolean', 'integer', ARRAY['jale_api'], 'v')");
+      expect(check).toContain('OR info.volatility <> spec.volatility THEN');
+      expect(check).toContain("RAISE EXCEPTION 'migration 138: the jale_cap_org_team window was left open, or it is a member of a role';");
       expect(sql).not.toContain('polrelid::regclass::text');
     });
   });
