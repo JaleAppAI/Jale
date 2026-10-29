@@ -246,18 +246,22 @@ export function ConversationThread({
         {messages.length === 0 ? (
           <EmptyState icon="message" variant="filtered" title={t('no_messages')} body={t('subtitle')} />
         ) : (
-          messages.map((message) => (
-            <MessageBubble
-              key={message.id}
-              message={message}
-              initials={initials}
-              statusLabel={
-                message.sender_type === 'employer'
-                  ? t(`message_status.${message.status}`)
-                  : t('from_worker')
-              }
-            />
-          ))
+          messages.map((message) =>
+            message.sender_type === 'system' ? (
+              <SystemNotice key={message.id} message={message} />
+            ) : (
+              <MessageBubble
+                key={message.id}
+                message={message}
+                initials={initials}
+                statusLabel={
+                  message.sender_type === 'employer'
+                    ? t(`message_status.${message.status}`)
+                    : t('from_worker')
+                }
+              />
+            ),
+          )
         )}
       </div>
 
@@ -377,6 +381,32 @@ function MessageBubble({
           {formatTimeOfDay(message.created_at, locale)}
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A system row (a job moved to another person, the worker ended the
+ * conversation) is a notice about the thread, not a message in it: centred and
+ * muted, with no bubble, no sender label and no delivery ticks. The body is
+ * shown as stored -- the writer of the row makes it bilingual.
+ */
+function SystemNotice({ message }: { message: EmployerConversationMessage }) {
+  const locale = useLocale();
+
+  return (
+    <div role="note" className="flex flex-col items-center px-4 text-center">
+      {/* Body in full ink: ink-2 on the paper-2 transcript is ~4:1, under AA at
+          this size. Only the time stays muted. */}
+      <p className="max-w-[82%] whitespace-pre-wrap break-words text-xs text-[var(--jale-ink)]">
+        {message.body}
+      </p>
+      <time
+        dateTime={message.created_at}
+        className="mt-0.5 text-[10px] tabular-nums text-[var(--jale-ink-2)]"
+      >
+        {formatTimeOfDay(message.created_at, locale)}
+      </time>
     </div>
   );
 }
