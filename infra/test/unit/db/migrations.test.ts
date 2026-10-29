@@ -176,6 +176,7 @@ describe('database migrations', () => {
       '136',
       '137',
       '138',
+      '139',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5957,6 +5958,297 @@ describe('database migrations', () => {
       expect(check).toContain('OR info.volatility <> spec.volatility THEN');
       expect(check).toContain("RAISE EXCEPTION 'migration 138: the jale_cap_org_team window was left open, or it is a member of a role';");
       expect(sql).not.toContain('polrelid::regclass::text');
+    });
+  });
+
+  // Employer organizations, Phase 5: admin analytics count companies. The DB
+  // pins are in admin-analytics-orgs-139.integration.test.ts; on RDS the
+  // migration's own DO blocks are the only runtime check, so these literals
+  // pin that they stay strict.
+  describe('139 admin analytics by company', () => {
+    const file = path.join(migrationsDir, '139_admin_analytics_by_company.sql');
+    const sql = (): string => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
+    const code = (): string => sql().replace(/--.*$/gm, '');
+    const GATE = "PERFORM set_config('app.admin_analytics_read', 'on', true);";
+    const NAME_GATE = "PERFORM set_config('app.employer_name_lookup', 'on', true);";
+    const TEST_RULE = "COALESCE(u.email LIKE '%@jale.test' OR u.cognito_sub LIKE 'seed-%', false)";
+    const REPLACED = [
+      'admin_analytics_totals',
+      'admin_analytics_signups',
+      'admin_analytics_acquisition',
+      'admin_analytics_paying_weekly',
+      'admin_analytics_template_reuse',
+    ];
+    const RECREATED = ['admin_analytics_paying_employers', 'admin_analytics_slowest_employers'];
+    const ADDED = ['admin_analytics_companies', 'admin_analytics_company_members'];
+    const ALL = [...REPLACED, ...RECREATED, ...ADDED];
+    const bodyOf = (name: string): string => {
+      const text = sql();
+      const start = text.search(new RegExp(`CREATE (OR REPLACE )?FUNCTION public\\.${name}\\(`));
+      expect([name, start > 0]).toEqual([name, true]);
+      return text.slice(start, text.indexOf('\nEND $$;\n', start) + '\nEND $$;\n'.length);
+    };
+    const resultOf = (name: string): string => {
+      const body = bodyOf(name);
+      return body.slice(body.indexOf('RETURNS TABLE ('), body.indexOf('\nLANGUAGE plpgsql'));
+    };
+    const aclAt = (): number => sql().indexOf('-- ── 3. Ownership and ACL');
+    const policiesAt = (): number => sql().indexOf('-- ── 4. Last: the two gated reads');
+    const selfCheckAt = (): number => sql().indexOf('-- ── 5. Self-check');
+
+    it('is one transaction, forward-only, after 138, with a 5s lock timeout first; its code is ASCII', () => {
+      expect(sql().startsWith('-- ============================================================\n-- 139_admin_analytics_by_company.sql\n'
+        + '-- Run manually AFTER 138_org_worker_naming.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql().match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql().match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql()).toContain("BEGIN;\n\nSET LOCAL lock_timeout = '5s';\n");
+      expect(sql().indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql().indexOf('-- ── 0. Preconditions'));
+      expect(code()).toMatch(/^[\x00-\x7F]*$/);
+      expect(code()).not.toMatch(/CREATE INDEX|ALTER TABLE|CREATE TABLE|DROP POLICY|ALTER POLICY|GRANT\s+SELECT/);
+    });
+
+    it('refuses a replay, needs 138, and checks every gate and helper it reads through', () => {
+      const pre = sql().slice(sql().indexOf('-- ── 0. Preconditions'), sql().indexOf('-- ── 1. '));
+      expect(pre).toContain("IF to_regprocedure('jale_cap.employer_contact_name(uuid)') IS NULL THEN");
+      expect(pre).toContain("RAISE EXCEPTION 'migration 139: apply 138 first (jale_cap.employer_contact_name is missing)';");
+      expect(pre).toContain("IF to_regprocedure('public.admin_analytics_companies(integer, uuid)') IS NOT NULL");
+      expect(pre).toContain("RAISE EXCEPTION 'migration 139: already applied (public.admin_analytics_companies exists); it is not re-runnable';");
+      expect(pre.indexOf("'migration 139: apply 138 first")).toBeLessThan(pre.indexOf("'migration 139: already applied"));
+      for (const [rel, name, cmd, qual] of [
+        ['users', 'users_admin_analytics_read', 'r', 'v_gate'],
+        ['jobs', 'jobs_admin_analytics_read', 'r', 'v_gate'],
+        ['job_applications', 'job_applications_admin_analytics_read', 'r', 'v_gate'],
+        ['subscriptions', 'subscriptions_admin_analytics_read', 'r', 'v_gate'],
+        ['job_conversation_messages', 'job_conversation_messages_admin_analytics_read', 'r', 'v_gate'],
+        ['subscription_status_history', 'subscription_status_history_admin_analytics_read', 'r', 'v_gate'],
+        ['job_application_status_events', 'job_application_status_events_admin_analytics_read', 'r', 'v_gate'],
+        ['whatsapp_conversations', 'whatsapp_conversations_admin_analytics_read', 'r', 'v_gate'],
+        ['job_conversations', 'job_conversations_admin_analytics_read', 'r', 'v_gate'],
+        ['signup_attribution', 'signup_attribution_admin_analytics_read', 'r', 'v_gate'],
+        ['worker_attribution', 'worker_attribution_admin_analytics_read', 'r', 'v_gate'],
+        ['employer_job_templates', 'employer_job_templates_admin_analytics_read', 'r', 'v_gate'],
+        ['worker_workflow_runs', 'worker_workflow_runs_definer', '*', "'true'"],
+        ['employer_profiles', 'employer_profiles_name_lookup', 'r', 'v_name'],
+        ['billing_plans', 'billing_plans_read_all', 'r', "'true'"],
+      ]) {
+        expect(pre).toContain(`('public.${rel}', '${name}', '${cmd}', ${qual})`);
+      }
+      expect(pre).toContain("AND p.polroles = ARRAY['jale_admin'::regrole::oid]");
+      expect(pre).toContain('AND pg_get_expr(p.polqual, p.polrelid) = pol.qual');
+      // The RESTRICTIVE check also covers the two tables 139 opens, the name
+      // lookup's profiles and the plan catalog.
+      for (const rel of ['organization_members', 'organization_invites', 'employer_profiles', 'billing_plans', 'worker_workflow_runs']) {
+        expect(pre).toContain(`'public.${rel}'::regclass`);
+      }
+      expect(pre).toContain("OR EXISTS (SELECT 1 FROM unnest(p.polroles) AS r(role_oid)\n                        WHERE r.role_oid <> 0 AND pg_has_role('jale_admin', r.role_oid, 'USAGE')))");
+      expect(pre).toContain("IF NOT has_function_privilege('jale_admin', 'public.employer_display_name(uuid)', 'EXECUTE') THEN");
+    });
+
+    it('redefines seven functions and adds two, keeping every parameter name and default', () => {
+      expect(sql().match(/^CREATE OR REPLACE FUNCTION /gm)).toHaveLength(5);
+      expect(sql().match(/^CREATE FUNCTION /gm)).toHaveLength(4);
+      expect(sql().match(/^DROP FUNCTION /gm)).toEqual(['DROP FUNCTION ', 'DROP FUNCTION ']);
+      expect(sql()).toContain('DROP FUNCTION public.admin_analytics_paying_employers();');
+      expect(sql()).toContain('DROP FUNCTION public.admin_analytics_slowest_employers(INTEGER, INTEGER);');
+      for (const sig of [
+        'CREATE OR REPLACE FUNCTION public.admin_analytics_totals()\n',
+        'CREATE OR REPLACE FUNCTION public.admin_analytics_signups(p_from TIMESTAMPTZ, p_bucket TEXT)\n',
+        'CREATE OR REPLACE FUNCTION public.admin_analytics_acquisition(p_weeks INTEGER)\n',
+        'CREATE OR REPLACE FUNCTION public.admin_analytics_paying_weekly(p_weeks INTEGER)\n',
+        'CREATE OR REPLACE FUNCTION public.admin_analytics_template_reuse(p_weeks INTEGER)\n',
+        'CREATE FUNCTION public.admin_analytics_paying_employers()\n',
+        'CREATE FUNCTION public.admin_analytics_slowest_employers(p_weeks INTEGER, p_limit INTEGER DEFAULT 10)\n',
+        'CREATE FUNCTION public.admin_analytics_companies(p_limit INTEGER, p_organization_id UUID DEFAULT NULL)\n',
+        'CREATE FUNCTION public.admin_analytics_company_members(p_organization_id UUID)\n',
+      ]) {
+        expect(sql()).toContain(sig);
+      }
+      // Each DROP comes right before its own CREATE.
+      for (const name of RECREATED) {
+        const drop = sql().indexOf(`DROP FUNCTION public.${name}(`);
+        expect(drop).toBeGreaterThan(0);
+        expect(sql().indexOf(`CREATE FUNCTION public.${name}(`)).toBeGreaterThan(drop);
+      }
+    });
+
+    it('hardens every body: definer, pinned search_path, use_column, arguments checked before the gate', () => {
+      for (const name of ALL) {
+        const body = bodyOf(name);
+        expect([name, body]).toEqual([name, expect.stringContaining(
+          '\nLANGUAGE plpgsql\nSECURITY DEFINER\nSET search_path = pg_catalog, pg_temp\nAS $$\n#variable_conflict use_column\n')]);
+        expect([name, body.split(GATE).length]).toEqual([name, 2]);
+        const iGate = body.indexOf(GATE);
+        const raises = [...body.matchAll(/RAISE EXCEPTION 'admin_analytics_invalid_\w+'/g)];
+        for (const raise of raises) {
+          expect([name, raise[0], raise.index! < iGate]).toEqual([name, raise[0], true]);
+        }
+        // Nothing reads a table before the gate opens.
+        expect([name, body.slice(0, iGate)]).toEqual([name, expect.not.stringMatching(/\bFROM public\./)]);
+      }
+      // The argument checks and their error codes, unchanged where they existed.
+      expect(bodyOf('admin_analytics_slowest_employers')).toContain(
+        "IF p_weeks IS NULL OR p_weeks < 1 OR p_weeks > 26 THEN\n    RAISE EXCEPTION 'admin_analytics_invalid_weeks';");
+      expect(bodyOf('admin_analytics_slowest_employers')).toContain(
+        "IF p_limit IS NULL OR p_limit < 1 OR p_limit > 100 THEN\n    RAISE EXCEPTION 'admin_analytics_invalid_limit';");
+      expect(bodyOf('admin_analytics_companies')).toContain(
+        "IF p_limit IS NULL OR p_limit < 1 OR p_limit > 500 THEN\n    RAISE EXCEPTION 'admin_analytics_invalid_limit';");
+      expect(bodyOf('admin_analytics_company_members')).toContain(
+        "IF p_organization_id IS NULL THEN\n    RAISE EXCEPTION 'admin_analytics_invalid_organization';");
+      expect(bodyOf('admin_analytics_signups')).toContain("RAISE EXCEPTION 'admin_analytics_invalid_from';");
+      expect(bodyOf('admin_analytics_signups')).toContain("RAISE EXCEPTION 'admin_analytics_invalid_bucket';");
+      for (const name of ['admin_analytics_acquisition', 'admin_analytics_paying_weekly', 'admin_analytics_template_reuse']) {
+        expect(bodyOf(name)).toContain("IF p_weeks IS NULL OR p_weeks < 1 OR p_weeks > 26 THEN\n    RAISE EXCEPTION 'admin_analytics_invalid_weeks';");
+      }
+      // company_members opens 031's name gate itself, after the analytics gate
+      // and before its query.
+      const members = bodyOf('admin_analytics_company_members');
+      expect(members.indexOf(NAME_GATE)).toBeGreaterThan(members.indexOf(GATE));
+      expect(members.indexOf('RETURN QUERY')).toBeGreaterThan(members.indexOf(NAME_GATE));
+      // The member ids are read through 139's policy alone, before the name
+      // gate (which also opens organization_members) and used to filter.
+      const ids = members.indexOf('SELECT array_agg(m.user_id) INTO v_members\n    FROM public.organization_members m\n');
+      expect(ids).toBeGreaterThan(members.indexOf(GATE));
+      expect(members.indexOf(NAME_GATE)).toBeGreaterThan(ids);
+      expect(members).toContain('AND m.user_id = ANY (v_members)');
+      expect(code().split(NAME_GATE)).toHaveLength(2);
+    });
+
+    it('maps jobs to companies by a left lookup, never dropping a memberless employer', () => {
+      const lookup = /LEFT JOIN LATERAL \(\s*SELECT m\.organization_id\s+FROM public\.organization_members m\s+WHERE m\.user_id = j\.employer_id\s+LIMIT 1\s*\) jm ON true/;
+      expect(bodyOf('admin_analytics_slowest_employers')).toMatch(lookup);
+      expect(bodyOf('admin_analytics_template_reuse')).toMatch(lookup);
+      expect(bodyOf('admin_analytics_template_reuse')).toContain('count(DISTINCT COALESCE(jm.organization_id, j.employer_id))');
+      // The company's active owner, else the holder: employer_id is never NULL.
+      expect(bodyOf('admin_analytics_slowest_employers')).toContain('COALESCE(ow.user_id, j.employer_id) AS owner_id');
+      expect(bodyOf('admin_analytics_totals')).toContain('SELECT count(DISTINCT s.organization_id) FROM public.subscriptions s');
+      expect(bodyOf('admin_analytics_paying_weekly')).toContain('JOIN public.subscriptions s ON s.id = h.subscription_id');
+      // Seats as the owner's billing meter (128's employer_org_usage).
+      for (const name of ['admin_analytics_paying_employers', 'admin_analytics_companies']) {
+        const body = bodyOf(name);
+        expect(body).toContain("count(*) FILTER (WHERE m.role = 'foreman' AND m.status = 'active')");
+        expect(body).toContain("count(*) FILTER (WHERE m.role = 'foreman' AND m.status = 'suspended'\n");
+        expect(body).toContain('AND m.billing_suspended_at IS NOT NULL)');
+        expect(body).toContain('AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()');
+      }
+      // The company plan follows resolveCompanyEntitlements.
+      expect(bodyOf('admin_analytics_companies')).toContain(
+        "AND (s.status IN ('active', 'trialing') OR (s.status = 'past_due' AND s.grace_ends_at > now()))");
+      expect(bodyOf('admin_analytics_companies')).toContain("WHERE p.code = 'employer_free' AND p.active");
+    });
+
+    it('never selects an email or a phone in the two company functions', () => {
+      for (const name of ADDED) {
+        expect(resultOf(name)).not.toMatch(/email|phone/);
+        // The only email reference is the owner test-account rule, in a filter.
+        expect([name, bodyOf(name).split(TEST_RULE).join('')]).toEqual([name, expect.not.stringMatching(/email|phone/)]);
+      }
+      expect(bodyOf('admin_analytics_company_members')).not.toContain(TEST_RULE);
+      expect(bodyOf('admin_analytics_company_members')).toContain(
+        "COALESCE(NULLIF(btrim(ep.contact_name), ''), NULLIF(btrim(u.full_name), ''))");
+    });
+
+    it('re-asserts the owner, REVOKE and GRANT for all nine, after the bodies and before the policies', () => {
+      const acl = sql().slice(aclAt(), policiesAt());
+      expect(aclAt()).toBeGreaterThan(sql().lastIndexOf('\nEND $$;\n', aclAt()));
+      expect(acl.match(/^ALTER FUNCTION public\.admin_analytics_\w+\([^)]*\) OWNER TO jale_admin;$/gm)).toHaveLength(9);
+      expect(acl.match(/^REVOKE ALL ON FUNCTION public\.admin_analytics_\w+\([^)]*\) FROM PUBLIC;$/gm)).toHaveLength(9);
+      expect(acl.match(/^GRANT EXECUTE ON FUNCTION public\.admin_analytics_\w+\([^)]*\) TO jale_admin_console;$/gm)).toHaveLength(9);
+      for (const name of ALL) {
+        expect(acl).toContain(`GRANT EXECUTE ON FUNCTION public.${name}(`);
+      }
+      // The nine EXECUTE grants are the only statements naming the console role.
+      expect(code().match(/TO jale_admin_console/g)).toHaveLength(9);
+    });
+
+    it('opens organization_members and organization_invites to the analytics gate, last', () => {
+      expect(policiesAt()).toBeGreaterThan(aclAt());
+      expect(selfCheckAt()).toBeGreaterThan(policiesAt());
+      expect(sql().slice(0, policiesAt())).not.toMatch(/^CREATE POLICY/m);
+      expect(sql().slice(policiesAt(), selfCheckAt()).match(/^CREATE POLICY[^;]+;$/gm)).toEqual([
+        'CREATE POLICY organization_members_admin_analytics_read ON public.organization_members\n'
+          + "  AS PERMISSIVE FOR SELECT TO jale_admin\n  USING (current_setting('app.admin_analytics_read', true) = 'on');",
+        'CREATE POLICY organization_invites_admin_analytics_read ON public.organization_invites\n'
+          + "  AS PERMISSIVE FOR SELECT TO jale_admin\n  USING (current_setting('app.admin_analytics_read', true) = 'on');",
+      ]);
+      expect(sql().match(/^CREATE POLICY /gm)).toHaveLength(2);
+      expect(code()).not.toMatch(/public\.organizations\b/);
+    });
+
+    it('self-checks every result, the ACL, both policies, the gates and the argument checks', () => {
+      const check = sql().slice(selfCheckAt());
+      for (const result of [
+        "('admin_analytics_paying_employers', '', 'TABLE(employer_id uuid, display_name text, plan_code text, status text, current_period_end timestamp with time zone, cancel_at_period_end boolean, organization_id uuid, members_active bigint, seats_used bigint, seats_pending bigint, seats_suspended bigint, seat_limit integer)')",
+        "('admin_analytics_slowest_employers', 'p_weeks integer, p_limit integer DEFAULT 10', 'TABLE(employer_id uuid, display_name text, applications bigint, unanswered_7d bigint, first_response_p50_hours numeric, active_jobs bigint, organization_id uuid)')",
+        "('admin_analytics_companies', 'p_limit integer, p_organization_id uuid DEFAULT NULL::uuid', 'TABLE(organization_id uuid, owner_id uuid, display_name text, created_at timestamp with time zone, plan_code text, plan_status text, members_active bigint, seats_used bigint, seats_pending bigint, seats_suspended bigint, seat_limit integer, active_jobs bigint)')",
+        "('admin_analytics_company_members', 'p_organization_id uuid', 'TABLE(user_id uuid, display_name text, role text, status text, billing_suspended boolean, joined_at timestamp with time zone, status_changed_at timestamp with time zone, active_jobs bigint)')",
+      ]) {
+        expect(check).toContain(result);
+      }
+      for (const name of REPLACED) {
+        expect(check).toContain(`('${name}', `);
+      }
+      expect(check).toContain("OR fn.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, pg_temp']");
+      expect(check).toContain("AND a.grantee NOT IN (p.proowner, 'jale_admin_console'::regrole::oid)");
+      expect(check).toContain("('public.organization_members', 'organization_members_admin_analytics_read')");
+      expect(check).toContain("('public.organization_invites', 'organization_invites_admin_analytics_read')");
+      expect(check).toContain('WHERE employer_id IS NULL');
+      // Each smoke call clears the gate first and reads it back.
+      for (const name of ALL) {
+        expect(check).toContain(`RAISE EXCEPTION 'migration 139: ${name} did not set the read flag';`);
+      }
+      expect(check).toContain("RAISE EXCEPTION 'migration 139: admin_analytics_company_members did not set the name lookup flag';");
+      expect(check.split("PERFORM set_config('app.admin_analytics_read', '', true);").length).toBeGreaterThanOrEqual(10);
+      expect(check).toContain("PERFORM set_config('app.employer_name_lookup', '', true);");
+      for (const [call, error] of [
+        ['admin_analytics_companies(0)', 'admin_analytics_invalid_limit'],
+        ['admin_analytics_companies(501)', 'admin_analytics_invalid_limit'],
+        ['admin_analytics_company_members(NULL)', 'admin_analytics_invalid_organization'],
+        ['admin_analytics_slowest_employers(4, 101)', 'admin_analytics_invalid_limit'],
+        ['admin_analytics_slowest_employers(27)', 'admin_analytics_invalid_weeks'],
+      ]) {
+        expect(check).toContain(`('SELECT * FROM public.${call}', '${error}')`);
+      }
+    });
+
+    it('asserts the release invariant: with no foreman, every company figure equals the per-login one', () => {
+      const text = sql();
+      const beforeAt = text.indexOf('-- ── 0b. The release invariant: the figures before 139');
+      const afterAt = text.indexOf('-- ── 5b. The release invariant: the figures after 139');
+      // Captured from the OLD bodies (before any is replaced), compared after
+      // the policies and the self-check, inside the one transaction.
+      expect(beforeAt).toBeGreaterThan(text.indexOf('-- ── 0. Preconditions'));
+      expect(beforeAt).toBeLessThan(text.indexOf('CREATE OR REPLACE FUNCTION'));
+      expect(beforeAt).toBeLessThan(text.indexOf('DROP FUNCTION'));
+      expect(afterAt).toBeGreaterThan(selfCheckAt());
+      expect(afterAt).toBeLessThan(text.indexOf('\nCOMMIT;'));
+      const before = text.slice(beforeAt, text.indexOf('-- ── 1. '));
+      expect(before).toContain('CREATE TEMP TABLE m139_figure_sql (');
+      expect(before).toContain('CREATE TEMP TABLE m139_figures_before (');
+      expect(before.match(/\) ON COMMIT DROP;/g)).toHaveLength(2);
+      // The eight figures, each run from the same stored text both times.
+      for (const call of [
+        'public.admin_analytics_totals() t',
+        "public.admin_analytics_signups(now() - interval '26 weeks', 'week') s",
+        'public.admin_analytics_acquisition(26) a',
+        'public.admin_analytics_template_reuse(26) r',
+        'public.admin_analytics_paying_weekly(26) w',
+        'public.admin_analytics_slowest_employers(26, 100) x',
+        'public.admin_analytics_paying_employers() p',
+      ]) {
+        expect(before).toContain(call);
+      }
+      expect(before.match(/^ {2}\(\d, '/gm)).toHaveLength(8);
+      expect(before).toContain('EXECUTE f.sql INTO v_value;');
+      const after = text.slice(afterAt, text.indexOf('\nCOMMIT;'));
+      // The foreman guard reads organization_members with the 139 gate open.
+      const gate = after.indexOf("PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      const guard = after.indexOf("IF EXISTS (SELECT 1 FROM public.organization_members m WHERE m.role = 'foreman') THEN");
+      expect(gate).toBeGreaterThan(0);
+      expect(guard).toBeGreaterThan(gate);
+      expect(after).toContain('RAISE NOTICE \'migration 139: a company has a foreman, so the company figures may differ from the per-login ones; the release invariant was not compared\';\n    RETURN;');
+      expect(after).toContain('EXECUTE f.sql INTO v_after;\n    IF v_after IS DISTINCT FROM f.before THEN');
+      expect(after).toContain("RAISE EXCEPTION 'migration 139: with no foreman in any company, % differs from the per-login figure (before %, after %)',");
+      expect(after).toContain('IF (SELECT count(*) FROM pg_temp.m139_figures_before) <> 8 THEN');
     });
   });
 

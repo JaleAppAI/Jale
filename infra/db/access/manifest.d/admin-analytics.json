@@ -137,7 +137,7 @@
       "security": "definer",
       "search_path": "pg_catalog, pg_temp",
       "arguments": "p_weeks integer, p_limit integer",
-      "returns": "TABLE(employer_id uuid, display_name text, applications bigint, unanswered_7d bigint, first_response_p50_hours numeric, active_jobs bigint)",
+      "returns": "TABLE(employer_id uuid, display_name text, applications bigint, unanswered_7d bigint, first_response_p50_hours numeric, active_jobs bigint, organization_id uuid)",
       "execute": [
         "jale_admin_console"
       ],
