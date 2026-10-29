@@ -5,7 +5,7 @@ import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
-import { dbBusyResponse, isAssigneeRefusal, isRetryableDbBusy, isTeamManagementEnabled } from '../lib/org-team';
+import { dbBusyResponse, isAssigneeRefusal, isOrgJobMovedRefusal, isRetryableDbBusy, isTeamManagementEnabled } from '../lib/org-team';
 import { isUuid } from '../lib/uuid';
 
 /**
@@ -21,6 +21,14 @@ import { isUuid } from '../lib/uuid';
  * re-checks the assignee: its four assignee refusals answer 409
  * invalid_assignee; employer_inactive_for_activation is not expected (the
  * move never activates a job) and stays a 500.
+ *
+ * After the move, and only when a row changed, 138's jale_cap.org_job_moved
+ * ([job], from, to, false) leaves the "conversation moved" notice in each
+ * open employer thread of the job, in the same transaction. Its refusal
+ * (P0001, DETAIL org_job_moved_refused) is a bug, not a client error: the
+ * transaction is rolled back and the answer is 500 internal_error, with a
+ * structured log line. A deadlock with a concurrent worker write (40P01) or
+ * a timeout is the retryable 503 busy.
  */
 
 const CORS_HEADERS = corsHeaders();
@@ -54,6 +62,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const { jobId, userId } = parsed;
 
   let client: PoolClient | undefined;
+  let organizationId: string | undefined;
   try {
     const pool = await getDbPool();
     client = await pool.connect();
@@ -77,6 +86,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return employerActorFailureResponse(actorResult, CORS_HEADERS);
     }
     const { actor } = actorResult;
+    organizationId = actor.organizationId;
     if (actor.role !== 'owner') {
       await client.query('ROLLBACK');
       return response(403, { error: 'owner_required' });
@@ -129,6 +139,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return response(404, { error: 'job_not_found' });
     }
 
+    // 6. The thread notice (one row changed, so the call is never empty).
+    await client.query(
+      'SELECT jale_cap.org_job_moved($1::uuid[], $2::uuid, $3::uuid, false)',
+      [[jobId], current, userId],
+    );
+
     await client.query('COMMIT');
     return response(200, { jobId, assigneeUserId: userId, changed: true });
   } catch (err) {
@@ -137,8 +153,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
     }
     if (isAssigneeRefusal(err)) return response(409, { error: 'invalid_assignee' });
+    if (isOrgJobMovedRefusal(err)) {
+      console.error(JSON.stringify({ event: 'org_job_moved_refused', handler: 'employer-team-job-reassign', jobId, organizationId }));
+      return response(500, { error: 'internal_error' });
+    }
     if (isRetryableDbBusy(err)) {
-      // A lock or statement timeout: nothing was moved. Retryable.
+      // A lock or statement timeout, or a deadlock: nothing was moved. Retryable.
       console.warn('employer-team-job-reassign busy:', (err as { code: string }).code);
       return dbBusyResponse(CORS_HEADERS);
     }

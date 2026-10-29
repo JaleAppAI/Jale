@@ -70,6 +70,19 @@ export function isAssigneeRefusal(err: unknown): boolean {
 }
 
 /**
+ * 138's jale_cap.org_job_moved refuses with P0001 and DETAIL
+ * org_job_moved_refused (the caller is not the company's active owner, a
+ * holder is not a current member, the holders are the same, or a job does not
+ * name the new holder). The handlers call it only after their own checks, so a
+ * refusal is a bug, not a client error: ROLLBACK, a log line, 500. Not an
+ * assignee refusal (that one is 42501).
+ */
+export function isOrgJobMovedRefusal(err: unknown): boolean {
+  const e = err as { code?: unknown; detail?: unknown } | null | undefined;
+  return e?.code === 'P0001' && e.detail === 'org_job_moved_refused';
+}
+
+/**
  * The caller already has a membership row: organization_members' primary key
  * is user_id (one company per login, 118), so a 23505 on it means another
  * request (an accept, a start-company) gave this login a company first.
@@ -106,9 +119,12 @@ export function isJobMoveRace(err: unknown): boolean {
  * (DB_LOCK_TIMEOUT_MS / DB_STATEMENT_TIMEOUT_MS, lambda/lib/db.ts). A request
  * that waited too long for the company lock (55P03 lock_not_available) or ran
  * past the statement limit (57014 query_canceled) changed nothing: its
- * transaction is rolled back. It is answered 503 busy, retryable, never 500.
+ * transaction is rolled back. A deadlock (40P01 deadlock_detected) is the same:
+ * the move handlers' org_job_moved updates job_applications while holding jobs
+ * row locks, and a concurrent worker write can cross it. The victim is rolled
+ * back whole. It is answered 503 busy, retryable, never 500.
  */
-const DB_BUSY_CODES: ReadonlySet<string> = new Set(['55P03', '57014']);
+const DB_BUSY_CODES: ReadonlySet<string> = new Set(['55P03', '57014', '40P01']);
 export const DB_BUSY_RETRY_AFTER_SECONDS = 2;
 
 export function isRetryableDbBusy(err: unknown): boolean {

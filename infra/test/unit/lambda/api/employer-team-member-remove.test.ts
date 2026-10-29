@@ -56,6 +56,7 @@ let members: MemberRow[];
 let movedRows: Array<{ id: string }>;
 let removeOutcome: { outcome: string; cognito_sub: string | null };
 let jobsUpdateError: unknown;
+let movedError: unknown;
 
 const makeEvent = (body: unknown, method = 'POST') => ({
   httpMethod: method,
@@ -67,6 +68,7 @@ const makeEvent = (body: unknown, method = 'POST') => ({
 const validBody = { userId: TARGET_ID, reassignTo: ASSIGNEE_ID };
 
 const sqlCalls = () => mockQuery.mock.calls.map(([sql]) => String(sql));
+const movedCalls = () => mockQuery.mock.calls.filter(([sql]) => String(sql).includes('jale_cap.org_job_moved'));
 const jobsUpdates = () => mockQuery.mock.calls.filter(([sql]) => /UPDATE\s+jobs/i.test(String(sql)));
 
 describe('employer-team-member-remove', () => {
@@ -79,6 +81,7 @@ describe('employer-team-member-remove', () => {
     movedRows = [{ id: 'job-1' }, { id: 'job-2' }, { id: 'job-3' }];
     removeOutcome = { outcome: 'removed', cognito_sub: TARGET_SUB };
     jobsUpdateError = undefined;
+    movedError = undefined;
 
     mockGetDbPool.mockResolvedValue({
       connect: jest.fn().mockResolvedValue({
@@ -109,6 +112,11 @@ describe('employer-team-member-remove', () => {
         if (jobsUpdateError) return Promise.reject(jobsUpdateError);
         return Promise.resolve({ rows: movedRows, rowCount: movedRows.length });
       }
+      if (sql.includes('jale_cap.org_job_moved')) {
+        order.push('moved');
+        if (movedError) return Promise.reject(movedError);
+        return Promise.resolve({ rows: [{ org_job_moved: 2 }] });
+      }
       if (sql.includes('jale_cap.org_team_remove_member')) {
         order.push('remove');
         return Promise.resolve({ rows: [removeOutcome] });
@@ -125,7 +133,7 @@ describe('employer-team-member-remove', () => {
     const res = await handler(makeEvent(validBody));
 
     expect(res.statusCode).toBe(200);
-    expect(order).toEqual(['BEGIN', 'actor', 'lock', 'members', 'jobs', 'remove', 'COMMIT', 'release', 'cognito']);
+    expect(order).toEqual(['BEGIN', 'actor', 'lock', 'members', 'jobs', 'moved', 'remove', 'COMMIT', 'release', 'cognito']);
   });
 
   it('moves every job of the member to reassignTo with the billing mark cleared, then removes; 200 with movedJobs', async () => {
@@ -146,11 +154,87 @@ describe('employer-team-member-remove', () => {
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 
-  it('a member with no jobs: movedJobs 0, still removed', async () => {
+  it('a member with no jobs: movedJobs 0, still removed, org_job_moved not called (it refuses an empty list)', async () => {
     movedRows = [];
     const res = await handler(makeEvent(validBody));
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ removed: true, movedJobs: 0, accessUpdated: true });
+    expect(movedCalls()).toHaveLength(0);
+    expect(order).toEqual(['BEGIN', 'actor', 'lock', 'members', 'jobs', 'remove', 'COMMIT', 'release', 'cognito']);
+  });
+
+  it('calls org_job_moved once with exactly the returned job ids, the target, the assignee and true, between the move and the removal', async () => {
+    await handler(makeEvent(validBody));
+
+    const calls = movedCalls();
+    expect(calls).toHaveLength(1);
+    const [sql, params] = calls[0];
+    expect(String(sql)).toMatch(/^SELECT jale_cap\.org_job_moved\(\$1::uuid\[\], \$2::uuid, \$3::uuid, true\)$/);
+    expect(params).toEqual([['job-1', 'job-2', 'job-3'], TARGET_ID, ASSIGNEE_ID]);
+    expect(order.indexOf('moved')).toBeGreaterThan(order.indexOf('jobs'));
+    expect(order.indexOf('moved')).toBeLessThan(order.indexOf('remove'));
+  });
+
+  it('a refusal of org_job_moved (P0001 org_job_moved_refused): 500 internal_error, ROLLBACK, the member not removed, no Cognito, a structured log line', async () => {
+    movedError = Object.assign(new Error('org_job_moved: refused'), { code: 'P0001', detail: 'org_job_moved_refused' });
+    const err = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await handler(makeEvent(validBody));
+    const logged = err.mock.calls.map((c) => String(c[0]));
+    err.mockRestore();
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+    expect(order).not.toContain('remove');
+    expect(order).not.toContain('COMMIT');
+    expect(order.slice(-2)).toEqual(['ROLLBACK', 'release']);
+    expect(mockApplyMemberAccess).not.toHaveBeenCalled();
+    expect(logged).toContain(JSON.stringify({
+      event: 'org_job_moved_refused', handler: 'employer-team-member-remove', userId: TARGET_ID, reassignTo: ASSIGNEE_ID, organizationId: ORG_ID,
+    }));
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['a P0001 without the refusal DETAIL', { code: 'P0001' }],
+    ['a P0001 with another DETAIL', { code: 'P0001', detail: 'something_else' }],
+    ['an invalid_parameter_value (22023)', { code: '22023' }],
+  ])('%s from org_job_moved is not the refusal: 500, ROLLBACK, the member not removed, no org_job_moved_refused log line', async (_label, fields) => {
+    movedError = Object.assign(new Error('org_job_moved: other'), fields);
+    const err = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await handler(makeEvent(validBody));
+    const logged = err.mock.calls.map((c) => String(c[0]));
+    err.mockRestore();
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+    expect(order).not.toContain('remove');
+    expect(order).not.toContain('COMMIT');
+    expect(order.slice(-2)).toEqual(['ROLLBACK', 'release']);
+    expect(logged.some((l) => l.includes('org_job_moved_refused'))).toBe(false);
+  });
+
+  it('several moved jobs: org_job_moved gets the full id list, in the order returned', async () => {
+    const ids = ['job-a', 'job-b', 'job-c', 'job-d', 'job-e', 'job-f', 'job-g'];
+    movedRows = ids.map((id) => ({ id }));
+    const res = await handler(makeEvent(validBody));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).movedJobs).toBe(7);
+    expect(movedCalls()).toHaveLength(1);
+    expect(movedCalls()[0][1]).toEqual([ids, TARGET_ID, ASSIGNEE_ID]);
+  });
+
+  it.each(['55P03', '57014', '40P01'])('org_job_moved busy or deadlocked with a worker write (%s): 503 busy, Retry-After 2, ROLLBACK, the member not removed, no Cognito', async (code) => {
+    movedError = Object.assign(new Error('deadlock detected'), { code });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(makeEvent(validBody));
+    warn.mockRestore();
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+    expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+    expect(order).not.toContain('remove');
+    expect(order).not.toContain('COMMIT');
+    expect(order).toContain('ROLLBACK');
+    expect(mockApplyMemberAccess).not.toHaveBeenCalled();
   });
 
   it('removed with no cognito_sub: no Cognito call, accessUpdated true', async () => {
@@ -353,7 +437,7 @@ describe('employer-team-member-remove', () => {
     expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['55P03', '57014'])('the company lock busy (%s): 503 busy, Retry-After 2, ROLLBACK, nothing moved, no Cognito', async (code) => {
+  it.each(['55P03', '57014', '40P01'])('the company lock busy (%s): 503 busy, Retry-After 2, ROLLBACK, nothing moved, no Cognito', async (code) => {
     mockReadCompanyUsage.mockRejectedValue(Object.assign(new Error('lock timeout'), { code }));
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await handler(makeEvent(validBody));
@@ -365,7 +449,7 @@ describe('employer-team-member-remove', () => {
     expect(mockApplyMemberAccess).not.toHaveBeenCalled();
   });
 
-  it.each(['55P03', '57014'])('the job move busy (%s): 503 busy, ROLLBACK, the member not removed, no Cognito', async (code) => {
+  it.each(['55P03', '57014', '40P01'])('the job move busy (%s): 503 busy, ROLLBACK, the member not removed, no Cognito', async (code) => {
     jobsUpdateError = Object.assign(new Error('canceling statement due to statement timeout'), { code });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await handler(makeEvent(validBody));
