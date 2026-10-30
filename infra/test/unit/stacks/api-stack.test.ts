@@ -271,7 +271,7 @@ describe('ApiStack', () => {
     const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
 
     const matches = methodSettings.filter(
-      (s) => s.ResourcePath === '/pay-reference' && s.HttpMethod === 'GET',
+      (s) => s.ResourcePath === '/~1pay-reference' && s.HttpMethod === 'GET',
     );
     expect(matches).toHaveLength(1);
     expect(matches[0]).toEqual(expect.objectContaining({
@@ -287,9 +287,9 @@ describe('ApiStack', () => {
     const methodSettings: any[] = (Object.values(stages)[0] as any).Properties.MethodSettings;
 
     const expected: Array<[string, string, number, number]> = [
-      ['/public/reports/{action}', 'POST', 5, 2],
-      ['/public/reports/{action}', 'GET', 20, 10],
-      ['/reports/{action}', 'POST', 10, 5],
+      ['/~1public~1reports~1{action}', 'POST', 5, 2],
+      ['/~1public~1reports~1{action}', 'GET', 20, 10],
+      ['/~1reports~1{action}', 'POST', 10, 5],
     ];
     for (const [resourcePath, httpMethod, burst, rate] of expected) {
       const matches = methodSettings.filter(
@@ -692,7 +692,7 @@ describe('ApiStack', () => {
 
     expect(methodSettings).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        ResourcePath: '/public/jobs/{code}',
+        ResourcePath: '/~1public~1jobs~1{code}',
         HttpMethod: 'GET',
         ThrottlingBurstLimit: 20,
         ThrottlingRateLimit: 10,
@@ -700,7 +700,7 @@ describe('ApiStack', () => {
     ]));
     expect(methodSettings).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        ResourcePath: '/public/jobs/{code}/apply-intent',
+        ResourcePath: '/~1public~1jobs~1{code}~1apply-intent',
         HttpMethod: 'POST',
         ThrottlingBurstLimit: 10,
         ThrottlingRateLimit: 5,
@@ -714,7 +714,7 @@ describe('ApiStack', () => {
     const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
 
     const matches = methodSettings.filter(
-      (s) => s.ResourcePath === '/public/jobs/{code}/open' && s.HttpMethod === 'POST',
+      (s) => s.ResourcePath === '/~1public~1jobs~1{code}~1open' && s.HttpMethod === 'POST',
     );
     expect(matches).toHaveLength(1);
     expect(matches[0]).toEqual(expect.objectContaining({
@@ -729,7 +729,7 @@ describe('ApiStack', () => {
     const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
 
     const matches = methodSettings.filter(
-      (s) => s.ResourcePath === '/public/jobs/{code}/referrer' && s.HttpMethod === 'GET',
+      (s) => s.ResourcePath === '/~1public~1jobs~1{code}~1referrer' && s.HttpMethod === 'GET',
     );
     expect(matches).toHaveLength(1);
     expect(matches[0]).toEqual(expect.objectContaining({
@@ -746,7 +746,7 @@ describe('ApiStack', () => {
     // A plain arrayContaining/arrayWith check would still pass if this entry
     // were accidentally duplicated -- assert cardinality explicitly.
     const matches = methodSettings.filter(
-      (s) => s.ResourcePath === '/public/jobs' && s.HttpMethod === 'GET',
+      (s) => s.ResourcePath === '/~1public~1jobs' && s.HttpMethod === 'GET',
     );
     expect(matches).toHaveLength(1);
     expect(matches[0]).toEqual(expect.objectContaining({
@@ -761,14 +761,49 @@ describe('ApiStack', () => {
     const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
 
     for (const entry of [
-      { ResourcePath: '/legal/tos', HttpMethod: 'GET' },
-      { ResourcePath: '/auth/worker/signup', HttpMethod: 'POST' },
-      { ResourcePath: '/employer/billing/checkout', HttpMethod: 'POST' },
-      { ResourcePath: '/employer/billing/portal', HttpMethod: 'POST' },
-      { ResourcePath: '/billing/webhook', HttpMethod: 'POST' },
+      { ResourcePath: '/~1legal~1tos', HttpMethod: 'GET' },
+      { ResourcePath: '/~1auth~1worker~1signup', HttpMethod: 'POST' },
+      { ResourcePath: '/~1employer~1billing~1checkout', HttpMethod: 'POST' },
+      { ResourcePath: '/~1employer~1billing~1portal', HttpMethod: 'POST' },
+      { ResourcePath: '/~1billing~1webhook', HttpMethod: 'POST' },
     ]) {
       expect(methodSettings).toEqual(expect.arrayContaining([expect.objectContaining(entry)]));
     }
+  });
+
+  test('MethodSettings opens with CDK\'s per-method default, and the routes are appended after it', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const methodSettings: any[] = (Object.values(stages)[0] as any).Properties.MethodSettings;
+
+    // The entry CDK renders from deployOptions' throttling, kept because the
+    // per-method entries are appended to CDK's array rather than replacing
+    // it. Without it every method with no entry of its own runs on the
+    // account limit.
+    expect(methodSettings[0]).toEqual({
+      ResourcePath: '/*',
+      HttpMethod: '*',
+      DataTraceEnabled: false,
+      ThrottlingBurstLimit: 100,
+      ThrottlingRateLimit: 50,
+    });
+    expect(methodSettings.filter((s) => s.ResourcePath.includes('*') || s.HttpMethod === '*')).toHaveLength(1);
+    // The default plus the 19 routes, none dropped or duplicated.
+    expect(methodSettings).toHaveLength(20);
+    expect(new Set(methodSettings.map((s) => `${s.HttpMethod} ${s.ResourcePath}`)).size).toBe(20);
+  });
+
+  test('every per-method MethodSettings ResourcePath is ~1-encoded', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const methodSettings: any[] = (Object.values(stages)[0] as any).Properties.MethodSettings;
+
+    // CloudFormation documents '/resource/subresource' as
+    // '/~1resource~1subresource'. A raw path deploys cleanly but is stored
+    // under a different stage key ('legal/tos/GET', not '~1legal~1tos/GET').
+    const perMethod = methodSettings.filter((s) => s.ResourcePath !== '/*');
+    expect(perMethod.length).toBeGreaterThan(5);
+    expect(perMethod
+      .map((s) => s.ResourcePath)
+      .filter((path: string) => path !== '/' && !/^\/(~1[^/]+)+$/.test(path))).toEqual([]);
   });
 
   // ── Referrals: no duplicate /worker, /worker/jobs, or {jobId} resources ──
@@ -994,7 +1029,7 @@ describe('ApiStack', () => {
     const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
 
     const matches = methodSettings.filter(
-      (s) => s.ResourcePath === '/employer/jobs/generate-description' && s.HttpMethod === 'POST',
+      (s) => s.ResourcePath === '/~1employer~1jobs~1generate-description' && s.HttpMethod === 'POST',
     );
     expect(matches).toHaveLength(1);
     expect(matches[0]).toEqual(expect.objectContaining({
@@ -1064,11 +1099,11 @@ describe('ApiStack', () => {
     // Membership is served by the team dispatcher, so its POST throttle IS
     // the /employer/team/{action} POST entry (the plan's 5 / 2 for both).
     const expected: Array<[string, string, number, number]> = [
-      ['/employer/team/{action}', 'POST', 5, 2],
+      ['/~1employer~1team~1{action}', 'POST', 5, 2],
       // Unauthenticated, and reaches the database on every call: Ivan's
       // ruling, 5 rps with a burst of 10.
-      ['/employer/invites/{token}', 'GET', 10, 5],
-      ['/employer/invites/{token}', 'POST', 10, 5],
+      ['/~1employer~1invites~1{token}', 'GET', 10, 5],
+      ['/~1employer~1invites~1{token}', 'POST', 10, 5],
     ];
     for (const [resourcePath, httpMethod, burst, rate] of expected) {
       const matches = methodSettings.filter(
@@ -1081,7 +1116,7 @@ describe('ApiStack', () => {
         ThrottlingRateLimit: rate,
       }]);
     }
-    expect(methodSettings.filter((s) => s.ResourcePath === '/employer/membership')).toEqual([]);
+    expect(methodSettings.filter((s) => /membership/.test(s.ResourcePath))).toEqual([]);
   });
 
   // ── S20 T-2b: employer digest settings (migration 082) ───────────────────
@@ -1172,7 +1207,7 @@ describe('ApiStack', () => {
     const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
 
     const matches = methodSettings.filter(
-      (s) => s.ResourcePath === '/public/employer-digest/unsubscribe' && s.HttpMethod === 'POST',
+      (s) => s.ResourcePath === '/~1public~1employer-digest~1unsubscribe' && s.HttpMethod === 'POST',
     );
     expect(matches).toHaveLength(1);
     // The unauthenticated-WRITE tier: identical to POST
@@ -1185,7 +1220,7 @@ describe('ApiStack', () => {
       ThrottlingRateLimit: 5,
     }));
     const applyIntent = methodSettings.find(
-      (s) => s.ResourcePath === '/public/jobs/{code}/apply-intent' && s.HttpMethod === 'POST',
+      (s) => s.ResourcePath === '/~1public~1jobs~1{code}~1apply-intent' && s.HttpMethod === 'POST',
     );
     expect(matches[0].ThrottlingBurstLimit).toBe(applyIntent.ThrottlingBurstLimit);
     expect(matches[0].ThrottlingRateLimit).toBe(applyIntent.ThrottlingRateLimit);

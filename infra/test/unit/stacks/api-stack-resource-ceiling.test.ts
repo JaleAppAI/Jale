@@ -778,6 +778,9 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     // consolidation that renamed a throttled path would drop the rate limit
     // with no error anywhere. None of the four groups above was throttled, and
     // this is what keeps that true for the next one.
+    //
+    // The template carries the ENCODED form ('/~1legal~1tos'), so each path
+    // is decoded before it is resolved; a raw '/legal/tos' fails here.
     const stages = Object.values(apiTemplate.findResources('AWS::ApiGateway::Stage')) as Array<{
       Properties: { MethodSettings?: Array<{ ResourcePath: string; HttpMethod: string }> };
     }>;
@@ -792,13 +795,22 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     >;
     const byResource = methodsByResource(apiTemplate);
     const broken: string[] = [];
+    let wildcards = 0;
     for (const { ResourcePath, HttpMethod } of settings) {
-      // A stage-wide wildcard ('/*/*') is not a resource path. There are none
-      // today; exempted explicitly rather than by loosening the check.
-      if (ResourcePath.includes('*')) continue;
+      // The stage-wide default ('/*' + '*') is not a resource path. Exactly
+      // that one is exempted, rather than anything containing a '*'.
+      if (ResourcePath === '/*' && HttpMethod === '*') {
+        wildcards += 1;
+        continue;
+      }
+      if (ResourcePath !== '/' && !/^\/(~1[^/]+)+$/.test(ResourcePath)) {
+        broken.push(`${HttpMethod} ${ResourcePath}: not ~1-encoded`);
+        continue;
+      }
+      const path = ResourcePath === '/' ? '/' : ResourcePath.slice(1).replace(/~1/g, '/');
       let resourceId: string;
       try {
-        resourceId = resolveUrl(ResourcePath);
+        resourceId = resolveUrl(path);
       } catch (err) {
         broken.push(`${HttpMethod} ${ResourcePath}: ${(err as Error).message}`);
         continue;
@@ -806,7 +818,7 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
       // Resolution must be EXACT, never through the variable fallback: a
       // throttle on '/public/jobs/{code}' has to name that real node.
       const resolvedPath = resourceId === 'ROOT' ? '/' : pathOf(resources, resourceId);
-      if (resolvedPath !== ResourcePath) {
+      if (resolvedPath !== path) {
         broken.push(`${HttpMethod} ${ResourcePath}: resolves to ${resolvedPath}`);
         continue;
       }
@@ -815,6 +827,7 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
       }
     }
     expect(broken).toEqual([]);
+    expect(wildcards).toBe(1);
   });
 
   it('the web onboarding door still costs 8 resources', () => {

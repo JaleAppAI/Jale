@@ -151,6 +151,8 @@ export class ApiStack extends cdk.Stack {
           integrationLatency: apigateway.AccessLogField.contextIntegrationLatency(),
           integrationStatus: apigateway.AccessLogField.contextIntegrationStatus(),
         })),
+        // Rendered by CDK as the stage-wide '/*' + '*' MethodSetting, which
+        // the per-method throttles near the end of this constructor append to.
         throttlingBurstLimit: 100,
         throttlingRateLimit: 50,
       },
@@ -1143,12 +1145,35 @@ export class ApiStack extends cdk.Stack {
 
     // ── Centralized stage method-level throttles ──
     // All per-method throttle overrides live here so there is exactly one
-    // CfnStage.MethodSettings array in the entire app.  Downstream stacks
-    // (LegalStack, BillingStack) must NOT call addPropertyOverride('MethodSettings').
+    // CfnStage.MethodSettings array in the entire app: add a route to
+    // `methodThrottles` below. Downstream stacks (Legal, Billing, Notifications,
+    // Referrals, Reports) must NOT call addPropertyOverride('MethodSettings'),
+    // which beats the property set here, and nothing may reassign
+    // `methodSettings` without spreading the array already in it.
+    //
+    // The entries below name plain resource paths for readability; they are
+    // encoded on the way out. CloudFormation documents a MethodSetting
+    // ResourcePath as the path with every '/' turned into '~1', then one '/'
+    // prefixed ('/legal/tos' -> '/~1legal~1tos'), the form CDK's own
+    // `methodOptions` renders. A raw '/legal/tos' deploys without error but is stored under a
+    // different stage key ('legal/tos/GET', not '~1legal~1tos/GET').
+    //
+    // They are APPENDED to the array CDK renders from `deployOptions`, never
+    // written over it: that array opens with the '/*' + '*' default (API
+    // Gateway applies stage throttles at the method level, so each method
+    // gets its own 100 burst / 50 rps, not one shared stage total), and
+    // replacing it, as an addPropertyOverride did until 2026-10, leaves every
+    // other method on the account limit (10,000 rps).
     const deployment = this.api.latestDeployment;
     if (deployment) {
       const cfnStage = this.api.deploymentStage.node.defaultChild as apigateway.CfnStage;
-      cfnStage.addPropertyOverride('MethodSettings', [
+      const encodeResourcePath = (path: string) => (path === '/' ? '/' : `/${path.replace(/\//g, '~1')}`);
+      const methodThrottles: Array<{
+        ResourcePath: string;
+        HttpMethod: string;
+        ThrottlingBurstLimit: number;
+        ThrottlingRateLimit: number;
+      }> = [
         // GET /legal/tos — public endpoint; keep throttle low to limit abuse cost
         {
           ResourcePath: '/legal/tos',
@@ -1334,7 +1359,20 @@ export class ApiStack extends cdk.Stack {
           ThrottlingBurstLimit: 10,
           ThrottlingRateLimit: 5,
         },
-      ]);
+      ];
+      const cdkMethodSettings = cfnStage.methodSettings;
+      if (!Array.isArray(cdkMethodSettings)) {
+        throw new Error('ApiStack: expected CDK to render the stage MethodSettings from deployOptions');
+      }
+      cfnStage.methodSettings = [
+        ...cdkMethodSettings,
+        ...methodThrottles.map((setting) => ({
+          resourcePath: encodeResourcePath(setting.ResourcePath),
+          httpMethod: setting.HttpMethod,
+          throttlingBurstLimit: setting.ThrottlingBurstLimit,
+          throttlingRateLimit: setting.ThrottlingRateLimit,
+        })),
+      ];
     }
 
     // ── Outputs ──
