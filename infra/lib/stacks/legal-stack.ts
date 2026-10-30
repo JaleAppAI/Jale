@@ -88,7 +88,7 @@ export class LegalStack extends cdk.Stack {
     // NOTE: GET /legal/tos throttle (10 rps / 20 burst) lives in ApiStack's
     // centralized MethodSettings block.  LegalStack must NOT call
     // addPropertyOverride('MethodSettings') — doing so would overwrite the
-    // merged list and drop billing throttles.
+    // merged list and drop the stage default and every route throttle.
 
     // POST /legal/accept — protected by dual Cognito authorizer (created in ApiStack)
     const acceptResource = legalResource.addResource('accept');
