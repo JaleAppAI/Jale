@@ -9,7 +9,7 @@ const DIGEST_NOTES = [
   'Applicant digest emails launched on Aug 23, 2026, so earlier weeks are empty.',
   'An employer with the digest on is emailed at most once a day, only on days with new applicants, and only when they have an email address.',
   'Digest emails count by the week they were queued.',
-  'Employers reached counts employers with at least one digest sent.',
+  'Logins reached counts employer logins with at least one digest sent.',
   'Who has the digest on, and their email address, is as of now; digest emails of deleted employers drop out.',
 ];
 
@@ -35,7 +35,7 @@ export function DigestEmails({ adoption, sends, now }: { adoption: DigestAdoptio
                 <th className={TH_NUM}>Failed</th>
                 <th className={TH_NUM}>Unknown</th>
                 <th className={TH_NUM}>Still sending</th>
-                <th className={TH_NUM}>Employers reached</th>
+                <th className={TH_NUM}>Logins reached</th>
               </tr>
             </thead>
             <tbody>

@@ -495,10 +495,13 @@ const CHALLENGE_1 = 'abcd1234-0000-4000-8000-000000000001';
 }
 
 // --- Only the paying-employers list names anyone; it records them -----------
+function seatColumns(n) {
+  return { organization_id: fakeUuid(0x0a00 + n), members_active: '2', seats_used: '1', seats_pending: '0', seats_suspended: '0', seat_limit: 3 };
+}
 {
   const employers = [
-    { employer_id: EMPLOYER_1, display_name: 'Synthetic Co', plan_code: 'pro', status: 'active', current_period_end: null, cancel_at_period_end: false },
-    { employer_id: fakeUuid(0xe2), display_name: 'Another Co', plan_code: 'pro', status: 'trialing', current_period_end: null, cancel_at_period_end: false },
+    { employer_id: EMPLOYER_1, display_name: 'Synthetic Co', plan_code: 'pro', status: 'active', current_period_end: null, cancel_at_period_end: false, ...seatColumns(1) },
+    { employer_id: fakeUuid(0xe2), display_name: 'Another Co', plan_code: 'pro', status: 'trialing', current_period_end: null, cancel_at_period_end: true, ...seatColumns(2) },
   ];
   const { pool, log } = database([[/admin_analytics_paying_employers/, employers]]);
   check.pool = pool;
@@ -520,11 +523,130 @@ const CHALLENGE_1 = 'abcd1234-0000-4000-8000-000000000001';
   assert.deepEqual(rows.map((row) => row.employerId), [EMPLOYER_1, fakeUuid(0xe2)]);
 }
 
+// --- Companies: the panel records the owners, a company page every member ----
+const COMPANIES_SQL = 'SELECT * FROM admin_analytics_companies($1::int, NULL)';
+const COMPANY_SQL = 'SELECT * FROM admin_analytics_companies(1, $1::uuid)';
+const MEMBERS_SQL = 'SELECT * FROM admin_analytics_company_members($1::uuid)';
+const ORG_1 = fakeUuid(0x0a01);
+function companyRow(n) {
+  return {
+    organization_id: fakeUuid(0x0a00 + n), owner_id: fakeUuid(0x0c00 + n), display_name: `Synthetic Co ${n}`,
+    created_at: new Date('2026-09-01T10:00:00Z'), plan_code: 'employer_free', plan_status: null,
+    members_active: '2', seats_used: '1', seats_pending: '0', seats_suspended: '0', seat_limit: null, active_jobs: '3',
+  };
+}
+function memberRow(n, overrides = {}) {
+  return {
+    user_id: fakeUuid(0x0d000 + n), display_name: n === 1 ? 'Rosa Mendez' : null, role: n === 1 ? 'owner' : 'foreman',
+    status: 'active', billing_suspended: false, joined_at: new Date('2026-09-02T10:00:00Z'),
+    status_changed_at: null, active_jobs: '1', ...overrides,
+  };
+}
+const exactly = (sql) => new RegExp(`^${escapeRe(sql)}$`);
+{
+  const { pool, log } = database([[exactly(COMPANIES_SQL), [companyRow(1), companyRow(2), companyRow(3)]]]);
+  check.pool = pool;
+  check.log = log;
+  const rows = await run(() => analytics.loadCompanies(session));
+  assertStatements(log, [...OPEN, `1: ${COMPANIES_SQL}`, RECORD, ...CLOSE]);
+  assert.deepEqual(log[2].params, [100]);
+  assert.deepEqual(recordedEvents(log), [{
+    kind: 'read',
+    outcome: 'allowed',
+    ...actor,
+    surface: 'admin.analytics_companies',
+    categories: ['analytics', 'billing'],
+    subject_user_ids: [fakeUuid(0x0c01), fakeUuid(0x0c02), fakeUuid(0x0c03)],
+    record_ids: [],
+    result_count: 3,
+    field_names: [],
+    request_id: REQUEST_ID,
+  }]);
+  assert.deepEqual(rows.map((row) => row.ownerId), [fakeUuid(0x0c01), fakeUuid(0x0c02), fakeUuid(0x0c03)]);
+}
+{
+  const members = [memberRow(1), memberRow(2), memberRow(3, { status: 'removed', status_changed_at: new Date('2026-09-10T10:00:00Z') })];
+  const { pool, log } = database([[exactly(COMPANY_SQL), [companyRow(1)]], [exactly(MEMBERS_SQL), members]]);
+  check.pool = pool;
+  check.log = log;
+  const loaded = await run(() => analytics.loadCompany(session, ORG_1));
+  assertStatements(log, [...OPEN, `1: ${COMPANY_SQL}`, `1: ${MEMBERS_SQL}`, RECORD, ...CLOSE]);
+  assert.deepEqual(log[2].params, [ORG_1]);
+  assert.deepEqual(log[3].params, [ORG_1]);
+  assert.deepEqual(recordedEvents(log), [{
+    kind: 'read',
+    outcome: 'allowed',
+    ...actor,
+    surface: 'admin.analytics_company_members',
+    categories: ['analytics', 'billing', 'profile'],
+    subject_user_ids: [fakeUuid(0x0d001), fakeUuid(0x0d002), fakeUuid(0x0d003)],
+    record_ids: [],
+    result_count: 3,
+    field_names: [],
+    request_id: REQUEST_ID,
+  }], 'removed members are recorded too');
+  assert.equal(loaded.company.organizationId, fakeUuid(0x0a01));
+  assert.deepEqual(loaded.members.map((member) => [member.role, member.status]), [['owner', 'active'], ['foreman', 'active'], ['foreman', 'removed']]);
+}
+{
+  // 501 members: two event parts that share the request id; part 1 carries
+  // the result count, part 2 carries 0.
+  const members = Array.from({ length: 501 }, (_, i) => memberRow(i + 1));
+  const { pool, log } = database([[exactly(COMPANY_SQL), [companyRow(1)]], [exactly(MEMBERS_SQL), members]]);
+  check.pool = pool;
+  check.log = log;
+  await run(() => analytics.loadCompany(session, ORG_1));
+  const parts = recordedEvents(log);
+  assert.deepEqual(parts.map((event) => [event.part, event.parts, event.result_count, event.subject_user_ids.length, event.request_id]), [
+    [1, 2, 501, 500, REQUEST_ID],
+    [2, 2, 0, 1, REQUEST_ID],
+  ]);
+}
+{
+  // A malformed id makes no query and records one not_found attempt; the
+  // attempt names no subject.
+  const { pool, log } = database([]);
+  check.pool = pool;
+  check.log = log;
+  const loaded = await analytics.loadCompany(session, 'not-a-uuid');
+  assert.deepEqual(loaded, { company: null, members: [] });
+  assert.equal(log.filter((entry) => /admin_analytics_compan/.test(entry.sql ?? '')).length, 0);
+  assert.deepEqual(recordedEvents(log), [{
+    kind: 'attempt',
+    outcome: 'not_found',
+    ...actor,
+    surface: 'admin.analytics_company_members',
+    categories: ['analytics', 'billing', 'profile'],
+    subject_user_ids: [],
+    record_ids: [],
+    result_count: 0,
+    field_names: [],
+    request_id: REQUEST_ID,
+  }]);
+}
+{
+  // An unknown company: no member query, no access record, and one
+  // not_found attempt after the transaction ends, on its own connection.
+  const { pool, log } = database([[exactly(COMPANY_SQL), []]]);
+  check.pool = pool;
+  check.log = log;
+  const loaded = await analytics.loadCompany(session, ORG_1);
+  assert.deepEqual(loaded, { company: null, members: [] });
+  assert.equal(log.filter((entry) => entry.sql === MEMBERS_SQL).length, 0);
+  assert.deepEqual(statements(log), [
+    '1: <connect>', '1: BEGIN', `1: ${COMPANY_SQL}`, '1: COMMIT', '1: <commit_completed>', '1: <release>',
+    '2: <connect>', '2: BEGIN', `2: ${RECORD_EVENT_SQL}`, '2: COMMIT', '2: <commit_completed>', '2: <release>',
+  ]);
+  assert.deepEqual(recordedEvents(log).map((event) => [event.kind, event.outcome, event.surface]), [
+    ['attempt', 'not_found', 'admin.analytics_company_members'],
+  ]);
+}
+
 // --- The Employers page: each list that names employers records them ---------
 function slowestRow(n) {
   return {
     employer_id: fakeUuid(0xe00 + n), display_name: `Synthetic Co ${n}`, applications: '5',
-    unanswered_7d: '2', first_response_p50_hours: '30.5', active_jobs: '1',
+    unanswered_7d: '2', first_response_p50_hours: '30.5', active_jobs: '1', organization_id: fakeUuid(0x0b00 + n),
   };
 }
 function staleRow(n, employer) {
@@ -843,9 +965,21 @@ const FAILED_READS = [
     loader: () => analytics.loadPayingEmployers(session),
     answers: [[/admin_analytics_paying_employers/, [{
       employer_id: EMPLOYER_1, display_name: 'Synthetic Co', plan_code: 'pro', status: 'active',
-      current_period_end: null, cancel_at_period_end: false,
+      current_period_end: null, cancel_at_period_end: false, ...seatColumns(1),
     }]]],
     attempt: { ...actor, surface: 'admin.analytics_paying_employers', categories: ['analytics', 'billing'], record_ids: [] },
+  },
+  {
+    name: 'the companies panel',
+    loader: () => analytics.loadCompanies(session),
+    answers: [[exactly(COMPANIES_SQL), [companyRow(1)]]],
+    attempt: { ...actor, surface: 'admin.analytics_companies', categories: ['analytics', 'billing'], record_ids: [] },
+  },
+  {
+    name: 'a company page',
+    loader: () => analytics.loadCompany(session, ORG_1),
+    answers: [[exactly(COMPANY_SQL), [companyRow(1)]], [exactly(MEMBERS_SQL), [memberRow(1)]]],
+    attempt: { ...actor, surface: 'admin.analytics_company_members', categories: ['analytics', 'billing', 'profile'], record_ids: [] },
   },
   {
     name: 'the slowest employers list',

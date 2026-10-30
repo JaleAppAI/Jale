@@ -4,6 +4,8 @@ import type {
   AnalyticsTotals,
   BillingInboxNow,
   BillingInboxWeekly,
+  CompanyMember,
+  CompanySummary,
   DigestAdoption,
   DigestSendsWeekly,
   EmployerWeekly,
@@ -31,10 +33,12 @@ import { STALE_JOBS_SHOWN, firstWithRest } from '../employer-health';
 import { stepLabel } from '../funnel';
 import { LOCKOUT_RESET_REASONS } from '../lockout-reasons';
 import { isMessageLane } from '../ops-health';
+import { isUuid } from './audit/codes';
 import {
   recordAdminAccess,
   recordAdminAttempt,
   withAdminReadTransaction,
+  type AttemptOutcome,
   type AuditQueryClient,
 } from './audit/record';
 import { readDlqDepth, readSesBounces24h, type DlqQueue } from './aws-health';
@@ -199,6 +203,12 @@ export type PayingEmployerRow = {
   status: string;
   current_period_end: PgTimestamp | null;
   cancel_at_period_end: boolean;
+  organization_id: string;
+  members_active: string | number;
+  seats_used: string | number;
+  seats_pending: string | number;
+  seats_suspended: string | number;
+  seat_limit: number | null;
 };
 
 export function mapPayingEmployerRow(row: PayingEmployerRow): PayingEmployer {
@@ -209,6 +219,12 @@ export function mapPayingEmployerRow(row: PayingEmployerRow): PayingEmployer {
     status: row.status,
     ...(row.current_period_end ? { currentPeriodEnd: asIso(row.current_period_end) } : {}),
     cancelAtPeriodEnd: row.cancel_at_period_end,
+    organizationId: row.organization_id,
+    membersActive: asCount(row.members_active),
+    seatsUsed: asCount(row.seats_used),
+    seatsPending: asCount(row.seats_pending),
+    seatsSuspended: asCount(row.seats_suspended),
+    seatLimit: row.seat_limit,
   };
 }
 
@@ -299,6 +315,175 @@ export async function loadPayingEmployers(session: AdminSession): Promise<Paying
     });
     throw error;
   }
+}
+
+// ---- Phase 5: companies (migration 139) ----
+// The Companies panel shows the top 100 by seats, then members, then jobs.
+export const COMPANIES_LIMIT = 100;
+
+export type CompanySummaryRow = {
+  organization_id: string;
+  owner_id: string;
+  display_name: string;
+  created_at: PgTimestamp;
+  // NULL when the company has no eligible subscription and the catalog has
+  // no active employer_free row (139's LEFT JOIN keeps the company listed).
+  plan_code: string | null;
+  plan_status: string | null;
+  members_active: string | number;
+  seats_used: string | number;
+  seats_pending: string | number;
+  seats_suspended: string | number;
+  seat_limit: number | null;
+  active_jobs: string | number;
+};
+
+export function mapCompanySummaryRow(row: CompanySummaryRow): CompanySummary {
+  return {
+    organizationId: row.organization_id,
+    ownerId: row.owner_id,
+    displayName: row.display_name,
+    createdAt: asIso(row.created_at),
+    planCode: row.plan_code,
+    planStatus: row.plan_status,
+    membersActive: asCount(row.members_active),
+    seatsUsed: asCount(row.seats_used),
+    seatsPending: asCount(row.seats_pending),
+    seatsSuspended: asCount(row.seats_suspended),
+    seatLimit: row.seat_limit,
+    activeJobs: asCount(row.active_jobs),
+  };
+}
+
+export type CompanyMemberRow = {
+  user_id: string;
+  display_name: string | null;
+  role: string;
+  status: string;
+  billing_suspended: boolean;
+  joined_at: PgTimestamp;
+  status_changed_at: PgTimestamp | null;
+  active_jobs: string | number;
+};
+
+// Role and status are a contract with migration 139: an unknown value is an
+// error, not a member the page would silently mislabel.
+export function mapCompanyMemberRow(row: CompanyMemberRow): CompanyMember {
+  if (row.role !== 'owner' && row.role !== 'foreman') {
+    throw new Error(`Unexpected member role: ${row.role}`);
+  }
+  if (row.status !== 'active' && row.status !== 'suspended' && row.status !== 'removed') {
+    throw new Error(`Unexpected member status: ${row.status}`);
+  }
+  return {
+    userId: row.user_id,
+    displayName: row.display_name,
+    role: row.role,
+    status: row.status,
+    billingSuspended: row.billing_suspended,
+    joinedAt: asIso(row.joined_at),
+    statusChangedAt: asNullableIso(row.status_changed_at),
+    activeJobs: asCount(row.active_jobs),
+  };
+}
+
+export async function getCompanies(client: AuditQueryClient): Promise<CompanySummary[]> {
+  const result = await client.query<CompanySummaryRow>(
+    'SELECT * FROM admin_analytics_companies($1::int, NULL)',
+    [COMPANIES_LIMIT],
+  );
+  return result.rows.map(mapCompanySummaryRow);
+}
+
+export async function getCompany(client: AuditQueryClient, organizationId: string): Promise<CompanySummary | null> {
+  const result = await client.query<CompanySummaryRow>(
+    'SELECT * FROM admin_analytics_companies(1, $1::uuid)',
+    [organizationId],
+  );
+  return result.rows[0] ? mapCompanySummaryRow(result.rows[0]) : null;
+}
+
+export async function getCompanyMembers(client: AuditQueryClient, organizationId: string): Promise<CompanyMember[]> {
+  const result = await client.query<CompanyMemberRow>(
+    'SELECT * FROM admin_analytics_company_members($1::uuid)',
+    [organizationId],
+  );
+  return result.rows.map(mapCompanyMemberRow);
+}
+
+/**
+ * The Companies panel names owners, so it is read in a recorded transaction
+ * like the paying-employers list. A read that fails records a failed attempt
+ * once its client is released.
+ */
+export async function loadCompanies(session: AdminSession): Promise<CompanySummary[]> {
+  try {
+    return await withAdminReadTransaction(session, async (client) => {
+      const rows = await getCompanies(client);
+      await recordAdminAccess(session, {
+        surface: 'admin.analytics_companies',
+        categories: ['analytics', 'billing'],
+        subjectUserIds: rows.map((row) => row.ownerId),
+        resultCount: rows.length,
+      }, client);
+      return rows;
+    });
+  } catch (error) {
+    await recordAdminAttempt(session, {
+      surface: 'admin.analytics_companies',
+      categories: ['analytics', 'billing'],
+      outcome: 'failed',
+    });
+    throw error;
+  }
+}
+
+/**
+ * One company and every member it has had, removed ones included; all of
+ * their ids are recorded. A malformed or unknown id records a not_found
+ * attempt (the unknown one once the transaction has ended); a read that
+ * fails records a failed attempt once its client is released.
+ */
+export async function loadCompany(
+  session: AdminSession,
+  organizationId: string,
+): Promise<{ company: CompanySummary | null; members: CompanyMember[] }> {
+  const attempt = (outcome: AttemptOutcome) => recordAdminAttempt(session, {
+    surface: 'admin.analytics_company_members',
+    categories: ['analytics', 'billing', 'profile'],
+    outcome,
+  });
+
+  if (!isUuid(organizationId)) {
+    await attempt('not_found');
+    return { company: null, members: [] };
+  }
+
+  let loaded: { company: CompanySummary | null; members: CompanyMember[] };
+  try {
+    loaded = await withAdminReadTransaction(session, async (client) => {
+      const company = await getCompany(client, organizationId);
+      if (!company) {
+        return { company: null, members: [] };
+      }
+      const members = await getCompanyMembers(client, organizationId);
+      await recordAdminAccess(session, {
+        surface: 'admin.analytics_company_members',
+        categories: ['analytics', 'billing', 'profile'],
+        subjectUserIds: members.map((member) => member.userId),
+        resultCount: members.length,
+      }, client);
+      return { company, members };
+    });
+  } catch (error) {
+    await attempt('failed');
+    throw error;
+  }
+
+  if (!loaded.company) {
+    await attempt('not_found');
+  }
+  return loaded;
 }
 
 // ---- 2a: worker onboarding funnel (migration 113) ----
@@ -448,6 +633,7 @@ export type SlowestEmployerRow = {
   unanswered_7d: string | number;
   first_response_p50_hours: string | number | null;
   active_jobs: string | number;
+  organization_id: string | null;
 };
 
 export function mapSlowestEmployerRow(row: SlowestEmployerRow): SlowestEmployer {
@@ -458,6 +644,7 @@ export function mapSlowestEmployerRow(row: SlowestEmployerRow): SlowestEmployer 
     unanswered7d: asCount(row.unanswered_7d),
     firstResponseP50Hours: asNullableNumber(row.first_response_p50_hours),
     activeJobs: asCount(row.active_jobs),
+    organizationId: row.organization_id,
   };
 }
 

@@ -1,0 +1,62 @@
+{
+  "functions": {
+    "public.admin_analytics_companies(integer, uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_limit integer, p_organization_id uuid",
+      "returns": "TABLE(organization_id uuid, owner_id uuid, display_name text, created_at timestamp with time zone, plan_code text, plan_status text, members_active bigint, seats_used bigint, seats_pending bigint, seats_suspended bigint, seat_limit integer, active_jobs bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "139",
+      "reason": "Admin console read: one row per company with an active owner (its owner id, company name, plan, members, seats and active jobs), the non-test companies holding the most seats or one company by id; never an email or a phone. The console records every view."
+    },
+    "public.admin_analytics_company_members(uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_organization_id uuid",
+      "returns": "TABLE(user_id uuid, display_name text, role text, status text, billing_suspended boolean, joined_at timestamp with time zone, status_changed_at timestamp with time zone, active_jobs bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "139",
+      "reason": "Admin console read: every membership row of one company, removed members included, named by contact name or account name, with role, status and active jobs; never an email or a phone. The console records every view."
+    }
+  },
+  "table_additions": {
+    "public.organization_members": {
+      "policies": {
+        "organization_members_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 139), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the admin analytics definers (migration 139) through their gated policy, to count companies instead of employer logins, map jobs to companies, and list a company's members and seats."
+    },
+    "public.organization_invites": {
+      "policies": {
+        "organization_invites_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 139), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the admin analytics definers (migration 139) through their gated policy, to count each company's live pending invites as held seats."
+    }
+  }
+}

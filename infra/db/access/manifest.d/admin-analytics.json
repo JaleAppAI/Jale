@@ -137,12 +137,12 @@
       "security": "definer",
       "search_path": "pg_catalog, pg_temp",
       "arguments": "p_weeks integer, p_limit integer",
-      "returns": "TABLE(employer_id uuid, display_name text, applications bigint, unanswered_7d bigint, first_response_p50_hours numeric, active_jobs bigint)",
+      "returns": "TABLE(employer_id uuid, display_name text, applications bigint, unanswered_7d bigint, first_response_p50_hours numeric, active_jobs bigint, organization_id uuid)",
       "execute": [
         "jale_admin_console"
       ],
       "created_by": "114",
-      "reason": "Admin console read: the slowest-answering employers, by id and display name; the console records every view of the list."
+      "reason": "Admin console read: the slowest-answering companies, one row per company keyed by its active owner (else the job holder), by id, display name and organization id; the console records every view of the list. Created by 114; dropped and recreated by 139, which appended organization_id."
     },
     "public.admin_analytics_stale_jobs(integer)": {
       "owner": "jale_admin",

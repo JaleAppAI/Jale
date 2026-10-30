@@ -28,3 +28,16 @@ export function getSystemHealth() {
     return check.health;
   });
 }
+
+// Phase 5: the company loaders. A check sets globalThis.__adminCheck.companies
+// (rows) and .company ({ company, members }); every load is recorded.
+export function loadCompanies() {
+  return tracked('loadCompanies', (check) => check.companies ?? []);
+}
+
+export function loadCompany(_session, organizationId) {
+  return tracked('loadCompany', (check) => {
+    (check.companyLoads ??= []).push(organizationId);
+    return check.company ?? { company: null, members: [] };
+  });
+}

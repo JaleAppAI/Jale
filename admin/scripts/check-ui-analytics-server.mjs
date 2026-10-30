@@ -11,6 +11,7 @@ const analyticsReadModel = read('src/lib/server/admin-analytics.ts');
 // --- Roadmap 2b: employer health ----------------------------------------------
 for (const [loader, surface] of [
   ['loadSlowestEmployers', 'admin.analytics_slowest_employers'],
+  ['loadCompanies', 'admin.analytics_companies'],
   ['loadStaleJobs', 'admin.analytics_stale_jobs'],
 ]) {
   const body = analyticsReadModel.match(new RegExp(`export async function ${loader}\\([\\s\\S]*?\\n}\\n`))?.[0] ?? '';
@@ -28,6 +29,23 @@ for (const [pattern, point] of [
 ]) {
   assert.match(analyticsReadModel, pattern, `the read model calls ${point}`);
 }
+
+// --- Phase 5: companies ----------------------------------------------------------
+for (const [pattern, point] of [
+  [/'SELECT \* FROM admin_analytics_companies\(\$1::int, NULL\)',\s*\[COMPANIES_LIMIT\],/, 'companies(100, NULL)'],
+  [/'SELECT \* FROM admin_analytics_companies\(1, \$1::uuid\)',\s*\[organizationId\],/, 'companies(1, id)'],
+  [/'SELECT \* FROM admin_analytics_company_members\(\$1::uuid\)',\s*\[organizationId\],/, 'company_members(id)'],
+]) {
+  assert.match(analyticsReadModel, pattern, `the read model calls ${point}`);
+}
+// The pages: the Employers tab loads the panel through the recorded loader; the
+// company page loads once (every load writes an audit record, so no second
+// load for metadata) and never reads unrecorded.
+const employersPage = read('src/app/(console)/analytics/employers/page.tsx');
+assert.match(employersPage, /loadCompanies\(session\)/, 'the Employers tab calls loadCompanies with the session');
+const companyPage = read('src/app/(console)/analytics/employers/[organizationId]/page.tsx');
+assert.equal((companyPage.match(/loadCompany\(/g) ?? []).length, 1, 'the company page calls loadCompany once');
+assert.doesNotMatch(companyPage, /generateMetadata|cache\(/, 'the company page has a static title and no second load');
 
 // --- Roadmap 2c: ops health ---------------------------------------------------
 for (const [pattern, point] of [

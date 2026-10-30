@@ -1,9 +1,10 @@
 @import "tailwindcss";
 
 /*
- * Lexend is loaded via next/font/google in src/app/[locale]/layout.tsx (weights
- * 300-800), which injects the `--font-lexend` CSS variable on <html> and
- * self-hosts the font files (no runtime Google Fonts request, no render-
+ * Lexend is loaded via next/font/local in src/app/[locale]/layout.tsx from the
+ * committed variable font in src/fonts (weights 300-800), which injects the
+ * `--font-lexend` CSS variable on <html> and serves the file from
+ * /_next/static (no Google Fonts request at build or run time, no render-
  * blocking @import). The --font-sans stack below in the Tailwind theme map
  * references --font-lexend first and falls back to the 'Lexend' family name.
  */

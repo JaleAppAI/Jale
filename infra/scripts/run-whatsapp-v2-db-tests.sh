@@ -135,6 +135,7 @@ SUITES=(
   test/unit/db/org-team-members-134.integration.test.ts
   test/unit/db/org-team-carry-overs-135.integration.test.ts
   test/unit/db/org-worker-naming-138.integration.test.ts
+  test/unit/db/admin-analytics-orgs-139.integration.test.ts
   test/unit/db/r-paths-team.integration.test.ts
   test/unit/db/r-paths-worker-naming.integration.test.ts
   test/unit/db/whatsapp-support-039.integration.test.ts

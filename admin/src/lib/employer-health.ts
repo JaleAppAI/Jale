@@ -54,6 +54,67 @@ export function employerLabel(displayName: string, employerId: string): string {
     : displayName;
 }
 
+// ---- Phase 5: companies and seats ---------------------------------------------
+export type SeatFigures = {
+  seatsUsed: number;
+  seatsPending: number;
+  seatsSuspended: number;
+  seatLimit: number | null;
+};
+
+// "2 of 3 seats · 1 pending · 1 suspended": the owner's billing meter. Pending
+// and suspended parts appear only when non-zero. A plan with no seats and no
+// foremen says so; a null limit (the plan has none on record) is the seats held.
+export function seatMeterText(seats: SeatFigures): string {
+  const parts: string[] = [];
+  if (seats.seatsPending > 0) parts.push(`${seats.seatsPending} pending`);
+  if (seats.seatsSuspended > 0) parts.push(`${seats.seatsSuspended} suspended`);
+  if (seats.seatLimit === 0 && seats.seatsUsed === 0 && parts.length === 0) return 'No seats on this plan';
+  const head = seats.seatLimit === null ? `${seats.seatsUsed} seats` : `${seats.seatsUsed} of ${seats.seatLimit} seats`;
+  return [head, ...parts].join(' · ');
+}
+
+// A pending invite holds a seat, a billing-suspended foreman does not. With no
+// known limit there is nothing to be over.
+export function seatsOverLimit(seats: SeatFigures): boolean {
+  return seats.seatLimit !== null && seats.seatsUsed + seats.seatsPending > seats.seatLimit;
+}
+
+// A member's name is whatever they typed, shown as typed; none is "Unnamed".
+export function memberLabel(displayName: string | null): string {
+  return displayName === null || displayName.trim() === '' ? 'Unnamed' : displayName;
+}
+
+// A subscription's status in words ("past_due" is "Past due"); no status is a dash.
+export function planStatusLabel(status: string | null): string {
+  if (status === null) return '—';
+  const words = status.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+// The plan catalog's codes in words, as billing_plans names them (034:
+// employer_free "Free", employer_pro "Pro"; worker_free is a worker's plan).
+const PLAN_LABELS: ReadonlyMap<string, string> = new Map([
+  ['employer_free', 'Free'],
+  ['employer_pro', 'Pro'],
+  ['worker_free', 'Worker free'],
+]);
+
+// A plan code in words ("employer_pro" is "Pro"). A code the catalog does not
+// name is shown as it is, so support can still find it. No plan at all (a
+// company listed although the catalog lost its free plan, 139) says so.
+export function planLabel(code: string | null): string {
+  if (code === null) return 'No plan (catalog)';
+  const known = PLAN_LABELS.get(code);
+  if (known !== undefined) return known;
+  return code.trim() === '' ? '—' : code;
+}
+
+// The company page. Every link to it uses prefetch={false}: opening it records a read.
+export function companyHref(organizationId: string): string {
+  return `/analytics/employers/${organizationId}`;
+}
+
 const ZERO_FIGURES: EmployerHealthFigures = {
   applications: 0,
   answered: 0,
@@ -160,22 +221,22 @@ export function employersHref(weeks: FunnelWeeks, stale: StaleDays = 14): string
 // ---- S28 FE-4: the Employers tab and #2 (K3.3 shapes) ---------------------------
 export type WeeklyBars = { labels: string[]; partialLast: boolean; series: ChartSeries[] };
 
-// #2: new paying employers per week (a column per week).
+// #2: new paying companies per week (a column per week).
 export function payingChart(result: { weeks: PayingWeek[]; approximateBefore: string | null }): WeeklyBars {
   const weeks = oldestFirst(result.weeks);
   return {
     ...weeklyAxis(weeks),
-    series: [{ key: 'newPaying', label: 'New paying employers', color: 'chart-1', values: weeks.map((w) => w.newPaying) }],
+    series: [{ key: 'newPaying', label: 'New paying companies', color: 'chart-1', values: weeks.map((w) => w.newPaying) }],
   };
 }
 
 // The #2 headline: the latest week's paying share, with its counts.
 export function payingHeadline(weeks: PayingWeek[]): { value: string; note: string } {
   const last = oldestFirst(weeks).at(-1);
-  if (last === undefined) return { value: '—', note: 'of employers are paying' };
+  if (last === undefined) return { value: '—', note: 'of companies are paying' };
   return {
     value: wholePercent(last.paying, last.employers),
-    note: `of employers are paying (${formatCount(last.paying)} of ${formatCount(last.employers)})`,
+    note: `of companies are paying (${formatCount(last.paying)} of ${formatCount(last.employers)})`,
   };
 }
 

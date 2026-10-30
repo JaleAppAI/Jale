@@ -1,15 +1,19 @@
 import type { Metadata } from 'next';
-import { Lexend } from 'next/font/google';
+import localFont from 'next/font/local';
 import type { ReactNode } from 'react';
 import './globals.css';
 
-// Self-hosted at build time: next/font serves the files from /_next/static,
-// which the CSP's font-src 'self' allows.
-const lexend = Lexend({
-  subsets: ['latin'],
+// Lexend's latin subset, committed (src/fonts, with its OFL licence) so the
+// build never fetches from Google: next/font/google failed two production
+// builds on 2026-10-29 while Turbopack rewrote Google's font CSS, then passed
+// on a rerun. It is the variable font, so one file covers every weight.
+// next/font serves it from /_next/static, which the CSP's font-src 'self'
+// allows.
+const lexend = localFont({
+  src: '../fonts/lexend-latin.woff2',
   variable: '--font-lexend',
   display: 'swap',
-  weight: ['300', '400', '500', '600', '700', '800'],
+  weight: '300 800',
 });
 
 export const metadata: Metadata = {

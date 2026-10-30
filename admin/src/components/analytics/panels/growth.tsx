@@ -26,7 +26,7 @@ const SIGNUP_VIEWS: { value: SignupsView; label: string }[] = [
   { value: 'new', label: 'New' },
 ];
 
-// #1: running totals of workers and employers (or new accounts per week);
+// #1: running totals of workers and companies (or new sign-ups per week);
 // verified workers ride in the table twin.
 export function SignupsPanel({
   tag,
@@ -52,7 +52,7 @@ export function SignupsPanel({
   const thisWeek = (workersNew.at(-1) ?? 0) + (employersNew.at(-1) ?? 0);
   const series = [
     { key: 'workers', label: 'Workers', color: 'chart-1' as const, values: workers },
-    { key: 'employers', label: 'Employers', color: 'chart-2' as const, values: employers },
+    { key: 'employers', label: 'Companies', color: 'chart-2' as const, values: employers },
   ];
   const title = cumulative ? 'Signups, cumulative' : 'Signups per week';
   return (
@@ -74,9 +74,9 @@ export function SignupsPanel({
           ))}
         </nav>
       }
-      howCounted="Running totals count back from today's totals, so accounts deleted since then are missing from earlier weeks too."
+      howCounted="Running totals count back from today's totals, so accounts deleted since then are missing from earlier weeks too. Employer sign-ups count companies; a team member joining a company is not counted."
       table={seriesTable(
-        cumulative ? 'Total accounts by week' : 'New accounts by week',
+        cumulative ? 'Total sign-ups by week' : 'New sign-ups by week',
         labels,
         [...series, { key: 'verified', label: 'Verified workers', color: 'chart-3', values: verified }],
         { format: formatCount, partialLast: true },
@@ -106,13 +106,13 @@ export function PayingPanel({ tag, result }: { tag: string; result: { weeks: Pay
   const weeks = [...result.weeks].sort((a, b) => Date.parse(a.weekStart) - Date.parse(b.weekStart));
   return (
     <ChartFrame
-      title="New paying employers, by week"
+      title="New paying companies, by week"
       tag={tag}
       caption={caption ?? undefined}
       howCounted="Paying means active, trialing or past due, as of the end of each week; new paying is the first move into paying that week."
       table={{
-        caption: 'Paying employers by week',
-        columns: ['Week', 'Employers', 'Paying', 'New paying', 'Stopped paying'],
+        caption: 'Paying companies by week',
+        columns: ['Week', 'Companies', 'Paying', 'New paying', 'Stopped paying'],
         rows: weeks.map((w, i) => [
           i === weeks.length - 1 && w.partial ? `${chart.labels[i]} (so far)` : chart.labels[i],
           formatCount(w.employers),
@@ -124,11 +124,11 @@ export function PayingPanel({ tag, result }: { tag: string; result: { weeks: Pay
     >
       <Headline value={headline.value} note={headline.note} />
       <BarChart
-        title="New paying employers, by week"
+        title="New paying companies, by week"
         labels={chart.labels}
         series={chart.series}
         xTitle="Week starting"
-        yTitle="New paying employers"
+        yTitle="New paying companies"
         partialLast={chart.partialLast}
       />
     </ChartFrame>
@@ -144,7 +144,7 @@ export function DigestAdoptionPanel({ tag, adoption, sends, now }: { tag: string
     <ChartFrame
       title="Digest adoption"
       tag={tag}
-      howCounted="Employers with the applicant digest on and an email address, as of now; sends by the week they were queued."
+      howCounted="Employer logins with the applicant digest on and an email address, as of now; sends by the week they were queued."
       table={seriesTable('Digest emails sent by week', chart.labels, series, { format: formatCount, partialLast: chart.partialLast })}
     >
       <Headline value={headline.value} note={headline.note} />
